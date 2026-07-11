@@ -1,0 +1,44 @@
+# External repository registry — EXAMPLE FILE
+#
+# Copy this file to external_repos/repo_registry.local.yaml and fill in
+# your actual repositories.  The local file is gitignored.
+#
+# DO NOT commit credentials or private repository URLs.
+#
+# Supported status values:
+#   reference_only            - inspecting architecture / code style only
+#   under_review              - actively reading and evaluating
+#   reproduction_in_progress  - reproducing paper results
+#   code_migration_in_progress - migrating code into src/ after review
+#   archived                  - inspection complete, no longer active
+#   rejected                  - decided not to use; retained for notes
+
+repositories:
+
+  - name: battery-state-of-charge-estimation
+    url: https://github.com/sautee/battery-state-of-charge-estimation.git
+    local_path: external_repos/references/battery-state-of-charge-estimation
+    commit_hash: ""           # fill in after cloning: git -C <path> rev-parse HEAD
+    branch: main
+    license: ""               # fill in after inspection: MIT / Apache-2.0 / GPL / unknown
+    paper: ""                 # DOI or citation key if associated with a paper
+    purpose: >
+      Reference for public battery dataset structure and existing preprocessing code.
+      This repository is NOT a direct source for benchmark implementation.
+    status: reference_only
+    notes: >
+      Cloned for code inspection only.  No files imported into src/.
+      See docs/external_repo_notes/ for migration notes if any code is adopted.
+
+  # Add additional entries below following the same structure:
+  #
+  # - name: another-repo
+  #   url: https://github.com/author/another-repo.git
+  #   local_path: external_repos/reproductions/another-repo
+  #   commit_hash: ""
+  #   branch: main
+  #   license: ""
+  #   paper: ""
+  #   purpose: ""
+  #   status: reproduction_in_progress
+  #   notes: ""

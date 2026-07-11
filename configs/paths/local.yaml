@@ -9,3 +9,4 @@ manifest_root: data/manifests
 output_root: outputs
 log_root: outputs/logs
 cache_root: .cache
+external_repo_root: external_repos

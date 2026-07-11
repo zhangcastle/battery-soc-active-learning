@@ -11,3 +11,8 @@ manifest_root: /content/drive/MyDrive/battery_soc_benchmark/data/manifests
 output_root: /content/drive/MyDrive/battery_soc_benchmark/outputs
 log_root: /content/drive/MyDrive/battery_soc_benchmark/outputs/logs
 cache_root: /content/battery_soc_cache
+
+# External repositories: kept in local Colab storage (not Drive) for speed.
+# Many small files are slow on Drive; repos can be recreated from URL + commit hash.
+# Large modifications that must persist should be saved as patch files to Drive.
+external_repo_root: /content/external_repos

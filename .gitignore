@@ -77,3 +77,16 @@ ehthumbs.db
 .env
 secrets.yaml
 credentials.json
+
+# External repositories workspace
+# Sub-directories are ignored; only root tracking files are committed.
+external_repos/references/*
+external_repos/reproductions/*
+external_repos/archived/*
+!external_repos/README.md
+!external_repos/.gitkeep
+!external_repos/repo_registry.example.yaml
+# The local registry file is never committed (may contain private URLs)
+external_repos/repo_registry.local.yaml
+# Prevent nested Git repositories from leaking into the index
+external_repos/**/.git
