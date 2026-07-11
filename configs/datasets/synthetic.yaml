@@ -1,0 +1,11 @@
+name: synthetic
+domain_id: synthetic_A
+num_cells: 3
+num_cycles_per_cell: 10
+samples_per_cycle: 200
+noise_std: 0.01
+soc_initial: 1.0
+soc_final: 0.0
+seed: 42
+label_source: coulomb_counted_fixed_capacity
+label_available: true

@@ -1,0 +1,8 @@
+name: cnn_lstm
+input_size: 3
+cnn_channels: [32, 64]
+cnn_kernel_size: 3
+lstm_hidden_size: 64
+lstm_num_layers: 1
+dropout: 0.1
+output_clip: true

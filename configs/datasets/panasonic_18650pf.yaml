@@ -1,0 +1,16 @@
+name: panasonic_18650pf
+domain_id: panasonic_18650pf
+source_url: https://data.mendeley.com/datasets/wykht8y7tg/1
+nominal_capacity_ah: 2.9
+feature_cols: [voltage, current, temperature]
+label_source: cycler_reference
+label_available: true
+profiles:
+  - US06
+  - UDDS
+  - LA92
+  - NN
+temperatures: [25]  # degrees Celsius
+raw_subdir: Panasonic_18650PF
+# Adapter status: placeholder — raises NotImplementedError until implemented.
+# See notebooks/02_prepare_panasonic.ipynb for preprocessing instructions.

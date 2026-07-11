@@ -1,0 +1,7 @@
+method: source_only
+# Train exclusively on source-domain data; no target adaptation.
+requires_source_data: true
+requires_source_labels: true
+requires_target_data: false
+requires_target_labels: false
+uses_target_test_labels: false

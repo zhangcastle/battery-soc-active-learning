@@ -1,0 +1,79 @@
+# Python
+__pycache__/
+*.py[cod]
+*.pyd
+*.pyo
+*.egg
+*.egg-info/
+dist/
+build/
+.eggs/
+*.whl
+.Python
+pip-wheel-metadata/
+
+# Virtual environments
+.venv/
+venv/
+env/
+ENV/
+
+# Editable install
+*.egg-link
+src/*.egg-info/
+
+# Pytest / coverage
+.pytest_cache/
+.coverage
+htmlcov/
+coverage.xml
+
+# Type checkers
+.mypy_cache/
+.ruff_cache/
+
+# Jupyter
+.ipynb_checkpoints/
+*.ipynb_checkpoints
+
+# Data — NEVER commit raw or processed battery data
+data/raw/
+data/interim/
+data/processed/
+# Manifests are small CSV/YAML index files; commit them if desired
+# data/manifests/
+
+# Outputs — do not commit experiment outputs
+outputs/checkpoints/
+outputs/logs/
+outputs/metrics/
+outputs/predictions/
+outputs/plots/
+outputs/experiment_snapshots/
+
+# OS
+.DS_Store
+Thumbs.db
+.Spotlight-V100
+.Trashes
+ehthumbs.db
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# Cache
+.cache/
+*.pkl
+*.npy
+
+# Colab-specific
+/content/
+
+# Secrets / credentials
+*.env
+.env
+secrets.yaml
+credentials.json

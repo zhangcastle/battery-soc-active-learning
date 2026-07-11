@@ -1,0 +1,14 @@
+name: cmu_evtol
+domain_id: cmu_evtol
+nominal_capacity_ah: null  # varies by cell; set per-cell from manifest
+feature_cols: [voltage, current, temperature]
+# Target-domain labels are NOT directly available as measured ground truth.
+# A proxy reference may be generated via quality-controlled coulomb counting
+# with dynamic capacity; see docs/cmu_evtol_protocol.md.
+label_source: unavailable
+label_available: false
+has_mission_segments: true
+has_phase_labels: true  # takeoff, cruise, hover, landing, charging
+raw_subdir: CMU_eVTOL
+# Adapter status: placeholder — raises NotImplementedError until implemented.
+# See notebooks/05_prepare_cmu_evtol.ipynb and docs/cmu_evtol_protocol.md.

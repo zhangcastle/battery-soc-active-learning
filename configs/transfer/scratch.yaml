@@ -1,0 +1,7 @@
+method: scratch
+# Train from random initialisation on target-domain data only.
+requires_source_data: false
+requires_source_labels: false
+requires_target_data: true
+requires_target_labels: true
+uses_target_test_labels: false

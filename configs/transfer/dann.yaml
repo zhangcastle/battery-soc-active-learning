@@ -1,0 +1,9 @@
+method: dann
+# Domain-Adversarial Neural Network. NOT YET IMPLEMENTED.
+requires_source_data: true
+requires_source_labels: true
+requires_target_data: true
+requires_target_labels: false
+uses_target_test_labels: false
+lambda_grl: 1.0         # gradient reversal layer weight
+discriminator_hidden: 64

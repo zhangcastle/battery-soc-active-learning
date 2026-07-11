@@ -1,0 +1,9 @@
+method: pseudo_label
+# Self-training with pseudo-labels on target domain. NOT YET IMPLEMENTED.
+requires_source_data: true
+requires_source_labels: true
+requires_target_data: true
+requires_target_labels: false
+uses_target_test_labels: false
+confidence_threshold: 0.05   # max SOC prediction std to accept as pseudo-label
+num_rounds: 3

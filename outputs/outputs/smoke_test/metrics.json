@@ -1,0 +1,40 @@
+{
+  "source_test_mae": 0.3536743206847459,
+  "source_test_rmse": 0.43455667913414164,
+  "source_test_max_error": 0.8384115099906921,
+  "source_test_bias": -0.30873938180319965,
+  "source_test_r2": -1.2212013330844353,
+  "target_test_mae": 0.35353637804277244,
+  "target_test_rmse": 0.43435696475252594,
+  "target_test_max_error": 0.8359945714473724,
+  "target_test_bias": -0.30842009137384596,
+  "target_test_r2": -1.219160154405714,
+  "experiment_name": "smoke_test",
+  "source_domain": "synthetic_A",
+  "target_domain": "synthetic_B",
+  "transfer_method": "source_only",
+  "model_name": "vidal_lstm",
+  "random_seed": 42,
+  "epochs_run": 2,
+  "train_mae": 0.3537426657163139,
+  "train_rmse": 0.43466934270159424,
+  "val_mae": 0.3536897283885628,
+  "val_rmse": 0.43462535459724194,
+  "test_mae": 0.3536743206847459,
+  "test_rmse": 0.43455667913414164,
+  "test_max_error": 0.8384115099906921,
+  "test_bias": -0.30873938180319965,
+  "test_r2": -1.2212013330844353,
+  "n_parameters": 611,
+  "extra": {
+    "target_test_metrics": {
+      "target_test_mae": 0.35353637804277244,
+      "target_test_rmse": 0.43435696475252594,
+      "target_test_max_error": 0.8359945714473724,
+      "target_test_bias": -0.30842009137384596,
+      "target_test_r2": -1.219160154405714
+    },
+    "git_commit": "unknown",
+    "training_time_s": 4.37
+  }
+}

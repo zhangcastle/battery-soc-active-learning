@@ -1,0 +1,11 @@
+# Local machine path configuration.
+# Paths are relative to the repository root (where you run scripts from).
+# Override by pointing --paths to a different YAML file.
+
+repo_root: .
+raw_data_root: data/raw
+processed_data_root: data/processed
+manifest_root: data/manifests
+output_root: outputs
+log_root: outputs/logs
+cache_root: .cache

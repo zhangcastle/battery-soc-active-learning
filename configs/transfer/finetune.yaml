@@ -1,0 +1,9 @@
+method: finetune
+# Initialise from source-pretrained weights; fine-tune on labelled target data.
+requires_source_data: true
+requires_source_labels: true
+requires_target_data: true
+requires_target_labels: true
+uses_target_test_labels: false
+finetune_lr_scale: 0.1   # multiply base LR for fine-tuning stage
+freeze_layers: []         # list of layer name prefixes to freeze, or empty

@@ -1,0 +1,10 @@
+method: mmd
+# Maximum Mean Discrepancy domain adaptation. NOT YET IMPLEMENTED.
+# Placeholder interface only.
+requires_source_data: true
+requires_source_labels: true
+requires_target_data: true
+requires_target_labels: false
+uses_target_test_labels: false
+mmd_weight: 1.0
+kernel: rbf

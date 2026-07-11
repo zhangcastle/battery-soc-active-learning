@@ -1,0 +1,65 @@
+experiment_name: smoke_test
+random_seed: 42
+device: auto   # "auto" | "cpu" | "cuda" | "cuda:0"
+
+dataset:
+  source:
+    name: synthetic
+    domain_id: synthetic_A
+    num_cells: 2
+    num_cycles_per_cell: 15
+    samples_per_cycle: 100
+    noise_std: 0.01
+  target:
+    name: synthetic
+    domain_id: synthetic_B
+    num_cells: 1
+    num_cycles_per_cell: 8
+    samples_per_cycle: 100
+    noise_std: 0.02
+
+split:
+  strategy: by_cycle   # by_profile | by_cycle | by_cell | by_temperature | by_mission
+  train_ratio: 0.7
+  val_ratio: 0.15
+  test_ratio: 0.15
+
+preprocessing:
+  feature_cols: [voltage, current, temperature]
+  normalize: true
+  normalizer: minmax   # minmax | standard
+
+sequence:
+  mode: fixed_non_overlapping   # full_cycle | fixed_non_overlapping | sliding_window
+  seq_len: 50
+  stride: 50   # only used by sliding_window
+
+model:
+  name: vidal_lstm
+  input_size: 3
+  hidden_size: 10
+  num_layers: 1
+  dropout: 0.0
+  output_clip: true
+
+transfer:
+  method: source_only
+
+optimizer:
+  name: adam
+  lr: 0.001
+  weight_decay: 0.0
+
+scheduler:
+  name: none   # none | step | cosine | plateau
+
+epochs: 2
+batch_size: 32
+
+label_availability:
+  source_labels: true
+  target_labels: false
+
+checkpoint_path: null   # null = no initial checkpoint; path to resume from
+output_path: outputs/smoke_test
+resume: false

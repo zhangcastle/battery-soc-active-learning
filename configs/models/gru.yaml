@@ -1,0 +1,6 @@
+name: gru
+input_size: 3
+hidden_size: 64
+num_layers: 2
+dropout: 0.1
+output_clip: true

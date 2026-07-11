@@ -1,0 +1,48 @@
+experiment_name: vidal_case4
+# Vidal et al. Case 4: source = Panasonic, target = Samsung 30T.
+# NOT YET IMPLEMENTED. Samsung 30T availability unconfirmed.
+random_seed: 42
+device: auto
+
+dataset:
+  source:
+    name: panasonic_18650pf
+    domain_id: panasonic_18650pf
+  target:
+    name: samsung_30t
+    domain_id: samsung_30t
+
+split:
+  strategy: by_profile
+
+preprocessing:
+  feature_cols: [voltage, current, temperature]
+  normalize: true
+  normalizer: minmax
+
+sequence:
+  mode: fixed_non_overlapping
+  seq_len: 50
+
+model:
+  name: vidal_lstm
+  input_size: 3
+  hidden_size: 10
+  output_clip: true
+
+transfer:
+  method: finetune
+
+optimizer:
+  name: adam
+  lr: 0.001
+
+epochs: 100
+batch_size: 32
+
+label_availability:
+  source_labels: true
+  target_labels: true
+
+output_path: outputs/vidal_case4
+resume: false

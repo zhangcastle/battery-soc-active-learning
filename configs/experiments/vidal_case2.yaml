@@ -1,0 +1,55 @@
+experiment_name: vidal_case2
+# Vidal et al. Case 2: source = Panasonic, target = LG HG2 (cross-chemistry).
+# Transfer via fine-tuning. NOT YET IMPLEMENTED.
+random_seed: 42
+device: auto
+
+dataset:
+  source:
+    name: panasonic_18650pf
+    domain_id: panasonic_18650pf
+  target:
+    name: lg_hg2
+    domain_id: lg_hg2
+
+split:
+  strategy: by_profile
+  train_profiles: [US06, UDDS, LA92]
+  test_profiles: [NN]
+
+preprocessing:
+  feature_cols: [voltage, current, temperature]
+  normalize: true
+  normalizer: minmax
+
+sequence:
+  mode: fixed_non_overlapping
+  seq_len: 50
+
+model:
+  name: vidal_lstm
+  input_size: 3
+  hidden_size: 10
+  num_layers: 1
+  output_clip: true
+
+transfer:
+  method: finetune
+  finetune_lr_scale: 0.1
+
+optimizer:
+  name: adam
+  lr: 0.001
+
+scheduler:
+  name: none
+
+epochs: 100
+batch_size: 32
+
+label_availability:
+  source_labels: true
+  target_labels: true
+
+output_path: outputs/vidal_case2
+resume: false

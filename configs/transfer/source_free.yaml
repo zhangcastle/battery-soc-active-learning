@@ -1,0 +1,8 @@
+method: source_free
+# Source-free domain adaptation (no access to source data at adaptation time).
+# NOT YET IMPLEMENTED.
+requires_source_data: false
+requires_source_labels: false
+requires_target_data: true
+requires_target_labels: false
+uses_target_test_labels: false

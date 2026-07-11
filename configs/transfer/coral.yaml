@@ -1,0 +1,8 @@
+method: coral
+# CORAL (CORrelation ALignment). NOT YET IMPLEMENTED.
+requires_source_data: true
+requires_source_labels: true
+requires_target_data: true
+requires_target_labels: false
+uses_target_test_labels: false
+coral_weight: 1.0

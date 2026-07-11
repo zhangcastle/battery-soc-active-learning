@@ -1,0 +1,14 @@
+name: lg_hg2
+domain_id: lg_hg2
+nominal_capacity_ah: 3.0
+feature_cols: [voltage, current, temperature]
+label_source: cycler_reference
+label_available: true
+profiles:
+  - US06
+  - UDDS
+  - LA92
+  - NN
+temperatures: [0, 10, 25]
+raw_subdir: LG_HG2
+# Adapter status: placeholder — raises NotImplementedError until implemented.

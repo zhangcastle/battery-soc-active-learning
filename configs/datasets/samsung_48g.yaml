@@ -1,0 +1,11 @@
+name: samsung_48g
+domain_id: samsung_48g
+nominal_capacity_ah: 4.8
+feature_cols: [voltage, current, temperature]
+label_source: cycler_reference
+label_available: true
+temperatures: [25]
+raw_subdir: Samsung_48G
+# Adapter status: placeholder — raises NotImplementedError until implemented.
+# Uncertainty: dataset availability and file structure require verification.
+# See docs/known_uncertainties.md.
