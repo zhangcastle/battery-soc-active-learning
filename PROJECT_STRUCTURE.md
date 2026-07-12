@@ -1,6 +1,6 @@
 # Project Structure
 
-> Last updated: 2026-07-12
+> Last updated: 2026-07-13
 > Keep this file in sync whenever directories or files are added, removed, or renamed.
 
 ---
@@ -218,6 +218,7 @@ configs/
 | `audit_external_repo.py` | 记录外部仓库的 commit hash 和 license |
 | `inspect_panasonic_25c_split.py` | 只读检查 Panasonic 25°C 文件，生成 manifest CSV 和 QC 报告 |
 | `inspect_lg_hg2_25c_split.py` | 只读检查 LG HG2 25°C 文件，生成 manifest CSV 和 QC 报告（含 HWFET 数据质量故障检测） |
+| `inspect_samsung_30t_25c_split.py` | 只读检查 Samsung 30T 25°C 文件，生成 manifest CSV；含 SHA-256、信号指纹、身份验证（T30 vs 30T）、20项验证及重复运行哈希稳定性 |
 
 ---
 
@@ -274,6 +275,7 @@ notebooks/
 | `paper_split_manifest.csv` | 每个文件的 train/test/partial_target 分类（审计参考，非最终 ground truth） |
 | `panasonic_vidal2019_25c_split_report.md` | **Panasonic 25°C 文件划分报告**（Vidal 2019 复现；含 Cycle→Mix 映射验证、充电配对、QC） |
 | `lg_hg2_vidal2019_25c_split_report.md` | **LG HG2 25°C 文件划分报告**（Vidal 2019 复现；含 Mixed→Mix 映射、HWFET 故障记录、充电配对、QC） |
+| `samsung_30t_vidal2019_25c_split_report.md` | **Samsung 30T 25°C 文件划分报告**（Vidal 2019 复现；含 T30 vs 30T 身份审计、缺失 Cap_1C、HWFET 有效性确认、SHA-256、信号指纹） |
 | `architecture.md` | 系统架构说明 |
 | `benchmark_protocol.md` | 公平对比协议 |
 | `dataset_protocol.md` | 数据集适配器规范（统一 schema、防泄漏要求） |
@@ -299,8 +301,9 @@ data/
 ├── interim/                  中间处理产物
 ├── processed/                标准化 DataFrame，模型直接读取
 └── manifests/                索引文件（可提交 Git）
-    ├── panasonic_vidal2019_25c_manifest.csv   Panasonic 25°C 文件划分清单（61行，含 QC 元数据）
-    └── lg_hg2_vidal2019_25c_manifest.csv      LG HG2 25°C 文件划分清单（36行，含 HWFET FAIL 标记）
+    ├── panasonic_vidal2019_25c_manifest.csv      Panasonic 25°C 文件划分清单（61行，含 QC 元数据）
+    ├── lg_hg2_vidal2019_25c_manifest.csv         LG HG2 25°C 文件划分清单（36行，含 HWFET FAIL 标记）
+    └── samsung_30t_vidal2019_25c_manifest.csv    Samsung 30T 25°C 文件划分清单（34行，含 SHA-256、信号指纹、身份状态）
 ```
 
 ---
