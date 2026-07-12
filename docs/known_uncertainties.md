@@ -9,7 +9,7 @@ This document lists aspects of the benchmark that are not yet resolved.
 
 **Status:** Unconfirmed.
 
-The exact method used in Vidal et al. (2022) to segment continuous battery
+The exact method used in Vidal et al. (2019 ITEC) to segment continuous battery
 recordings into LSTM input sequences has not yet been confirmed from the paper.
 This includes:
 - Sequence length
@@ -26,9 +26,9 @@ is verified.
 
 **Status:** Unconfirmed.
 
-The paper's feature normalisation method (min-max per-feature, z-score, etc.)
-and the data used to fit the scaler (per-cycle, global, or per-profile) are
-not yet confirmed.
+The Vidal et al. (2019 ITEC) paper's feature normalisation method (min-max
+per-feature, z-score, etc.) and the data used to fit the scaler (per-cycle,
+global, or per-profile) are not yet confirmed.
 
 ---
 
@@ -41,7 +41,7 @@ not yet confirmed.
 The dataset used is **Samsung INR21700-30T** (3 Ah), collected at McMaster University
 by Dr. Phillip Kollmeyer, published on Mendeley December 2020
 ([DOI 10.17632/9xyvy2njj3.1](https://data.mendeley.com/datasets/9xyvy2njj3/1)).
-Test data was collected in 2019 and is consistent with the Vidal et al. (2022) paper.
+Test data was collected in 2019 and is consistent with the Vidal et al. (2019 ITEC) paper.
 
 Vidal et al. refers to this cell as **"Samsung T30"** — this is a typo/variant of the
 actual name "Samsung 30T" (or "3.0T" as written in the Readme). The benchmark uses
