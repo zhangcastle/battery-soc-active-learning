@@ -36,6 +36,9 @@ coverage.xml
 .ipynb_checkpoints/
 *.ipynb_checkpoints
 
+# Docs — kept local; clean up and commit when ready
+docs/
+
 # Data — NEVER commit raw or processed battery data
 data/raw/
 data/interim/
