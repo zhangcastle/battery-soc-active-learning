@@ -16,13 +16,21 @@ data/
 
 ## Obtaining datasets
 
-| Dataset | Source | Notes |
-|---------|--------|-------|
-| Panasonic NCR18650PF | McMaster University (public) | See `notebooks/02_prepare_panasonic.ipynb` |
-| LG HG2 | McMaster University (public) | See `notebooks/03_prepare_lg_hg2.ipynb` |
-| Samsung 48G | McMaster University (public) | See `notebooks/04_prepare_samsung.ipynb` |
-| Samsung 30T | To be confirmed | See `docs/known_uncertainties.md` |
-| CMU eVTOL | CMU Battery Data Lab | See `docs/cmu_evtol_protocol.md` |
+| Dataset | Source | Status | Notes |
+|---------|--------|--------|-------|
+| Panasonic NCR18650PF | [McMaster / Mendeley](https://data.mendeley.com/datasets/wykht8y7tg/1) | ✅ In `raw/Panasonic_18650PF/` | See `notebooks/02_prepare_panasonic.ipynb` |
+| LG HG2 | [McMaster / Mendeley](https://data.mendeley.com/datasets/wykht8y7tg/1) | ✅ In `raw/LG_HG2/` | See `notebooks/03_prepare_lg_hg2.ipynb` |
+| Samsung 30T | [McMaster / Mendeley](https://data.mendeley.com/datasets/9xyvy2njj3/1) | ✅ In `raw/Samsung_30T/` | See naming note below |
+| Samsung 48G | Unknown | ❌ Not found | See `raw/Samsung_48G/README.md` |
+| CMU eVTOL | CMU Battery Data Lab | ⏳ Not yet obtained | See `docs/cmu_evtol_protocol.md` |
+
+### Samsung 30T naming note
+
+Vidal et al. (2022) refers to this cell as **"Samsung T30"**, which appears to be a
+typo or variant spelling of the actual product name **Samsung INR21700-30T** (3 Ah).
+The dataset (Kollmeyer & Skells, McMaster, [Mendeley DOI 10.17632/9xyvy2njj3.1](https://data.mendeley.com/datasets/9xyvy2njj3/1),
+published December 2020) was collected in 2019 and is consistent with the dataset
+described in the paper. The benchmark uses `samsung_30t` as the canonical name.
 
 ## Google Colab usage
 

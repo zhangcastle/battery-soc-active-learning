@@ -34,13 +34,36 @@ not yet confirmed.
 
 ## 3. Samsung dataset availability and structure
 
-**Status:** Unconfirmed.
+### Samsung 30T — RESOLVED
 
-The availability and file structure of the Samsung 48G and Samsung 30T datasets
-referenced in Vidal et al. require verification.  If these datasets are not
-publicly available, alternative datasets must be identified.
+**Status:** Confirmed. Data in `data/raw/Samsung_30T/`.
 
-**Affected configs:** `configs/datasets/samsung_48g.yaml`, `configs/datasets/samsung_30t.yaml`
+The dataset used is **Samsung INR21700-30T** (3 Ah), collected at McMaster University
+by Dr. Phillip Kollmeyer, published on Mendeley December 2020
+([DOI 10.17632/9xyvy2njj3.1](https://data.mendeley.com/datasets/9xyvy2njj3/1)).
+Test data was collected in 2019 and is consistent with the Vidal et al. (2022) paper.
+
+Vidal et al. refers to this cell as **"Samsung T30"** — this is a typo/variant of the
+actual name "Samsung 30T" (or "3.0T" as written in the Readme). The benchmark uses
+the canonical name `samsung_30t`.
+
+File structure: temperature subdirectories (`-20degC`, `-10degC`, `0degC`, `10degC`,
+`25degC`, `40degC`), each containing `.mat` drive-cycle files (UDDS, HWFET, LA92, US06,
+Mixed 1–8) and charge files.
+
+### Samsung 48G — UNRESOLVED
+
+**Status:** Dataset not found. `data/raw/Samsung_48G/` is a placeholder.
+
+No public McMaster Samsung 48G (INR21700-48G, ~4.8 Ah) dataset has been located.
+The McMaster Mendeley page (`wykht8y7tg/1`) does not appear to include a Samsung 48G.
+
+**Impact:** `configs/experiments/vidal_case3.yaml` (Panasonic → Samsung 48G) cannot
+be run until this dataset is obtained.
+
+**Next steps:** Search IEEE DataPort and other repositories; contact Dr. Kollmeyer.
+
+**Affected configs:** `configs/datasets/samsung_48g.yaml`
 
 ---
 
