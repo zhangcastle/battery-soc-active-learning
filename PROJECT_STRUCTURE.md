@@ -1,6 +1,6 @@
 # Project Structure
 
-> Last updated: 2026-07-13
+> Last updated: 2026-07-15
 > Keep this file in sync whenever directories or files are added, removed, or renamed.
 
 ---
@@ -36,19 +36,34 @@ battery-soc-transfer-benchmark/
 
 | 文件 | 数据集 | 状态 |
 |------|--------|------|
-| `schema.py` | 统一列名定义（timestamp/voltage/current/temperature/soc/...） | ✅ |
-| `base_dataset.py` | 所有适配器的抽象基类 | ✅ |
+| `schema.py` | 统一列名定义（benchmark-level + adapter-level schema 常量） | ✅ |
+| `base_dataset.py` | 所有适配器的抽象基类（DataFrame API） | ✅ |
 | `registry.py` | 通过字符串名称查找数据集类 | ✅ |
 | `synthetic.py` | 合成数据生成器（无需真实文件，用于 smoke test） | ✅ |
-| `panasonic.py` | Panasonic NCR18650PF 适配器 | ⏳ 待实现 |
-| `lg_hg2.py` | LG HG2 适配器 | ⏳ 待实现 |
-| `samsung_30t.py` | Samsung INR21700-30T 适配器 | ⏳ 待实现 |
+| `adapter_qc.py` | `QCResult` 容器 + adapter 自定义异常 | ✅ |
+| `sequence_record.py` | `SequenceRecord` dataclass — adapter 统一输出格式 | ✅ |
+| `mat_loader.py` | 通用只读 MATLAB `.mat` 加载器（返回 `MatLoadResult`） | ✅ |
+| `manifest_loader.py` | 通用 manifest CSV 加载器（返回 `list[ManifestEntry]`） | ✅ |
+| `panasonic.py` | Panasonic NCR18650PF 适配器 | 🔶 第一版（读取 + 映射 + QC；未清洗/未计算 SOC） |
+| `lg_hg2.py` | LG HG2 适配器 | ⏳ 待实现（manifest 已完成） |
+| `samsung_30t.py` | Samsung INR21700-30T 适配器 | ⏳ 待实现（manifest 已完成） |
 | `samsung_48g.py` | Samsung INR21700-48G 适配器 | ❌ 数据集未获取 |
 | `cmu_evtol.py` | CMU eVTOL 适配器 | ⏳ 待实现 |
 | `splits.py` | 数据集划分逻辑（按 cycle / cell / profile / temperature） | ✅ |
 | `cycle_dataset.py` | 将 numpy 数组封装为 PyTorch Dataset | ✅ |
 | `datamodule.py` | 组合 source + target DataLoader | ✅ |
 | `collate.py` | 变长序列的 batch collate 函数 | ✅ |
+
+**Panasonic Adapter 当前实现范围（`PanasonicAdapter` 类）：**
+- ✅ 读取 `data/manifests/panasonic_vidal2019_25c_manifest.csv`
+- ✅ 按 split 选择文件（full_train / partial_train / test / exclude）
+- ✅ 调用 `load_mat_file()` 读取原始 `.mat` 文件（只读）
+- ✅ 字段映射：Time→time_s, Voltage→voltage_v, Current→current_a, Battery_Temp_degC→temperature_c, Ah→cycler_ah, TimeStamp→timestamp
+- ✅ Adapter-level QC：NaN/Inf 检测、时间步长检测、Ah reset 检测、SHA-256 核验
+- ✅ 填充 `SequenceRecord.metadata`（dataset / battery / source_file / split / sequence_id 等）
+- ❌ SOC 计算（未实现）
+- ❌ 数据清洗（未实现）
+- ❌ 重采样 / 归一化 / 切窗口（未实现）
 
 ### `preprocessing/` — 预处理流水线
 

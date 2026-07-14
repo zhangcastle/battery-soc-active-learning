@@ -52,6 +52,9 @@ where = ["src"]
 testpaths = ["tests"]
 addopts = "-v --tb=short"
 filterwarnings = ["ignore::DeprecationWarning"]
+markers = [
+    "integration: requires real battery data files on disk (skipped if data absent)",
+]
 
 [tool.ruff]
 src = ["src"]

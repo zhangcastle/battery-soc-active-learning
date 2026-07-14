@@ -24,6 +24,25 @@ from battery_benchmark.data.adapter_qc import (
     ALLOWED_QC_STATUS,
 )
 from battery_benchmark.data.sequence_record import SequenceRecord
+from battery_benchmark.data.manifest_loader import (
+    ManifestEntry,
+    ManifestError,
+    MissingManifestColumnError,
+    InvalidManifestRowError,
+    UnsupportedManifestSplitError,
+    SHA256MismatchError,
+    load_manifest,
+    select_manifest_entries,
+    REQUIRED_MANIFEST_COLUMNS,
+    SUPPORTED_SPLITS,
+)
+from battery_benchmark.data.mat_loader import (
+    MatLoadResult,
+    MatFileError,
+    MissingMeasurementStructError,
+    UnsupportedMatFormatError,
+    load_mat_file,
+)
 from battery_benchmark.data.registry import DatasetRegistry, register_dataset, get_dataset_class
 from battery_benchmark.data.synthetic import SyntheticDataset
 from battery_benchmark.data.cycle_dataset import CycleDataset
@@ -55,6 +74,23 @@ __all__ = [
     "InvalidFileTypeError",
     # Record
     "SequenceRecord",
+    # Manifest loader
+    "ManifestEntry",
+    "ManifestError",
+    "MissingManifestColumnError",
+    "InvalidManifestRowError",
+    "UnsupportedManifestSplitError",
+    "SHA256MismatchError",
+    "load_manifest",
+    "select_manifest_entries",
+    "REQUIRED_MANIFEST_COLUMNS",
+    "SUPPORTED_SPLITS",
+    # Mat loader
+    "MatLoadResult",
+    "MatFileError",
+    "MissingMeasurementStructError",
+    "UnsupportedMatFormatError",
+    "load_mat_file",
     # Dataset utilities
     "DatasetRegistry",
     "register_dataset",
