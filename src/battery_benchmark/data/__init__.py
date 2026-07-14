@@ -8,10 +8,12 @@ from battery_benchmark.data.schema import (
     Split,
     AdapterSplit,
     FileType,
+    RecordRole,
     REQUIRED_DATA_COLUMNS,
     REQUIRED_METADATA_FIELDS,
     ALLOWED_ADAPTER_SPLITS,
     ALLOWED_FILE_TYPES,
+    ALLOWED_RECORD_ROLES,
 )
 from battery_benchmark.data.adapter_qc import (
     QCResult,
@@ -66,10 +68,12 @@ __all__ = [
     # Adapter-level schema
     "AdapterSplit",
     "FileType",
+    "RecordRole",
     "REQUIRED_DATA_COLUMNS",
     "REQUIRED_METADATA_FIELDS",
     "ALLOWED_ADAPTER_SPLITS",
     "ALLOWED_FILE_TYPES",
+    "ALLOWED_RECORD_ROLES",
     # QC
     "QCResult",
     "ALLOWED_QC_STATUS",

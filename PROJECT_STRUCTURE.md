@@ -63,7 +63,17 @@ battery-soc-transfer-benchmark/
 - ✅ Adapter-level QC（共享 `adapter_common.py`）
 - ✅ `metadata["split"]` = requested_split；`metadata["manifest_splits"]` 保存 manifest membership
 - ✅ `paper_profile` 仅来自 manifest，不做 profile fallback
+- ✅ `record_role` 来自 manifest（`model_input` / `soc_anchor` / `excluded`），Adapter 只读取并校验
+- ✅ 严格 `soc_init` 解析（LG manifest 列）；selected drive-cycle SOC metadata 终态校验
+- ✅ `summarize()` 校验 records 的 `metadata["split"]` 与请求 split 一致
 - ❌ SOC 计算 / 清洗 / 重采样 / 归一化 / 切窗口（均未实现）
+
+**训练输入筛选契约（文档约定，尚未实现过滤器）：**
+
+只有 ``record.metadata["record_role"] == "model_input"`` 的
+:class:`~battery_benchmark.data.sequence_record.SequenceRecord` 可进入后续 SOC
+模型时序输入流程。``soc_anchor`` 记录用于满充证据与 SOC 初始化追踪；
+``excluded`` 记录不参与模型输入。
 
 ### `preprocessing/` — 预处理流水线
 

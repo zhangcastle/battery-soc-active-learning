@@ -45,6 +45,16 @@ def _base_row(**overrides) -> dict:
         "qc_notes": "",
     }
     row.update(overrides)
+    if "record_role" not in overrides:
+        exclude = int(row["exclude"])
+        ft = row["file_type"]
+        selected = int(row["full_train"]) or int(row["partial_train"]) or int(row["test"])
+        if exclude:
+            row["record_role"] = "excluded"
+        elif ft == "charge" and selected:
+            row["record_role"] = "soc_anchor"
+        else:
+            row["record_role"] = "model_input"
     return row
 
 
@@ -472,7 +482,14 @@ class TestQCStatusValidation:
 class TestFileTypeValidation:
     @pytest.mark.parametrize("ft", ["drive_cycle", "charge", "characterization", "other", "unknown"])
     def test_allowed_file_types(self, tmp_path, ft):
-        p = _write_csv(tmp_path, [_base_row(file_type=ft)])
+        if ft in ("drive_cycle", "charge"):
+            row = _base_row(file_type=ft)
+        else:
+            row = _base_row(
+                full_train="0", partial_train="0", test="0", exclude="1",
+                file_type=ft, paper_profile="",
+            )
+        p = _write_csv(tmp_path, [row])
         assert load_manifest(p)[0].file_type == ft
 
     def test_empty_file_type_fails(self, tmp_path):
@@ -507,6 +524,91 @@ class TestEntryManifestSplits:
         row = _base_row(
             full_train="0", partial_train="0", test="0", exclude="1",
             file_type="characterization", paper_profile="",
+            record_role="excluded",
         )
         entry = load_manifest(_write_csv(tmp_path, [row]))[0]
         assert entry_manifest_splits(entry) == ["exclude"]
+
+
+# ---------------------------------------------------------------------------
+# record_role validation
+# ---------------------------------------------------------------------------
+
+class TestRecordRoleValidation:
+    def test_valid_model_input(self, tmp_path):
+        entry = load_manifest(_write_csv(tmp_path, [_base_row(record_role="model_input")]))[0]
+        assert entry.record_role == "model_input"
+
+    def test_valid_soc_anchor(self, tmp_path):
+        row = _base_row(
+            file_type="charge", profile="Charge", paper_profile="CC",
+            record_role="soc_anchor",
+        )
+        entry = load_manifest(_write_csv(tmp_path, [row]))[0]
+        assert entry.record_role == "soc_anchor"
+
+    def test_valid_excluded(self, tmp_path):
+        row = _base_row(
+            full_train="0", partial_train="0", test="0", exclude="1",
+            file_type="characterization", paper_profile="",
+            record_role="excluded",
+        )
+        entry = load_manifest(_write_csv(tmp_path, [row]))[0]
+        assert entry.record_role == "excluded"
+
+    def test_missing_record_role_column_fails(self, tmp_path):
+        row = _base_row()
+        del row["record_role"]
+        with pytest.raises(MissingManifestColumnError, match="record_role"):
+            load_manifest(_write_csv(tmp_path, [row]))
+
+    def test_empty_record_role_fails(self, tmp_path):
+        with pytest.raises(InvalidManifestRowError, match="record_role"):
+            load_manifest(_write_csv(tmp_path, [_base_row(record_role="")]))
+
+    def test_invalid_record_role_fails(self, tmp_path):
+        with pytest.raises(InvalidManifestRowError, match="record_role"):
+            load_manifest(_write_csv(tmp_path, [_base_row(record_role="training_data")]))
+
+    def test_model_input_with_charge_fails(self, tmp_path):
+        row = _base_row(file_type="charge", record_role="model_input")
+        with pytest.raises(InvalidManifestRowError, match="model_input"):
+            load_manifest(_write_csv(tmp_path, [row]))
+
+    def test_model_input_with_exclude_fails(self, tmp_path):
+        row = _base_row(exclude="1", full_train="0", partial_train="0",
+                        record_role="model_input")
+        with pytest.raises(InvalidManifestRowError, match="model_input"):
+            load_manifest(_write_csv(tmp_path, [row]))
+
+    def test_model_input_without_selected_split_fails(self, tmp_path):
+        row = _base_row(full_train="0", partial_train="0", test="0", exclude="0",
+                        record_role="model_input")
+        with pytest.raises(InvalidManifestRowError, match="model_input"):
+            load_manifest(_write_csv(tmp_path, [row]))
+
+    def test_soc_anchor_with_non_charge_fails(self, tmp_path):
+        row = _base_row(file_type="drive_cycle", record_role="soc_anchor")
+        with pytest.raises(InvalidManifestRowError, match="soc_anchor"):
+            load_manifest(_write_csv(tmp_path, [row]))
+
+    def test_soc_anchor_with_exclude_fails(self, tmp_path):
+        row = _base_row(
+            file_type="charge", exclude="1", full_train="0", partial_train="0",
+            test="0", record_role="soc_anchor",
+        )
+        with pytest.raises(InvalidManifestRowError, match="soc_anchor"):
+            load_manifest(_write_csv(tmp_path, [row]))
+
+    def test_excluded_without_exclude_flag_fails(self, tmp_path):
+        row = _base_row(record_role="excluded")
+        with pytest.raises(InvalidManifestRowError, match="excluded"):
+            load_manifest(_write_csv(tmp_path, [row]))
+
+    def test_excluded_while_selected_fails(self, tmp_path):
+        row = _base_row(
+            full_train="1", exclude="1", record_role="excluded",
+            file_type="characterization", paper_profile="",
+        )
+        with pytest.raises(InvalidManifestRowError, match="excluded"):
+            load_manifest(_write_csv(tmp_path, [row]))

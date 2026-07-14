@@ -11,6 +11,7 @@ and override only the small hook methods for SOC metadata and optional extras.
 from __future__ import annotations
 
 import logging
+import math
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -113,14 +114,69 @@ def require_paper_profile(entry: ManifestEntry, dataset_label: str) -> None:
 
 
 def parse_manifest_soc_init(entry: ManifestEntry) -> float | None:
-    """Parse explicit ``soc_init`` from the manifest row, if present."""
+    """Parse explicit ``soc_init`` from the manifest row with strict validation.
+
+    Empty string returns ``None``.  Non-empty values must parse to a finite
+    float in ``[0.0, 1.0]``; otherwise :class:`AdapterSchemaError` is raised.
+    """
     text = entry.soc_init_str.strip()
     if not text:
         return None
+
     try:
-        return float(text)
+        value = float(text)
     except ValueError:
-        return None
+        raise AdapterSchemaError(
+            f"Invalid soc_init for {entry.filename!r}: raw_value={text!r}. "
+            "Must be a finite number in [0.0, 1.0] or empty."
+        ) from None
+
+    if not math.isfinite(value):
+        raise AdapterSchemaError(
+            f"Invalid soc_init for {entry.filename!r}: raw_value={text!r}. "
+            "Must be a finite number in [0.0, 1.0] or empty."
+        )
+
+    if not 0.0 <= value <= 1.0:
+        raise AdapterSchemaError(
+            f"Invalid soc_init for {entry.filename!r}: raw_value={text!r}. "
+            "Must be a finite number in [0.0, 1.0] or empty."
+        )
+
+    return value
+
+
+def validate_soc_metadata(
+    entry: ManifestEntry,
+    requested_split: str,
+    soc_init: float | None,
+    soc_anchor_source: str,
+) -> None:
+    """Validate SOC initialization metadata for selected model-input drive-cycles.
+
+    Records with ``record_role == "model_input"`` must carry a finite
+    ``soc_init`` and a non-empty ``soc_anchor_source`` that is not
+    ``"not_applicable"``.  ``soc_anchor`` and ``excluded`` records are not
+    subject to drive-cycle SOC requirements.
+    """
+    if entry.record_role != "model_input":
+        return
+
+    missing: list[str] = []
+    if soc_init is None:
+        missing.append("soc_init")
+    anchor = soc_anchor_source.strip()
+    if not anchor:
+        missing.append("soc_anchor_source")
+    elif anchor == "not_applicable":
+        missing.append("soc_anchor_source (must not be 'not_applicable')")
+
+    if missing:
+        raise AdapterSchemaError(
+            f"SOC metadata incomplete for model_input drive-cycle "
+            f"{entry.filename!r} (requested_split={requested_split!r}): "
+            f"missing or invalid: {', '.join(missing)}"
+        )
 
 
 def resolve_raw_path(raw_root: Path, entry: ManifestEntry) -> Path:
@@ -316,7 +372,20 @@ def build_adapter_summary(
     split: str,
     stats: AdapterLoadStats | None,
 ) -> AdapterSummary:
-    """Aggregate QC and load statistics for one split."""
+    """Aggregate QC and load statistics for one split.
+
+    When *records* is non-empty, every record must have
+    ``metadata["split"] == split``; otherwise :class:`AdapterSchemaError`
+    is raised.
+    """
+    if records:
+        observed = {r.metadata.get("split") for r in records}
+        if observed != {split}:
+            raise AdapterSchemaError(
+                f"Summary split {split!r} does not match record splits "
+                f"{sorted(observed)}."
+            )
+
     expected = stats.expected_manifest_entries if stats else len(records)
     skipped = stats.skipped_manifest_failures if stats else 0
     return AdapterSummary(
@@ -344,6 +413,11 @@ class ManifestMatAdapter:
     """Manifest CSV + ``.mat`` loader shared by Vidal 2019 dataset adapters.
 
     Subclasses set class attributes and override hook methods for SOC metadata.
+
+    **Training input contract:** only records with
+    ``metadata["record_role"] == "model_input"`` may enter the SOC model
+    sequence builder.  ``soc_anchor`` records supply full-charge evidence;
+    ``excluded`` records are audit-only.
     """
 
     DATASET_NAME: str = ""
@@ -408,6 +482,12 @@ class ManifestMatAdapter:
         data_df = measurements_to_dataframe(mat_result.measurements, qc)
         detect_adapter_qc(data_df, entry, qc)
 
+        soc_init = self.get_soc_init(entry)
+        soc_anchor_source = self.get_soc_anchor_source(entry)
+        validate_soc_metadata(
+            entry, requested_split, soc_init, soc_anchor_source
+        )
+
         metadata: dict[str, Any] = {
             "dataset": self.DATASET_NAME,
             "battery": entry.battery,
@@ -417,10 +497,11 @@ class ManifestMatAdapter:
             "profile": entry.profile,
             "paper_profile": entry.paper_profile,
             "file_type": entry.file_type,
+            "record_role": entry.record_role,
             "split": requested_split,
             "temperature_nominal_c": entry.temperature_c,
-            "soc_init": self.get_soc_init(entry),
-            "soc_anchor_source": self.get_soc_anchor_source(entry),
+            "soc_init": soc_init,
+            "soc_anchor_source": soc_anchor_source,
             "capacity_hint_ah": self._capacity_hint_ah,
             "manifest_splits": entry_manifest_splits(entry),
             "paper_battery_name": entry.paper_battery_name or self.DEFAULT_PAPER_BATTERY_NAME,

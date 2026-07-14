@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import math
+
 import numpy as np
 import pandas as pd
 import pytest
@@ -12,8 +14,9 @@ from battery_benchmark.data.adapter_common import (
     detect_adapter_qc,
     measurements_to_dataframe,
     parse_manifest_soc_init,
+    validate_soc_metadata,
 )
-from battery_benchmark.data.adapter_qc import QCResult
+from battery_benchmark.data.adapter_qc import AdapterSchemaError, QCResult
 from battery_benchmark.data.manifest_loader import ManifestEntry
 from battery_benchmark.data.sequence_record import SequenceRecord
 
@@ -33,6 +36,7 @@ def _entry(**kwargs) -> ManifestEntry:
         qc_status="PASS",
         paper_profile="Mix1",
         soc_init_str="1.0",
+        record_role="model_input",
     )
     defaults.update(kwargs)
     return ManifestEntry(**defaults)
@@ -50,11 +54,82 @@ def _valid_df(n: int = 10) -> pd.DataFrame:
 
 
 class TestParseManifestSocInit:
-    def test_parses_float_string(self):
-        assert parse_manifest_soc_init(_entry(soc_init_str="1.0")) == 1.0
+    @pytest.mark.parametrize("text,expected", [
+        ("", None),
+        ("0", 0.0),
+        ("0.0", 0.0),
+        ("0.5", 0.5),
+        ("1", 1.0),
+        ("1.0", 1.0),
+    ])
+    def test_valid_values(self, text, expected):
+        assert parse_manifest_soc_init(_entry(soc_init_str=text)) == expected
 
-    def test_empty_returns_none(self):
-        assert parse_manifest_soc_init(_entry(soc_init_str="")) is None
+    @pytest.mark.parametrize("text", ["1.O", "full", "nan", "inf", "-0.1", "1.1"])
+    def test_invalid_values_raise(self, text):
+        with pytest.raises(AdapterSchemaError, match="soc_init"):
+            parse_manifest_soc_init(_entry(soc_init_str=text, filename=f"{text}.mat"))
+
+    def test_nan_float_string_fails(self):
+        with pytest.raises(AdapterSchemaError, match="soc_init"):
+            parse_manifest_soc_init(_entry(soc_init_str="NaN"))
+
+    def test_inf_float_string_fails(self):
+        with pytest.raises(AdapterSchemaError, match="soc_init"):
+            parse_manifest_soc_init(_entry(soc_init_str="+Inf"))
+
+
+class TestValidateSocMetadata:
+    def test_model_input_complete_succeeds(self):
+        validate_soc_metadata(
+            _entry(record_role="model_input"),
+            "full_train",
+            1.0,
+            "preceding_full_charge",
+        )
+
+    def test_model_input_missing_soc_init_fails(self):
+        with pytest.raises(AdapterSchemaError, match="soc_init"):
+            validate_soc_metadata(
+                _entry(record_role="model_input"),
+                "full_train",
+                None,
+                "preceding_full_charge",
+            )
+
+    def test_model_input_missing_anchor_fails(self):
+        with pytest.raises(AdapterSchemaError, match="soc_anchor_source"):
+            validate_soc_metadata(
+                _entry(record_role="model_input"),
+                "full_train",
+                1.0,
+                "",
+            )
+
+    def test_model_input_not_applicable_anchor_fails(self):
+        with pytest.raises(AdapterSchemaError, match="not_applicable"):
+            validate_soc_metadata(
+                _entry(record_role="model_input"),
+                "full_train",
+                1.0,
+                "not_applicable",
+            )
+
+    def test_soc_anchor_allows_none_soc_init(self):
+        validate_soc_metadata(
+            _entry(record_role="soc_anchor", file_type="charge"),
+            "full_train",
+            None,
+            "not_applicable",
+        )
+
+    def test_excluded_allows_empty_anchor(self):
+        validate_soc_metadata(
+            _entry(record_role="excluded", exclude=1, full_train=0),
+            "exclude",
+            None,
+            "",
+        )
 
 
 class TestDetectAdapterQC:
@@ -84,7 +159,7 @@ class TestMeasurementsToDataframe:
 
 
 class TestBuildAdapterSummary:
-    def _record(self, status: str = "PASS") -> SequenceRecord:
+    def _record(self, status: str = "PASS", split: str = "full_train") -> SequenceRecord:
         qc = QCResult()
         if status == "WARN":
             qc.add_warning("warn")
@@ -101,7 +176,8 @@ class TestBuildAdapterSummary:
                 "profile": "Mixed1",
                 "paper_profile": "Mix1",
                 "file_type": "drive_cycle",
-                "split": "full_train",
+                "record_role": "model_input",
+                "split": split,
                 "temperature_nominal_c": 25.0,
                 "soc_init": 1.0,
                 "soc_anchor_source": "preceding_full_charge",
@@ -123,3 +199,31 @@ class TestBuildAdapterSummary:
         assert summary.loaded_records == 1
         assert summary.skipped_manifest_failures == 1
         assert summary.fail_count == 0
+
+    def test_consistent_split_succeeds_full_train(self):
+        records = [self._record(split="full_train")]
+        summary = build_adapter_summary(records, split="full_train", stats=None)
+        assert summary.split == "full_train"
+
+    def test_consistent_split_succeeds_test(self):
+        records = [self._record(split="test")]
+        summary = build_adapter_summary(records, split="test", stats=None)
+        assert summary.split == "test"
+
+    def test_mismatched_split_fails(self):
+        records = [self._record(split="test")]
+        with pytest.raises(AdapterSchemaError, match="full_train"):
+            build_adapter_summary(records, split="full_train", stats=None)
+
+    def test_mixed_splits_fails(self):
+        records = [
+            self._record(split="full_train"),
+            self._record(split="test"),
+        ]
+        with pytest.raises(AdapterSchemaError, match="split"):
+            build_adapter_summary(records, split="full_train", stats=None)
+
+    def test_empty_records_succeeds(self):
+        summary = build_adapter_summary([], split="full_train", stats=None)
+        assert summary.loaded_records == 0
+        assert summary.split == "full_train"

@@ -98,6 +98,7 @@ def _manifest_row(mat_path: Path, tmp_path: Path, *,
                   profile: str = "Cycle_1",
                   paper_profile: str = "Mix1",
                   file_type: str = "drive_cycle",
+                  record_role: str | None = None,
                   **overrides) -> dict:
     """Build a minimal manifest row pointing at *mat_path* (absolute → relative)."""
     rel = str(mat_path.relative_to(tmp_path.parent))
@@ -123,6 +124,18 @@ def _manifest_row(mat_path: Path, tmp_path: Path, *,
         "notes": "",
     }
     row.update(overrides)
+    if record_role is not None:
+        row["record_role"] = record_role
+    elif "record_role" not in overrides:
+        ex = int(row["exclude"])
+        ft = row["file_type"]
+        selected = int(row["full_train"]) or int(row["partial_train"]) or int(row["test"])
+        if ex:
+            row["record_role"] = "excluded"
+        elif ft == "charge" and selected:
+            row["record_role"] = "soc_anchor"
+        else:
+            row["record_role"] = "model_input"
     return row
 
 
@@ -599,11 +612,11 @@ class TestExcludeNotSelected:
         mat_exc = _write_mat(tmp_path, "excl.mat")
         rows = [
             _manifest_row(mat_sel, tmp_path, full_train=1),
-            {**_manifest_row(mat_exc, tmp_path),
-             "filename": mat_exc.name,
-             "relative_path": str(mat_exc.relative_to(tmp_path.parent)),
-             "full_train": "0", "partial_train": "0", "test": "0", "exclude": "1",
-             "profile": "HWFET"},
+            _manifest_row(
+                mat_exc, tmp_path,
+                full_train=0, partial_train=0, test=0, exclude=1,
+                profile="HWFET", paper_profile="",
+            ),
         ]
         adapter = _make_adapter(tmp_path, rows)
         records = adapter.load_split("full_train")
@@ -816,6 +829,33 @@ class TestRequestedSplitSemantics:
         rec = adapter.load_split("full_train")[0]
         assert rec.metadata["paper_profile"] == "CC"
         assert rec.metadata["profile"] == "Charge"
+        assert rec.metadata["record_role"] == "soc_anchor"
+
+
+class TestRecordRoleMetadata:
+    def test_drive_cycle_record_role_model_input(self, tmp_path):
+        mat = _write_mat(tmp_path, "mix1.mat")
+        rec = _make_adapter(tmp_path, [_manifest_row(mat, tmp_path)]).load_split("full_train")[0]
+        assert rec.metadata["record_role"] == "model_input"
+
+    def test_charge_record_role_soc_anchor(self, tmp_path):
+        mat = _write_mat(tmp_path, "charge2.mat")
+        row = _manifest_row(
+            mat, tmp_path,
+            profile="Charge", paper_profile="CC", file_type="charge",
+        )
+        rec = _make_adapter(tmp_path, [row]).load_split("full_train")[0]
+        assert rec.metadata["record_role"] == "soc_anchor"
+
+    def test_excluded_record_role(self, tmp_path):
+        mat = _write_mat(tmp_path, "excl2.mat")
+        row = _manifest_row(
+            mat, tmp_path,
+            full_train=0, partial_train=0, test=0, exclude=1,
+            profile="HWFET", paper_profile="",
+        )
+        rec = _make_adapter(tmp_path, [row]).load_split("exclude")[0]
+        assert rec.metadata["record_role"] == "excluded"
 
 
 # ===========================================================================
@@ -919,3 +959,23 @@ class TestIntegrationPanasonic:
         cycle1 = next(r for r in records if r.metadata["profile"] == "Cycle_1")
         assert cycle1.metadata["paper_profile"] == "Mix1"
         assert cycle1.metadata["paper_profile"] != cycle1.metadata["profile"]
+
+    def test_record_roles_full_train(self, adapter):
+        records = adapter.load_split("full_train")
+        for rec in records:
+            if rec.metadata["file_type"] == "drive_cycle":
+                assert rec.metadata["record_role"] == "model_input"
+            elif rec.metadata["file_type"] == "charge":
+                assert rec.metadata["record_role"] == "soc_anchor"
+
+    def test_excluded_records_have_excluded_role(self, adapter):
+        for rec in adapter.load_split("exclude"):
+            assert rec.metadata["record_role"] == "excluded"
+
+    def test_model_input_drive_cycles_have_soc_metadata(self, adapter):
+        records = adapter.load_split("full_train") + adapter.load_split("test")
+        for rec in records:
+            if rec.metadata["record_role"] == "model_input":
+                assert rec.metadata["soc_init"] is not None
+                assert rec.metadata["soc_anchor_source"]
+                assert rec.metadata["soc_anchor_source"] != "not_applicable"

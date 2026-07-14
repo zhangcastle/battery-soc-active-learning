@@ -7,8 +7,10 @@ import pytest
 from battery_benchmark.data.schema import (
     ALLOWED_ADAPTER_SPLITS,
     ALLOWED_FILE_TYPES,
+    ALLOWED_RECORD_ROLES,
     AdapterSplit,
     FileType,
+    RecordRole,
     REQUIRED_DATA_COLUMNS,
     REQUIRED_METADATA_FIELDS,
     get_schema_info,
@@ -46,7 +48,7 @@ class TestRequiredMetadataFields:
         expected = {
             "dataset", "battery", "source_file", "source_sha256",
             "sequence_id", "profile", "paper_profile", "file_type",
-            "split", "temperature_nominal_c", "soc_init",
+            "record_role", "split", "temperature_nominal_c", "soc_init",
             "soc_anchor_source", "capacity_hint_ah",
         }
         assert expected.issubset(REQUIRED_METADATA_FIELDS)
@@ -183,4 +185,23 @@ def test_get_schema_info_includes_adapter_fields():
     assert "required_data_columns" in info
     assert "full_train" in info["adapter_splits"]
     assert "drive_cycle" in info["file_types"]
+    assert "model_input" in info["record_roles"]
     assert "voltage_v" in info["required_data_columns"]
+
+
+class TestRecordRoleEnum:
+    def test_model_input_value(self):
+        assert RecordRole.MODEL_INPUT.value == "model_input"
+
+    def test_soc_anchor_value(self):
+        assert RecordRole.SOC_ANCHOR.value == "soc_anchor"
+
+    def test_excluded_value(self):
+        assert RecordRole.EXCLUDED.value == "excluded"
+
+    def test_all_values_in_allowed_set(self):
+        for member in RecordRole:
+            assert member.value in ALLOWED_RECORD_ROLES
+
+    def test_allowed_record_roles_is_frozenset(self):
+        assert isinstance(ALLOWED_RECORD_ROLES, frozenset)

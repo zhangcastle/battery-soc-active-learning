@@ -47,6 +47,7 @@ def _make_metadata(**overrides: Any) -> dict[str, Any]:
         "profile": "UDDS",
         "paper_profile": "UDDS",
         "file_type": "drive_cycle",
+        "record_role": "model_input",
         "split": "test",
         "temperature_nominal_c": 25.0,
         "soc_init": 1.0,

@@ -176,6 +176,7 @@ REQUIRED_METADATA_FIELDS: frozenset[str] = frozenset({
     "profile",              # str — public dataset profile name, e.g. "Mixed1"
     "paper_profile",        # str — Vidal paper profile name, e.g. "Mix1"; "" for excluded files
     "file_type",            # str — one of ALLOWED_FILE_TYPES
+    "record_role",          # str — one of ALLOWED_RECORD_ROLES
     "split",                # str — one of ALLOWED_ADAPTER_SPLITS
     "temperature_nominal_c", # float — nominal chamber temperature
     "soc_init",             # float | None — SOC at file start (None = unknown)
@@ -210,9 +211,23 @@ class FileType(str, Enum):
     UNKNOWN = "unknown"
 
 
+class RecordRole(str, Enum):
+    """Role of a manifest row in the adapter / training pipeline.
+
+    Only records with ``model_input`` may enter the SOC model sequence builder.
+    ``soc_anchor`` records provide full-charge evidence but are not drive-cycle
+    model inputs.  ``excluded`` records are kept for audit only.
+    """
+
+    MODEL_INPUT = "model_input"
+    SOC_ANCHOR = "soc_anchor"
+    EXCLUDED = "excluded"
+
+
 # Convenience sets for validation
 ALLOWED_ADAPTER_SPLITS: frozenset[str] = frozenset(s.value for s in AdapterSplit)
 ALLOWED_FILE_TYPES: frozenset[str] = frozenset(t.value for t in FileType)
+ALLOWED_RECORD_ROLES: frozenset[str] = frozenset(r.value for r in RecordRole)
 
 
 def get_schema_info() -> dict[str, Any]:
@@ -224,5 +239,6 @@ def get_schema_info() -> dict[str, Any]:
         "splits": [s.value for s in Split],
         "adapter_splits": [s.value for s in AdapterSplit],
         "file_types": [t.value for t in FileType],
+        "record_roles": [r.value for r in RecordRole],
         "required_data_columns": REQUIRED_DATA_COLUMNS,
     }

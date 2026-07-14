@@ -24,7 +24,7 @@ import math
 
 import pandas as pd
 
-from battery_benchmark.data.schema import ALLOWED_FILE_TYPES
+from battery_benchmark.data.schema import ALLOWED_FILE_TYPES, ALLOWED_RECORD_ROLES
 
 
 # ---------------------------------------------------------------------------
@@ -95,6 +95,7 @@ REQUIRED_MANIFEST_COLUMNS: frozenset[str] = frozenset({
     "qc_status",
     "profile",
     "temperature_c",
+    "record_role",
 })
 
 #: Split labels understood by :func:`select_manifest_entries`.
@@ -219,6 +220,85 @@ def _parse_file_type(value: Any, row_idx: int) -> str:
     return text
 
 
+def _parse_record_role(value: Any, row_idx: int) -> str:
+    """Validate ``record_role`` against :data:`ALLOWED_RECORD_ROLES`."""
+    text = _safe_str(value).lower()
+    if not text:
+        raise InvalidManifestRowError(
+            row_idx,
+            f"Invalid record_role: column='record_role', raw_value={value!r} (empty). "
+            f"Must be one of: {sorted(ALLOWED_RECORD_ROLES)}.",
+        )
+    if text not in ALLOWED_RECORD_ROLES:
+        raise InvalidManifestRowError(
+            row_idx,
+            f"Invalid record_role: column='record_role', raw_value={value!r}. "
+            f"Must be one of: {sorted(ALLOWED_RECORD_ROLES)}.",
+        )
+    return text
+
+
+def _validate_record_role_consistency(
+    row_idx: int,
+    record_role: str,
+    file_type: str,
+    full_train: int,
+    partial_train: int,
+    test_: int,
+    exclude: int,
+) -> None:
+    """Cross-check ``record_role`` against split flags and ``file_type``."""
+    is_selected = bool(full_train or partial_train or test_)
+
+    if record_role == "model_input":
+        if file_type != "drive_cycle":
+            raise InvalidManifestRowError(
+                row_idx,
+                f"record_role='model_input' requires file_type='drive_cycle', "
+                f"got file_type={file_type!r}.",
+            )
+        if not is_selected:
+            raise InvalidManifestRowError(
+                row_idx,
+                "record_role='model_input' requires membership in "
+                "full_train, partial_train, or test.",
+            )
+        if exclude:
+            raise InvalidManifestRowError(
+                row_idx,
+                "record_role='model_input' cannot coexist with exclude=1.",
+            )
+    elif record_role == "soc_anchor":
+        if file_type != "charge":
+            raise InvalidManifestRowError(
+                row_idx,
+                f"record_role='soc_anchor' requires file_type='charge', "
+                f"got file_type={file_type!r}.",
+            )
+        if not is_selected:
+            raise InvalidManifestRowError(
+                row_idx,
+                "record_role='soc_anchor' requires membership in "
+                "full_train, partial_train, or test.",
+            )
+        if exclude:
+            raise InvalidManifestRowError(
+                row_idx,
+                "record_role='soc_anchor' cannot coexist with exclude=1.",
+            )
+    elif record_role == "excluded":
+        if not exclude:
+            raise InvalidManifestRowError(
+                row_idx,
+                "record_role='excluded' requires exclude=1.",
+            )
+        if is_selected:
+            raise InvalidManifestRowError(
+                row_idx,
+                "record_role='excluded' cannot belong to a selected split.",
+            )
+
+
 def entry_manifest_splits(entry: ManifestEntry) -> list[str]:
     """Return manifest membership labels for *entry* in stable order."""
     splits: list[str] = []
@@ -263,6 +343,7 @@ class ManifestEntry:
     test: int
     exclude: int
     qc_status: str
+    record_role: str
 
     # ---- optional — present in some manifests ----
     sha256: str = ""
@@ -350,18 +431,25 @@ def _row_to_entry(row: pd.Series, row_idx: int) -> ManifestEntry:
             "partial_train=1 but full_train=0 — partial_train must be a subset of full_train."
         )
 
+    file_type = _parse_file_type(row.get("file_type"), row_idx)
+    record_role = _parse_record_role(row.get("record_role"), row_idx)
+    _validate_record_role_consistency(
+        row_idx, record_role, file_type, full_train, partial_train, test_, exclude
+    )
+
     return ManifestEntry(
         battery=s(row.get("battery", "")),
         temperature_c=_parse_temperature_c(row.get("temperature_c"), row_idx),
         filename=filename,
         relative_path=relative_path,
         profile=s(row.get("profile", "")),
-        file_type=_parse_file_type(row.get("file_type"), row_idx),
+        file_type=file_type,
         full_train=full_train,
         partial_train=partial_train,
         test=test_,
         exclude=exclude,
         qc_status=_parse_qc_status(row.get("qc_status"), row_idx),
+        record_role=record_role,
         sha256=s(row.get("sha256", "")),
         paper_battery_name=s(row.get("paper_battery_name", "")),
         dataset_identity_status=s(row.get("dataset_identity_status", "")),
