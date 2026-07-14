@@ -205,6 +205,7 @@ class FileType(str, Enum):
     DRIVE_CYCLE = "drive_cycle"
     CHARGE = "charge"
     CHARACTERIZATION = "characterization"
+    PAUSE = "pause"
     OTHER = "other"
     UNKNOWN = "unknown"
 

@@ -41,11 +41,12 @@ battery-soc-transfer-benchmark/
 | `registry.py` | 通过字符串名称查找数据集类 | ✅ |
 | `synthetic.py` | 合成数据生成器（无需真实文件，用于 smoke test） | ✅ |
 | `adapter_qc.py` | `QCResult` 容器 + adapter 自定义异常 | ✅ |
+| `adapter_common.py` | manifest+mat 适配器公共逻辑（字段映射、QC、ManifestMatAdapter 基类） | ✅ |
 | `sequence_record.py` | `SequenceRecord` dataclass — adapter 统一输出格式 | ✅ |
 | `mat_loader.py` | 通用只读 MATLAB `.mat` 加载器（返回 `MatLoadResult`） | ✅ |
 | `manifest_loader.py` | 通用 manifest CSV 加载器（返回 `list[ManifestEntry]`） | ✅ |
-| `panasonic.py` | Panasonic NCR18650PF 适配器 | 🔶 第一版（读取 + 映射 + QC；未清洗/未计算 SOC） |
-| `lg_hg2.py` | LG HG2 适配器 | ⏳ 待实现（manifest 已完成） |
+| `panasonic.py` | Panasonic NCR18650PF 适配器（`PanasonicAdapter`） | 🔶 第一版（读取 + 映射 + QC） |
+| `lg_hg2.py` | LG HG2 适配器（`LGHG2Adapter`） | 🔶 第一版（读取 + 映射 + QC） |
 | `samsung_30t.py` | Samsung INR21700-30T 适配器 | ⏳ 待实现（manifest 已完成） |
 | `samsung_48g.py` | Samsung INR21700-48G 适配器 | ❌ 数据集未获取 |
 | `cmu_evtol.py` | CMU eVTOL 适配器 | ⏳ 待实现 |
@@ -54,16 +55,15 @@ battery-soc-transfer-benchmark/
 | `datamodule.py` | 组合 source + target DataLoader | ✅ |
 | `collate.py` | 变长序列的 batch collate 函数 | ✅ |
 
-**Panasonic Adapter 当前实现范围（`PanasonicAdapter` 类）：**
-- ✅ 读取 `data/manifests/panasonic_vidal2019_25c_manifest.csv`
+**Panasonic / LG Adapter 当前实现范围（`PanasonicAdapter` / `LGHG2Adapter`）：**
+- ✅ 读取各自 Vidal 2019 25 °C manifest CSV
 - ✅ 按 split 选择文件（full_train / partial_train / test / exclude）
 - ✅ 调用 `load_mat_file()` 读取原始 `.mat` 文件（只读）
-- ✅ 字段映射：Time→time_s, Voltage→voltage_v, Current→current_a, Battery_Temp_degC→temperature_c, Ah→cycler_ah, TimeStamp→timestamp
-- ✅ Adapter-level QC：NaN/Inf 检测、时间步长检测、Ah reset 检测、SHA-256 核验
-- ✅ 填充 `SequenceRecord.metadata`（dataset / battery / source_file / split / sequence_id 等）
-- ❌ SOC 计算（未实现）
-- ❌ 数据清洗（未实现）
-- ❌ 重采样 / 归一化 / 切窗口（未实现）
+- ✅ 字段映射：Time→time_s, Voltage→voltage_v, Current→current_a, Battery_Temp_degC→temperature_c, Ah→cycler_ah
+- ✅ Adapter-level QC（共享 `adapter_common.py`）
+- ✅ `metadata["split"]` = requested_split；`metadata["manifest_splits"]` 保存 manifest membership
+- ✅ `paper_profile` 仅来自 manifest，不做 profile fallback
+- ❌ SOC 计算 / 清洗 / 重采样 / 归一化 / 切窗口（均未实现）
 
 ### `preprocessing/` — 预处理流水线
 

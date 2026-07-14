@@ -726,11 +726,35 @@ class TestAdapterSummarize:
         ]
         adapter = _make_adapter(tmp_path, rows)
         records = adapter.load_split("full_train")
-        summary = adapter.summarize(records)
+        summary = adapter.summarize(records, split="full_train")
         assert summary.expected_manifest_entries == 2
         assert summary.loaded_records == 1
         assert summary.skipped_manifest_failures == 1
         assert summary.fail_count == 0  # skipped entries are not QC FAIL records
+
+
+class TestMultiSplitSummarizeStats:
+    """Regression: summarize must use stats for the requested split, not the last load."""
+
+    def test_summarize_full_train_after_loading_test(self, tmp_path):
+        mat_tr = _write_mat(tmp_path, "train.mat")
+        mat_ts = _write_mat(tmp_path, "test_file.mat")
+        rows = [
+            _manifest_row(mat_tr, tmp_path, full_train=1, partial_train=0, test=0),
+            {**_manifest_row(mat_ts, tmp_path),
+             "filename": mat_ts.name,
+             "relative_path": str(mat_ts.relative_to(tmp_path.parent)),
+             "full_train": "0", "partial_train": "0", "test": "1",
+             "profile": "UDDS", "paper_profile": "UDDS"},
+        ]
+        adapter = _make_adapter(tmp_path, rows)
+        train_records = adapter.load_split("full_train")
+        adapter.load_split("test")
+        summary = adapter.summarize(train_records, split="full_train")
+        assert summary.expected_manifest_entries == 1
+        assert summary.loaded_records == 1
+        assert summary.skipped_manifest_failures == 0
+        assert summary.split == "full_train"
 
 
 class TestRequestedSplitSemantics:
