@@ -93,3 +93,4 @@ external_repos/archived/*
 external_repos/repo_registry.local.yaml
 # Prevent nested Git repositories from leaking into the index
 external_repos/**/.git
+notebooks/inspect_three_adapters.ipynb
