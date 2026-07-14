@@ -115,7 +115,10 @@ ALLOWED_QC_STATUSES: frozenset[str] = frozenset({"PASS", "WARN", "FAIL"})
 # ---------------------------------------------------------------------------
 
 def _parse_bool_flag(value: Any, column: str, row_idx: int) -> int:
-    """Normalise 0/1/True/False/"0"/"1" to integer 0 or 1.
+    """Normalise boolean split flags to integer 0 or 1.
+
+    Accepts bool, int 0/1, float 0.0/1.0, and string ``0``/``1``/``true``/``false``.
+    Rejects truncated floats (e.g. 0.5), out-of-range integers, NaN, and Inf.
 
     Raises
     ------
@@ -124,10 +127,20 @@ def _parse_bool_flag(value: Any, column: str, row_idx: int) -> int:
     """
     if isinstance(value, bool):
         return int(value)
-    if isinstance(value, (int, float)) and not isinstance(value, bool):
-        v = int(value)
-        if v in (0, 1):
-            return v
+    if isinstance(value, int) and not isinstance(value, bool):
+        if value in (0, 1):
+            return value
+    elif isinstance(value, float):
+        if math.isnan(value) or math.isinf(value):
+            raise InvalidManifestRowError(
+                row_idx,
+                f"Cannot parse boolean flag for column {column!r}: {value!r}. "
+                "Expected one of: 0, 1, '0', '1', True, False.",
+            )
+        if value == 0.0:
+            return 0
+        if value == 1.0:
+            return 1
     if isinstance(value, str):
         s = value.strip()
         if s in ("0", "False", "false"):
@@ -137,7 +150,7 @@ def _parse_bool_flag(value: Any, column: str, row_idx: int) -> int:
     raise InvalidManifestRowError(
         row_idx,
         f"Cannot parse boolean flag for column {column!r}: {value!r}. "
-        "Expected one of: 0, 1, '0', '1', True, False."
+        "Expected one of: 0, 1, '0', '1', True, False.",
     )
 
 

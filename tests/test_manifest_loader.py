@@ -612,3 +612,23 @@ class TestRecordRoleValidation:
         )
         with pytest.raises(InvalidManifestRowError, match="excluded"):
             load_manifest(_write_csv(tmp_path, [row]))
+
+
+# ---------------------------------------------------------------------------
+# Boolean flag parsing
+# ---------------------------------------------------------------------------
+
+class TestBoolFlagParsing:
+    @pytest.mark.parametrize("value,expected", [
+        (0, 0), (1, 1), (0.0, 0), (1.0, 1),
+        ("0", 0), ("1", 1), (True, 1), (False, 0),
+    ])
+    def test_valid_values(self, value, expected):
+        from battery_benchmark.data.manifest_loader import _parse_bool_flag
+        assert _parse_bool_flag(value, "full_train", 0) == expected
+
+    @pytest.mark.parametrize("value", [0.5, -1, 2, float("nan"), float("inf")])
+    def test_invalid_values_fail(self, value):
+        from battery_benchmark.data.manifest_loader import _parse_bool_flag
+        with pytest.raises(InvalidManifestRowError, match="full_train"):
+            _parse_bool_flag(value, "full_train", 0)

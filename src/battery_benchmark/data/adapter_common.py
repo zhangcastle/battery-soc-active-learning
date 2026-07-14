@@ -165,6 +165,13 @@ def validate_soc_metadata(
     missing: list[str] = []
     if soc_init is None:
         missing.append("soc_init")
+    elif not isinstance(soc_init, (int, float)):
+        missing.append("soc_init (non-numeric)")
+    elif not math.isfinite(float(soc_init)):
+        missing.append("soc_init (non-finite)")
+    elif not 0.0 <= float(soc_init) <= 1.0:
+        missing.append("soc_init (out of range [0.0, 1.0])")
+
     anchor = soc_anchor_source.strip()
     if not anchor:
         missing.append("soc_anchor_source")

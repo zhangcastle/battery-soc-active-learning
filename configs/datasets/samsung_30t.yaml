@@ -6,6 +6,5 @@ label_source: cycler_reference
 label_available: true
 temperatures: [25]
 raw_subdir: Samsung_30T
-# Adapter status: placeholder — raises NotImplementedError until implemented.
-# Uncertainty: dataset availability and structure are unconfirmed.
-# See docs/known_uncertainties.md.
+# Adapter status: Samsung30TAdapter implemented (SequenceRecord API).
+# SOC metadata from manifest soc_init / soc_anchor_source columns.

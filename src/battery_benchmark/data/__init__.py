@@ -57,6 +57,7 @@ from battery_benchmark.data.registry import DatasetRegistry, register_dataset, g
 from battery_benchmark.data.synthetic import SyntheticDataset
 from battery_benchmark.data.cycle_dataset import CycleDataset
 from battery_benchmark.data.splits import split_cycles
+from battery_benchmark.data.samsung_30t import Samsung30TAdapter
 
 __all__ = [
     # Benchmark-level schema
@@ -118,4 +119,5 @@ __all__ = [
     "SyntheticDataset",
     "CycleDataset",
     "split_cycles",
+    "Samsung30TAdapter",
 ]

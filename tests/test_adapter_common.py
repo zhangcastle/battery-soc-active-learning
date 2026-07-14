@@ -115,6 +115,25 @@ class TestValidateSocMetadata:
                 "not_applicable",
             )
 
+    @pytest.mark.parametrize("soc_init", [float("nan"), float("inf"), -0.1, 1.1])
+    def test_model_input_invalid_soc_init_range_fails(self, soc_init):
+        with pytest.raises(AdapterSchemaError, match="soc_init"):
+            validate_soc_metadata(
+                _entry(record_role="model_input"),
+                "full_train",
+                soc_init,
+                "preceding_full_charge",
+            )
+
+    @pytest.mark.parametrize("soc_init", [0.0, 0.5, 1.0])
+    def test_model_input_valid_soc_init_succeeds(self, soc_init):
+        validate_soc_metadata(
+            _entry(record_role="model_input"),
+            "full_train",
+            soc_init,
+            "preceding_full_charge",
+        )
+
     def test_soc_anchor_allows_none_soc_init(self):
         validate_soc_metadata(
             _entry(record_role="soc_anchor", file_type="charge"),

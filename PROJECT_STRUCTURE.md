@@ -47,7 +47,7 @@ battery-soc-transfer-benchmark/
 | `manifest_loader.py` | 通用 manifest CSV 加载器（返回 `list[ManifestEntry]`） | ✅ |
 | `panasonic.py` | Panasonic NCR18650PF 适配器（`PanasonicAdapter`） | 🔶 第一版（读取 + 映射 + QC） |
 | `lg_hg2.py` | LG HG2 适配器（`LGHG2Adapter`） | 🔶 第一版（读取 + 映射 + QC） |
-| `samsung_30t.py` | Samsung INR21700-30T 适配器 | ⏳ 待实现（manifest 已完成） |
+| `samsung_30t.py` | Samsung INR21700-30T 适配器（`Samsung30TAdapter`） | 🔶 第一版（读取 + 映射 + QC） |
 | `samsung_48g.py` | Samsung INR21700-48G 适配器 | ❌ 数据集未获取 |
 | `cmu_evtol.py` | CMU eVTOL 适配器 | ⏳ 待实现 |
 | `splits.py` | 数据集划分逻辑（按 cycle / cell / profile / temperature） | ✅ |
@@ -55,7 +55,7 @@ battery-soc-transfer-benchmark/
 | `datamodule.py` | 组合 source + target DataLoader | ✅ |
 | `collate.py` | 变长序列的 batch collate 函数 | ✅ |
 
-**Panasonic / LG Adapter 当前实现范围（`PanasonicAdapter` / `LGHG2Adapter`）：**
+**Panasonic / LG / Samsung Adapter 当前实现范围（`PanasonicAdapter` / `LGHG2Adapter` / `Samsung30TAdapter`）：**
 - ✅ 读取各自 Vidal 2019 25 °C manifest CSV
 - ✅ 按 split 选择文件（full_train / partial_train / test / exclude）
 - ✅ 调用 `load_mat_file()` 读取原始 `.mat` 文件（只读）
@@ -74,6 +74,12 @@ battery-soc-transfer-benchmark/
 :class:`~battery_benchmark.data.sequence_record.SequenceRecord` 可进入后续 SOC
 模型时序输入流程。``soc_anchor`` 记录用于满充证据与 SOC 初始化追踪；
 ``excluded`` 记录不参与模型输入。
+
+**Samsung 特有说明：**
+- SOC metadata 直接来自 manifest 的 ``soc_init`` / ``soc_anchor_source``（与 LG 相同，无 Panasonic 式推导）
+- manifest 含完整 SHA-256；真实 selected 文件 SHA 验证通过
+- ``dataset_identity_status = STRONGLY_SUPPORTED``（非 CONFIRMED）
+- 尚未计算 SOC / 清洗 / 重采样 / 归一化 / 切窗口
 
 ### `preprocessing/` — 预处理流水线
 
@@ -385,7 +391,7 @@ outputs/<experiment_name>/
 | 评估指标（MAE/RMSE/MAX） | ✅ 完整 |
 | **Panasonic 适配器** | ⏳ **下一步** |
 | **LG HG2 适配器** | ⏳ 待实现 |
-| Samsung 30T 适配器 | ⏳ 待实现 |
+| Samsung 30T 适配器 | 🔶 第一版（读取 + SHA + QC） |
 | Samsung 48G 适配器 | ❌ 数据缺失 |
 | MMD / CORAL / DANN | ⏳ 占位符 |
 | TATN 模型 + 迁移方法 | ⏳ 待移植 |
