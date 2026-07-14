@@ -11,11 +11,13 @@ import pytest
 from battery_benchmark.data.manifest_loader import (
     REQUIRED_MANIFEST_COLUMNS,
     SUPPORTED_SPLITS,
+    ALLOWED_QC_STATUSES,
     ManifestEntry,
     ManifestError,
     MissingManifestColumnError,
     InvalidManifestRowError,
     UnsupportedManifestSplitError,
+    entry_manifest_splits,
     load_manifest,
     select_manifest_entries,
 )
@@ -33,6 +35,7 @@ def _base_row(**overrides) -> dict:
         "filename": "file_A.mat",
         "relative_path": "data/raw/Pan/file_A.mat",
         "profile": "Cycle_1",
+        "paper_profile": "Mix1",
         "file_type": "drive_cycle",
         "full_train": "1",
         "partial_train": "1",
@@ -394,3 +397,116 @@ def test_supported_splits_contains_expected():
     assert "test" in SUPPORTED_SPLITS
     assert "exclude" in SUPPORTED_SPLITS
     assert "val" not in SUPPORTED_SPLITS
+
+
+# ---------------------------------------------------------------------------
+# Strict temperature_c validation
+# ---------------------------------------------------------------------------
+
+class TestTemperatureCValidation:
+    def test_string_25_parses(self, tmp_path):
+        p = _write_csv(tmp_path, [_base_row(temperature_c="25")])
+        assert load_manifest(p)[0].temperature_c == 25.0
+
+    def test_string_25_0_parses(self, tmp_path):
+        p = _write_csv(tmp_path, [_base_row(temperature_c="25.0")])
+        assert load_manifest(p)[0].temperature_c == 25.0
+
+    def test_negative_20_allowed(self, tmp_path):
+        p = _write_csv(tmp_path, [_base_row(temperature_c="-20")])
+        assert load_manifest(p)[0].temperature_c == -20.0
+
+    def test_empty_string_fails(self, tmp_path):
+        p = _write_csv(tmp_path, [_base_row(temperature_c="")])
+        with pytest.raises(InvalidManifestRowError, match="temperature_c"):
+            load_manifest(p)
+
+    def test_non_numeric_fails(self, tmp_path):
+        p = _write_csv(tmp_path, [_base_row(temperature_c="twenty-five")])
+        with pytest.raises(InvalidManifestRowError, match="temperature_c"):
+            load_manifest(p)
+
+    def test_nan_string_fails(self, tmp_path):
+        p = _write_csv(tmp_path, [_base_row(temperature_c="nan")])
+        with pytest.raises(InvalidManifestRowError, match="temperature_c"):
+            load_manifest(p)
+
+    def test_inf_string_fails(self, tmp_path):
+        p = _write_csv(tmp_path, [_base_row(temperature_c="inf")])
+        with pytest.raises(InvalidManifestRowError, match="temperature_c"):
+            load_manifest(p)
+
+
+# ---------------------------------------------------------------------------
+# Strict qc_status validation
+# ---------------------------------------------------------------------------
+
+class TestQCStatusValidation:
+    def test_pass_uppercase(self, tmp_path):
+        p = _write_csv(tmp_path, [_base_row(qc_status="PASS")])
+        assert load_manifest(p)[0].qc_status == "PASS"
+
+    def test_pass_lowercase_normalised(self, tmp_path):
+        p = _write_csv(tmp_path, [_base_row(qc_status="pass")])
+        assert load_manifest(p)[0].qc_status == "PASS"
+
+    def test_warn_normalised(self, tmp_path):
+        p = _write_csv(tmp_path, [_base_row(qc_status="warn")])
+        assert load_manifest(p)[0].qc_status == "WARN"
+
+    def test_fail_normalised(self, tmp_path):
+        p = _write_csv(tmp_path, [_base_row(qc_status="fail")])
+        assert load_manifest(p)[0].qc_status == "FAIL"
+
+    @pytest.mark.parametrize("bad", ["PAS", "OK", ""])
+    def test_invalid_qc_status_fails(self, tmp_path, bad):
+        p = _write_csv(tmp_path, [_base_row(qc_status=bad)])
+        with pytest.raises(InvalidManifestRowError, match="qc_status"):
+            load_manifest(p)
+
+
+# ---------------------------------------------------------------------------
+# Strict file_type validation
+# ---------------------------------------------------------------------------
+
+class TestFileTypeValidation:
+    @pytest.mark.parametrize("ft", ["drive_cycle", "charge", "characterization", "other", "unknown"])
+    def test_allowed_file_types(self, tmp_path, ft):
+        p = _write_csv(tmp_path, [_base_row(file_type=ft)])
+        assert load_manifest(p)[0].file_type == ft
+
+    def test_empty_file_type_fails(self, tmp_path):
+        p = _write_csv(tmp_path, [_base_row(file_type="")])
+        with pytest.raises(InvalidManifestRowError, match="file_type"):
+            load_manifest(p)
+
+    def test_invalid_file_type_fails(self, tmp_path):
+        p = _write_csv(tmp_path, [_base_row(file_type="rest_cycle")])
+        with pytest.raises(InvalidManifestRowError, match="file_type"):
+            load_manifest(p)
+
+
+# ---------------------------------------------------------------------------
+# entry_manifest_splits helper
+# ---------------------------------------------------------------------------
+
+class TestEntryManifestSplits:
+    def test_full_and_partial_membership(self, tmp_path):
+        entry = load_manifest(_write_csv(tmp_path, [_base_row()]))[0]
+        assert entry_manifest_splits(entry) == ["full_train", "partial_train"]
+
+    def test_test_only(self, tmp_path):
+        row = _base_row(
+            full_train="0", partial_train="0", test="1", exclude="0",
+            paper_profile="US06", profile="US06",
+        )
+        entry = load_manifest(_write_csv(tmp_path, [row]))[0]
+        assert entry_manifest_splits(entry) == ["test"]
+
+    def test_exclude_only(self, tmp_path):
+        row = _base_row(
+            full_train="0", partial_train="0", test="0", exclude="1",
+            file_type="characterization", paper_profile="",
+        )
+        entry = load_manifest(_write_csv(tmp_path, [row]))[0]
+        assert entry_manifest_splits(entry) == ["exclude"]

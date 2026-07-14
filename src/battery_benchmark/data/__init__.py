@@ -25,6 +25,8 @@ from battery_benchmark.data.adapter_qc import (
 )
 from battery_benchmark.data.sequence_record import SequenceRecord
 from battery_benchmark.data.manifest_loader import (
+    ALLOWED_QC_STATUSES,
+    entry_manifest_splits,
     ManifestEntry,
     ManifestError,
     MissingManifestColumnError,
@@ -85,6 +87,8 @@ __all__ = [
     "select_manifest_entries",
     "REQUIRED_MANIFEST_COLUMNS",
     "SUPPORTED_SPLITS",
+    "ALLOWED_QC_STATUSES",
+    "entry_manifest_splits",
     # Mat loader
     "MatLoadResult",
     "MatFileError",

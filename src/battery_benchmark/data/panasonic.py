@@ -36,11 +36,12 @@ from typing import Any
 import numpy as np
 import pandas as pd
 
-from battery_benchmark.data.adapter_qc import QCResult
+from battery_benchmark.data.adapter_qc import AdapterSchemaError, QCResult
 from battery_benchmark.data.base_dataset import BaseBatteryDataset
 from battery_benchmark.data.manifest_loader import (
     SHA256MismatchError,
     ManifestEntry,
+    entry_manifest_splits,
     load_manifest,
     select_manifest_entries,
 )
@@ -307,7 +308,9 @@ def _derive_soc_init(entry: ManifestEntry) -> float | None:
 class AdapterSummary:
     """Lightweight statistics over a ``load_split`` result."""
     split: str
+    expected_manifest_entries: int
     loaded_records: int
+    skipped_manifest_failures: int
     pass_count: int
     warn_count: int
     fail_count: int
@@ -315,6 +318,15 @@ class AdapterSummary:
     duplicate_timestamp_count: int
     ah_reset_count: int
     source_files: list[str]
+
+
+@dataclass
+class _AdapterLoadStats:
+    """Internal bookkeeping from the most recent :meth:`load_split` call."""
+    split: str
+    expected_manifest_entries: int
+    loaded_records: int
+    skipped_manifest_failures: int
 
 
 # ---------------------------------------------------------------------------
@@ -366,6 +378,7 @@ class PanasonicAdapter:
         self._manifest_path = Path(manifest_path)
         self._capacity_hint_ah = capacity_hint_ah
         self._entries: list[ManifestEntry] | None = None  # loaded lazily
+        self._last_load_stats: _AdapterLoadStats | None = None
 
     # ------------------------------------------------------------------
     # Lazy manifest access
@@ -420,7 +433,22 @@ class PanasonicAdapter:
     # Core loading method
     # ------------------------------------------------------------------
 
-    def load_entry(self, entry: ManifestEntry) -> SequenceRecord:
+    @staticmethod
+    def _require_paper_profile(entry: ManifestEntry) -> None:
+        """Ensure selected manifest rows carry an explicit paper_profile."""
+        if entry.is_selected and not entry.paper_profile.strip():
+            raise AdapterSchemaError(
+                f"Selected manifest entry {entry.filename!r} has empty paper_profile. "
+                "Panasonic paper_profile must be defined in the manifest; "
+                "the adapter does not infer it from profile."
+            )
+
+    def load_entry(
+        self,
+        entry: ManifestEntry,
+        *,
+        requested_split: str,
+    ) -> SequenceRecord:
         """Load a single manifest entry and return a :class:`SequenceRecord`.
 
         Parameters
@@ -428,6 +456,9 @@ class PanasonicAdapter:
         entry:
             A :class:`~battery_benchmark.data.manifest_loader.ManifestEntry`
             from this dataset's manifest.
+        requested_split:
+            Split label from the caller's :meth:`load_split` request.  Stored
+            verbatim in ``metadata["split"]`` regardless of manifest membership.
 
         Returns
         -------
@@ -441,7 +472,10 @@ class PanasonicAdapter:
         SHA256MismatchError
             If the manifest records a SHA-256 that does not match the actual
             file content (indicates unexpected file modification).
+        AdapterSchemaError
+            If a selected entry is missing ``paper_profile``.
         """
+        self._require_paper_profile(entry)
         abs_path = self._resolve_path(entry)
         qc = QCResult()
 
@@ -543,18 +577,6 @@ class PanasonicAdapter:
         soc_init = _derive_soc_init(entry)
         sequence_id = self._make_sequence_id(entry)
 
-        # Determine split label for metadata (most specific wins)
-        if entry.full_train and entry.partial_train:
-            split_label = "partial_train"   # partial_train ⊆ full_train
-        elif entry.full_train:
-            split_label = "full_train"
-        elif entry.test:
-            split_label = "test"
-        elif entry.exclude:
-            split_label = "exclude"
-        else:
-            split_label = "unspecified"
-
         metadata: dict[str, Any] = {
             # ---- Required SequenceRecord fields ----
             "dataset": self.DATASET_NAME,
@@ -563,14 +585,15 @@ class PanasonicAdapter:
             "source_sha256": actual_sha256,
             "sequence_id": sequence_id,
             "profile": entry.profile,
-            "paper_profile": entry.paper_profile or entry.profile,
-            "file_type": entry.file_type if entry.file_type else "unknown",
-            "split": split_label,
+            "paper_profile": entry.paper_profile,
+            "file_type": entry.file_type,
+            "split": requested_split,
             "temperature_nominal_c": entry.temperature_c,
             "soc_init": soc_init,
             "soc_anchor_source": soc_anchor_src,
             "capacity_hint_ah": self._capacity_hint_ah,
             # ---- Provenance extras ----
+            "manifest_splits": entry_manifest_splits(entry),
             "paper_battery_name": entry.paper_battery_name or "Panasonic_NCR18650PF",
             "dataset_identity_status": entry.dataset_identity_status or "CONFIRMED",
             "pairing_status": entry.pairing_status,
@@ -613,6 +636,7 @@ class PanasonicAdapter:
         """
         selected = select_manifest_entries(self.entries, split)
         records: list[SequenceRecord] = []
+        skipped = 0
 
         for entry in selected:
             if entry.qc_status == "FAIL":
@@ -621,10 +645,17 @@ class PanasonicAdapter:
                     entry.filename,
                     entry.qc_notes,
                 )
+                skipped += 1
                 continue
-            rec = self.load_entry(entry)
+            rec = self.load_entry(entry, requested_split=split)
             records.append(rec)
 
+        self._last_load_stats = _AdapterLoadStats(
+            split=split,
+            expected_manifest_entries=len(selected),
+            loaded_records=len(records),
+            skipped_manifest_failures=skipped,
+        )
         return records
 
     # ------------------------------------------------------------------
@@ -643,11 +674,20 @@ class PanasonicAdapter:
         records:
             Result of :meth:`load_split`.
         split:
-            Split label string (optional; for display only).
+            Split label string.  When omitted, uses the most recent
+            :meth:`load_split` split if available.
         """
+        stats = self._last_load_stats
+        requested_split = split or (stats.split if stats else "")
+        expected = stats.expected_manifest_entries if stats else len(records)
+        skipped = stats.skipped_manifest_failures if stats else 0
+        loaded = len(records)
+
         return AdapterSummary(
-            split=split,
-            loaded_records=len(records),
+            split=requested_split,
+            expected_manifest_entries=expected,
+            loaded_records=loaded,
+            skipped_manifest_failures=skipped,
             pass_count=sum(1 for r in records if r.qc.status == "PASS"),
             warn_count=sum(1 for r in records if r.qc.status == "WARN"),
             fail_count=sum(1 for r in records if r.qc.status == "FAIL"),

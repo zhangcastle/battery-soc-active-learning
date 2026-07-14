@@ -20,7 +20,11 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
+import math
+
 import pandas as pd
+
+from battery_benchmark.data.schema import ALLOWED_FILE_TYPES
 
 
 # ---------------------------------------------------------------------------
@@ -101,6 +105,9 @@ SUPPORTED_SPLITS: frozenset[str] = frozenset({
     "exclude",
 })
 
+#: Allowed manifest QC status values (normalised to upper case).
+ALLOWED_QC_STATUSES: frozenset[str] = frozenset({"PASS", "WARN", "FAIL"})
+
 
 # ---------------------------------------------------------------------------
 # Flag parsing helper
@@ -142,12 +149,88 @@ def _safe_str(value: Any) -> str:
     return str(value).strip()
 
 
-def _safe_float(value: Any, default: float = 0.0) -> float:
-    """Return *value* as float, or *default* on failure."""
+def _parse_temperature_c(value: Any, row_idx: int) -> float:
+    """Parse ``temperature_c`` as a finite float.
+
+    Raises
+    ------
+    InvalidManifestRowError
+        When the value is empty, non-numeric, NaN, or Inf.
+    """
+    raw = value
+    if value is None:
+        text = ""
+    elif isinstance(value, float) and value != value:  # NaN
+        raise InvalidManifestRowError(
+            row_idx,
+            f"Invalid temperature_c: column='temperature_c', raw_value={raw!r} (NaN).",
+        )
+    else:
+        text = str(value).strip()
+
+    if not text:
+        raise InvalidManifestRowError(
+            row_idx,
+            f"Invalid temperature_c: column='temperature_c', raw_value={raw!r} (empty).",
+        )
+
     try:
-        return float(value)
+        temp = float(text)
     except (ValueError, TypeError):
-        return default
+        raise InvalidManifestRowError(
+            row_idx,
+            f"Invalid temperature_c: column='temperature_c', raw_value={raw!r} (non-numeric).",
+        ) from None
+
+    if not math.isfinite(temp):
+        raise InvalidManifestRowError(
+            row_idx,
+            f"Invalid temperature_c: column='temperature_c', raw_value={raw!r} (non-finite).",
+        )
+    return temp
+
+
+def _parse_qc_status(value: Any, row_idx: int) -> str:
+    """Normalise and validate ``qc_status`` as PASS / WARN / FAIL."""
+    text = _safe_str(value).upper()
+    if text not in ALLOWED_QC_STATUSES:
+        raise InvalidManifestRowError(
+            row_idx,
+            f"Invalid qc_status: column='qc_status', raw_value={value!r}. "
+            f"Must be one of: {sorted(ALLOWED_QC_STATUSES)}.",
+        )
+    return text
+
+
+def _parse_file_type(value: Any, row_idx: int) -> str:
+    """Validate ``file_type`` against :data:`ALLOWED_FILE_TYPES`."""
+    text = _safe_str(value).lower()
+    if not text:
+        raise InvalidManifestRowError(
+            row_idx,
+            f"Invalid file_type: column='file_type', raw_value={value!r} (empty).",
+        )
+    if text not in ALLOWED_FILE_TYPES:
+        raise InvalidManifestRowError(
+            row_idx,
+            f"Invalid file_type: column='file_type', raw_value={value!r}. "
+            f"Must be one of: {sorted(ALLOWED_FILE_TYPES)}.",
+        )
+    return text
+
+
+def entry_manifest_splits(entry: ManifestEntry) -> list[str]:
+    """Return manifest membership labels for *entry* in stable order."""
+    splits: list[str] = []
+    if entry.full_train == 1:
+        splits.append("full_train")
+    if entry.partial_train == 1:
+        splits.append("partial_train")
+    if entry.test == 1:
+        splits.append("test")
+    if entry.exclude == 1:
+        splits.append("exclude")
+    return splits
 
 
 # ---------------------------------------------------------------------------
@@ -269,16 +352,16 @@ def _row_to_entry(row: pd.Series, row_idx: int) -> ManifestEntry:
 
     return ManifestEntry(
         battery=s(row.get("battery", "")),
-        temperature_c=_safe_float(row.get("temperature_c", 25.0)),
+        temperature_c=_parse_temperature_c(row.get("temperature_c"), row_idx),
         filename=filename,
         relative_path=relative_path,
         profile=s(row.get("profile", "")),
-        file_type=s(row.get("file_type", "")),
+        file_type=_parse_file_type(row.get("file_type"), row_idx),
         full_train=full_train,
         partial_train=partial_train,
         test=test_,
         exclude=exclude,
-        qc_status=s(row.get("qc_status", "PASS")),
+        qc_status=_parse_qc_status(row.get("qc_status"), row_idx),
         sha256=s(row.get("sha256", "")),
         paper_battery_name=s(row.get("paper_battery_name", "")),
         dataset_identity_status=s(row.get("dataset_identity_status", "")),

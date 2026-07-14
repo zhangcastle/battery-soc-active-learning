@@ -18,6 +18,7 @@ import pandas as pd
 import pytest
 import scipy.io
 
+from battery_benchmark.data.adapter_qc import AdapterSchemaError
 from battery_benchmark.data.manifest_loader import SHA256MismatchError
 from battery_benchmark.data.panasonic import PanasonicAdapter
 from battery_benchmark.data.sequence_record import SequenceRecord
@@ -93,17 +94,21 @@ def _manifest_row(mat_path: Path, tmp_path: Path, *,
                   exclude: int = 0,
                   sha256: str | None = None,
                   qc_status: str = "PASS",
-                  qc_notes: str = "") -> dict:
+                  qc_notes: str = "",
+                  profile: str = "Cycle_1",
+                  paper_profile: str = "Mix1",
+                  file_type: str = "drive_cycle",
+                  **overrides) -> dict:
     """Build a minimal manifest row pointing at *mat_path* (absolute → relative)."""
     rel = str(mat_path.relative_to(tmp_path.parent))
-    return {
+    row = {
         "battery": "panasonic_18650pf",
         "temperature_c": "25",
         "filename": mat_path.name,
         "relative_path": rel,
-        "profile": "Cycle_1",
-        "paper_profile": "Mix1",
-        "file_type": "drive_cycle",
+        "profile": profile,
+        "paper_profile": paper_profile,
+        "file_type": file_type,
         "full_train": str(full_train),
         "partial_train": str(partial_train),
         "test": str(test),
@@ -117,6 +122,8 @@ def _manifest_row(mat_path: Path, tmp_path: Path, *,
         "evidence": "test evidence",
         "notes": "",
     }
+    row.update(overrides)
+    return row
 
 
 def _make_adapter(tmp_path: Path, rows: list[dict]) -> PanasonicAdapter:
@@ -233,6 +240,15 @@ class TestMetadataFilled:
 
     def test_split_label(self, tmp_path):
         assert self._get_rec(tmp_path).metadata["split"] == "full_train"
+
+    def test_manifest_splits_dual_membership(self, tmp_path):
+        mat = _write_mat(tmp_path, "cycle.mat")
+        adapter = _make_adapter(
+            tmp_path,
+            [_manifest_row(mat, tmp_path, full_train=1, partial_train=1)],
+        )
+        rec = adapter.load_split("full_train")[0]
+        assert rec.metadata["manifest_splits"] == ["full_train", "partial_train"]
 
     def test_profile_field(self, tmp_path):
         assert self._get_rec(tmp_path).metadata["profile"] == "Cycle_1"
@@ -504,7 +520,7 @@ class TestOneRecordPerFile:
             {**_manifest_row(mat2, tmp_path),
              "filename": mat2.name,
              "relative_path": str(mat2.relative_to(tmp_path.parent)),
-             "profile": "Cycle_2"},
+             "profile": "Cycle_2", "paper_profile": "Mix2"},
         ]
         adapter = _make_adapter(tmp_path, rows)
         records = adapter.load_split("full_train")
@@ -525,7 +541,7 @@ class TestManifestOrderPreserved:
             {**_manifest_row(mat2, tmp_path),
              "filename": mat2.name,
              "relative_path": str(mat2.relative_to(tmp_path.parent)),
-             "profile": "Cycle_2"},
+             "profile": "Cycle_2", "paper_profile": "Mix2"},
         ]
         adapter = _make_adapter(tmp_path, rows)
         records = adapter.load_split("full_train")
@@ -547,7 +563,7 @@ class TestSplitLeakage:
              "filename": mat_ts.name,
              "relative_path": str(mat_ts.relative_to(tmp_path.parent)),
              "full_train": "0", "partial_train": "0", "test": "1",
-             "profile": "UDDS"},
+             "profile": "UDDS", "paper_profile": "UDDS"},
         ]
         adapter = _make_adapter(tmp_path, rows)
         train_records = adapter.load_split("full_train")
@@ -564,7 +580,7 @@ class TestSplitLeakage:
              "filename": mat_ts.name,
              "relative_path": str(mat_ts.relative_to(tmp_path.parent)),
              "full_train": "0", "partial_train": "0", "test": "1",
-             "profile": "UDDS"},
+             "profile": "UDDS", "paper_profile": "UDDS"},
         ]
         adapter = _make_adapter(tmp_path, rows)
         test_records = adapter.load_split("test")
@@ -649,7 +665,7 @@ class TestSequenceIDStability:
             {**_manifest_row(mat2, tmp_path),
              "filename": mat2.name,
              "relative_path": str(mat2.relative_to(tmp_path.parent)),
-             "profile": "Cycle_2"},
+             "profile": "Cycle_2", "paper_profile": "Mix2"},
         ]
         adapter = _make_adapter(tmp_path, rows)
         records = adapter.load_split("full_train")
@@ -692,8 +708,90 @@ class TestAdapterSummarize:
         records = adapter.load_split("full_train")
         summary = adapter.summarize(records, split="full_train")
         assert summary.loaded_records == 1
+        assert summary.expected_manifest_entries == 1
+        assert summary.skipped_manifest_failures == 0
         assert summary.total_rows == 50
         assert summary.split == "full_train"
+
+    def test_summary_accounts_for_skipped_manifest_fail(self, tmp_path):
+        mat_ok = _write_mat(tmp_path, "ok.mat")
+        mat_bad = _write_mat(tmp_path, "bad.mat")
+        rows = [
+            _manifest_row(mat_ok, tmp_path, full_train=1, partial_train=0),
+            {**_manifest_row(mat_bad, tmp_path, full_train=1, partial_train=0),
+             "filename": mat_bad.name,
+             "relative_path": str(mat_bad.relative_to(tmp_path.parent)),
+             "qc_status": "FAIL",
+             "qc_notes": "rest file"},
+        ]
+        adapter = _make_adapter(tmp_path, rows)
+        records = adapter.load_split("full_train")
+        summary = adapter.summarize(records)
+        assert summary.expected_manifest_entries == 2
+        assert summary.loaded_records == 1
+        assert summary.skipped_manifest_failures == 1
+        assert summary.fail_count == 0  # skipped entries are not QC FAIL records
+
+
+class TestRequestedSplitSemantics:
+    def test_full_train_request_keeps_split_label(self, tmp_path):
+        mat = _write_mat(tmp_path, "mix1.mat")
+        row = _manifest_row(mat, tmp_path, full_train=1, partial_train=1)
+        adapter = _make_adapter(tmp_path, [row])
+        rec = adapter.load_split("full_train")[0]
+        assert rec.metadata["split"] == "full_train"
+        assert rec.metadata["manifest_splits"] == ["full_train", "partial_train"]
+
+    def test_partial_train_request_uses_requested_split(self, tmp_path):
+        mat = _write_mat(tmp_path, "mix1b.mat")
+        row = _manifest_row(mat, tmp_path, full_train=1, partial_train=1)
+        adapter = _make_adapter(tmp_path, [row])
+        rec = adapter.load_split("partial_train")[0]
+        assert rec.metadata["split"] == "partial_train"
+        assert rec.metadata["manifest_splits"] == ["full_train", "partial_train"]
+
+    def test_test_request_uses_requested_split(self, tmp_path):
+        mat = _write_mat(tmp_path, "us06.mat")
+        row = _manifest_row(
+            mat, tmp_path,
+            full_train=0, partial_train=0, test=1,
+            profile="US06", paper_profile="US06",
+        )
+        adapter = _make_adapter(tmp_path, [row])
+        rec = adapter.load_split("test")[0]
+        assert rec.metadata["split"] == "test"
+        assert rec.metadata["manifest_splits"] == ["test"]
+
+    def test_exclude_request_uses_requested_split(self, tmp_path):
+        mat = _write_mat(tmp_path, "hwfet.mat")
+        row = _manifest_row(
+            mat, tmp_path,
+            full_train=0, partial_train=0, test=0, exclude=1,
+            profile="HWFET", paper_profile="",
+            file_type="drive_cycle",
+        )
+        adapter = _make_adapter(tmp_path, [row])
+        rec = adapter.load_split("exclude")[0]
+        assert rec.metadata["split"] == "exclude"
+        assert rec.metadata["manifest_splits"] == ["exclude"]
+
+    def test_paper_profile_not_inferred_from_profile(self, tmp_path):
+        mat = _write_mat(tmp_path, "no_pp.mat")
+        row = _manifest_row(mat, tmp_path, paper_profile="")
+        adapter = _make_adapter(tmp_path, [row])
+        with pytest.raises(AdapterSchemaError, match="paper_profile"):
+            adapter.load_split("full_train")
+
+    def test_charge_selected_uses_cc_paper_profile(self, tmp_path):
+        mat = _write_mat(tmp_path, "charge.mat")
+        row = _manifest_row(
+            mat, tmp_path,
+            profile="Charge", paper_profile="CC", file_type="charge",
+        )
+        adapter = _make_adapter(tmp_path, [row])
+        rec = adapter.load_split("full_train")[0]
+        assert rec.metadata["paper_profile"] == "CC"
+        assert rec.metadata["profile"] == "Charge"
 
 
 # ===========================================================================
@@ -739,7 +837,16 @@ class TestIntegrationPanasonic:
 
     def test_split_labels_correct_full_train(self, adapter):
         for rec in adapter.load_split("full_train"):
-            assert rec.metadata["split"] in ("full_train", "partial_train")
+            assert rec.metadata["split"] == "full_train"
+
+    def test_manifest_splits_for_partial_subset(self, adapter):
+        records = adapter.load_split("full_train")
+        partial = [r for r in records if "partial_train" in r.metadata["manifest_splits"]]
+        assert len(partial) >= 3
+        for rec in partial:
+            assert rec.metadata["split"] == "full_train"
+            assert "full_train" in rec.metadata["manifest_splits"]
+            assert "partial_train" in rec.metadata["manifest_splits"]
 
     def test_split_labels_correct_test(self, adapter):
         for rec in adapter.load_split("test"):
@@ -779,4 +886,12 @@ class TestIntegrationPanasonic:
         records = adapter.load_split("full_train")
         summary = adapter.summarize(records, split="full_train")
         assert summary.loaded_records == len(records)
+        assert summary.expected_manifest_entries == len(records)
+        assert summary.skipped_manifest_failures == 0
         assert summary.pass_count + summary.warn_count + summary.fail_count == len(records)
+
+    def test_paper_profile_from_manifest_not_profile(self, adapter):
+        records = adapter.load_split("full_train")
+        cycle1 = next(r for r in records if r.metadata["profile"] == "Cycle_1")
+        assert cycle1.metadata["paper_profile"] == "Mix1"
+        assert cycle1.metadata["paper_profile"] != cycle1.metadata["profile"]
