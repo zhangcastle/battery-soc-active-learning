@@ -117,6 +117,204 @@ def _split_memberships(row: dict) -> list[str]:
     return out
 
 
+def _is_hwfet_profile(profile: str) -> bool:
+    p = str(profile).upper()
+    return "HWFET" in p or "HWFT" in p
+
+
+def _skippable_gap(row: dict | pd.Series) -> bool:
+    """Pause/rest files that do not break charge ownership lookup."""
+    prof = str(row.get("profile", ""))
+    ft = str(row.get("file_type", ""))
+    if ft == "pause" or prof in ("Pause", "PausCycl"):
+        return True
+    return False
+
+
+def _is_actual_drive(row: dict | pd.Series) -> bool:
+    return str(row.get("file_type", "")) == "drive_cycle"
+
+
+def _is_selected_drive(row: dict | pd.Series) -> bool:
+    return _is_actual_drive(row) and str(row.get("record_role", "")) == "model_input"
+
+
+def _protocol_split_set(row: dict | pd.Series | None) -> set[str]:
+    if row is None:
+        return set()
+    out = set()
+    for s in ("full_train", "partial_train", "test"):
+        if str(row.get(s, "0")).strip() in ("1", "1.0"):
+            out.add(s)
+    return out
+
+
+def _find_previous_actual_drive(chrono: pd.DataFrame, idx: int) -> pd.Series | None:
+    for j in range(idx - 1, -1, -1):
+        row = chrono.iloc[j]
+        if _skippable_gap(row):
+            continue
+        if _is_actual_drive(row):
+            return row
+    return None
+
+
+def _find_next_selected_drive(chrono: pd.DataFrame, idx: int) -> pd.Series | None:
+    for j in range(idx + 1, len(chrono)):
+        row = chrono.iloc[j]
+        if _skippable_gap(row):
+            continue
+        if _is_selected_drive(row):
+            return row
+        if _is_actual_drive(row):
+            continue
+    return None
+
+
+def _find_immediate_prev_non_skippable(chrono: pd.DataFrame, idx: int) -> pd.Series | None:
+    for j in range(idx - 1, -1, -1):
+        row = chrono.iloc[j]
+        if not _skippable_gap(row):
+            return row
+    return None
+
+
+def _leading_context(chrono: pd.DataFrame, idx: int) -> tuple[bool, str]:
+    """True if charge follows Cap_1C/characterization with no selected drive before."""
+    for j in range(idx - 1, -1, -1):
+        row = chrono.iloc[j]
+        if _skippable_gap(row):
+            continue
+        if _is_selected_drive(row):
+            return False, ""
+        prof = str(row.get("profile", ""))
+        if prof == "Cap_1C" or row.get("file_type") == "characterization":
+            return True, prof
+        if _is_actual_drive(row):
+            return False, ""
+        if row.get("file_type") == "charge":
+            continue
+        return False, ""
+    return True, "session_start"
+
+
+def _compute_split_relation(
+    owner_splits: set[str],
+    charge_splits: set[str],
+    next_selected_splits: set[str],
+    is_leading: bool,
+    is_trailing: bool,
+) -> str:
+    if is_leading:
+        return "leading_anchor"
+    if is_trailing and not next_selected_splits:
+        return "trailing_after_selected_drive"
+
+    if owner_splits and next_selected_splits:
+        if owner_splits == next_selected_splits:
+            return "same_protocol_split"
+        if owner_splits == {"test"} and next_selected_splits & {"full_train", "partial_train"}:
+            return "true_test_train_boundary"
+        if owner_splits & {"full_train", "partial_train"} and next_selected_splits == {"test"}:
+            return "true_test_train_boundary"
+        if owner_splits & {"partial_train", "full_train"} and next_selected_splits <= {"full_train"}:
+            if owner_splits >= next_selected_splits or owner_splits & {"partial_train"}:
+                return "partial_subset_boundary"
+        if owner_splits & {"full_train"} and next_selected_splits & {"full_train", "partial_train"}:
+            if owner_splits == {"full_train"} and next_selected_splits == {"full_train", "partial_train"}:
+                return "partial_subset_boundary"
+
+    if owner_splits and charge_splits:
+        if owner_splits == charge_splits or owner_splits >= charge_splits:
+            return "same_protocol_split"
+        if charge_splits & owner_splits:
+            return "partial_subset_boundary"
+
+    if owner_splits and not next_selected_splits:
+        return "trailing_after_selected_drive"
+    return "unrelated"
+
+
+def _is_cap_1c_row(row: dict | pd.Series) -> bool:
+    prof = str(row.get("profile", ""))
+    return prof == "Cap_1C" or (
+        str(row.get("file_type", "")) == "characterization" and "Cap" in prof
+    )
+
+
+def _infer_post_cap_anchor(chrono: pd.DataFrame, idx: int, stats: dict) -> tuple[bool, str]:
+    """Charge immediately after Cap_1C (or missing Cap_1C + pre-cap top-off) before next selected drive."""
+    imm = _find_immediate_prev_non_skippable(chrono, idx)
+    next_selected = _find_next_selected_drive(chrono, idx)
+    if next_selected is None:
+        return False, ""
+    if imm is not None and _is_cap_1c_row(imm):
+        return True, "Cap_1C"
+    next_prof = str(next_selected.get("profile", ""))
+    if not re.match(r"Mixed?\d", next_prof, re.I):
+        return False, ""
+    frac = float(stats.get("charge_ah_fraction") or 0)
+    if imm is not None and str(imm.get("record_role", "")) == "excluded" and str(imm.get("file_type", "")) == "charge":
+        if frac >= 0.5 and bool(stats.get("full_voltage_reached")):
+            return True, "missing_Cap_1C_inferred"
+    return False, ""
+
+
+def _resolve_ownership(chrono: pd.DataFrame, idx: int, row: dict, stats: dict | None = None) -> dict[str, Any]:
+    prev_actual = _find_previous_actual_drive(chrono, idx)
+    next_selected = _find_next_selected_drive(chrono, idx)
+    imm_prev = _find_immediate_prev_non_skippable(chrono, idx)
+    is_leading_ctx, leading_reason = _leading_context(chrono, idx)
+    post_cap, post_cap_reason = _infer_post_cap_anchor(chrono, idx, stats or {})
+
+    owner = prev_actual
+    ownership_basis = "previous_actual_drive"
+    if post_cap:
+        owner = None
+        ownership_basis = f"post_capacity_test:{post_cap_reason}"
+        is_leading_ctx = True
+        leading_reason = post_cap_reason
+    elif owner is None and is_leading_ctx:
+        ownership_basis = f"leading_context:{leading_reason}"
+    elif owner is None:
+        ownership_basis = "no_previous_actual_drive"
+
+    owner_splits = _protocol_split_set(owner)
+    charge_splits = _protocol_split_set(row)
+    next_splits = _protocol_split_set(next_selected)
+
+    is_leading = owner is None and is_leading_ctx
+    is_trailing = (
+        owner is not None
+        and _is_selected_drive(owner)
+        and next_selected is None
+    )
+
+    split_relation = _compute_split_relation(
+        owner_splits, charge_splits, next_splits, is_leading, is_trailing
+    )
+
+    return {
+        "previous_actual_drive": owner["filename"] if owner is not None else "",
+        "previous_actual_drive_selected": _is_selected_drive(owner) if owner is not None else False,
+        "previous_actual_drive_profile": owner["profile"] if owner is not None else "",
+        "previous_actual_drive_protocol_splits": ",".join(sorted(owner_splits)),
+        "next_actual_drive": next_selected["filename"] if next_selected is not None else "",
+        "next_actual_drive_selected": next_selected is not None,
+        "next_actual_drive_profile": next_selected["profile"] if next_selected is not None else "",
+        "next_actual_drive_protocol_splits": ",".join(sorted(next_splits)),
+        "ownership_basis": ownership_basis,
+        "owned_by_previous_profile": owner["profile"] if owner is not None else "",
+        "owned_by_previous_sequence_id": owner["sequence_id"] if owner is not None else "",
+        "owned_by_previous_protocol_splits": ",".join(sorted(owner_splits)),
+        "is_leading_charge": is_leading,
+        "is_trailing_charge": is_trailing,
+        "split_relation": split_relation,
+        "immediate_previous_profile": imm_prev["profile"] if imm_prev is not None else "",
+        "immediate_previous_file_type": imm_prev["file_type"] if imm_prev is not None else "",
+    }
+
+
 def _selected_drive(row: dict) -> bool:
     return (
         row.get("file_type") == "drive_cycle"
@@ -389,152 +587,149 @@ def build_chronology(dataset: str, rows: list[dict], records: dict[str, Any]) ->
 def _classify_charge(
     dataset: str,
     row: dict,
-    chrono_row: pd.Series,
+    chrono: pd.DataFrame,
+    chrono_idx: int,
     stats: dict,
 ) -> dict[str, Any]:
     fn = row["filename"]
     splits = _split_memberships(row)
-    frac = stats.get("charge_ah_fraction") or 0
-    prev_prof = chrono_row.get("previous_profile", "")
-    next_prof = chrono_row.get("next_profile", "")
-    prev_ft = chrono_row.get("previous_file_type", "")
-    next_ft = chrono_row.get("next_file_type", "")
-    prev_drive = chrono_row.get("previous_selected_drive", "")
-    next_drive = chrono_row.get("next_selected_drive", "")
-    prev_drive_splits = set(str(chrono_row.get("previous_selected_drive_split", "")).split(",")) - {""}
-    next_drive_splits = set(str(chrono_row.get("next_selected_drive_split", "")).split(",")) - {""}
-    cn = _charge_number(fn, row.get("profile", ""))
+    frac = float(stats.get("charge_ah_fraction") or 0)
+    own = _resolve_ownership(chrono, chrono_idx, row, stats)
+    chrono_row = chrono.iloc[chrono_idx]
 
     role = "ambiguous"
     confidence = "medium"
-    reason_parts = []
+    reason_parts: list[str] = []
     paper = readme = chrono_s = signal = manifest = False
-    requires_review = False
-    proposed_mi = False
+
+    owner_prof = own["owned_by_previous_profile"]
+    is_leading = own["is_leading_charge"]
+    is_trailing = own["is_trailing_charge"]
+    split_rel = own["split_relation"]
+    imm_prev_prof = own["immediate_previous_profile"]
+    cn = _charge_number(fn, row.get("profile", ""))
 
     if row.get("record_role") == "excluded":
-        if "Cap_1C" in prev_prof or "Cap_1C" in fn or frac <= TINY_FRAC:
-            role = "pre_capacity_test_topup" if frac <= TINY_FRAC else "excluded_profile_related"
-        elif "HPPC" in prev_prof or "Dis_" in prev_prof or "C20" in prev_prof:
-            role = "excluded_profile_related"
+        if frac <= TINY_FRAC and cn in (1, 9):
+            role = "pre_capacity_test_topup" if cn != 1 else "initial_topup"
+        elif _is_hwfet_profile(owner_prof):
+            role = "excluded_profile_corresponding_charge"
         else:
-            role = "excluded_profile_related"
-        confidence = "high"
+            role = "excluded_profile_corresponding_charge" if owner_prof else "ambiguous"
+        readme = manifest = True
         reason_parts.append("manifest excluded")
-        manifest = True
-        return _charge_result(row, splits, stats, chrono_row, role, False, confidence, False, reason_parts, paper, readme, chrono_s, signal, manifest)
+        return _charge_result(row, splits, stats, chrono_row, own, role, confidence, reason_parts, paper, readme, chrono_s, signal, manifest)
 
-    # tiny top-off
-    if frac and frac <= TINY_FRAC:
-        role = "tiny_topoff"
-        confidence = "high"
-        signal = readme = True
-        reason_parts.append(f"charge_ah_fraction={frac:.3f} <= {TINY_FRAC}")
-        requires_review = True
-        proposed_mi = False
-
-    elif dataset == "panasonic_18650pf":
-        if cn == 1 and not prev_drive:
+    # --- model_input / reviewable selected charges ---
+    post_cap = own["ownership_basis"].startswith("post_capacity_test:")
+    if is_leading or post_cap or (not owner_prof and own["ownership_basis"].startswith(("leading_context", "post_capacity_test"))):
+        if post_cap or imm_prev_prof == "Cap_1C" or "Cap_1C" in own["ownership_basis"]:
+            role = "post_capacity_test_full_recharge_anchor"
+            readme = chrono_s = True
+            nxt = own["next_actual_drive_profile"]
+            reason_parts.append(
+                f"Post Cap_1C full recharge before next selected drive ({nxt or 'Mix3 gateway'})"
+            )
+        else:
             role = "leading_full_charge_anchor"
             paper = readme = chrono_s = True
-            reason_parts.append("First charge before Cycle_1 (Mix1); Vidal FULL includes accompanying CC")
-            proposed_mi = True
-            confidence = "high"
-        elif cn == 5 and "NN" in str(chrono_row.get("previous_profile", "")):
-            role = "trailing_charge"
-            chrono_s = manifest = True
-            reason_parts.append("Post-NN (Mix5) charge after last full_train mix")
-            proposed_mi = True
-        elif prev_drive and next_drive and row.get("record_role") == "model_input":
-            role = "normal_intercycle_charge"
-            paper = chrono_s = True
-            reason_parts.append(f"Between selected drives {Path(prev_drive).stem} -> {Path(next_drive).stem}")
-            proposed_mi = True
-            confidence = "high"
-        elif "HWFET" in str(prev_prof) or "HWFET" in str(next_prof):
-            role = "excluded_profile_related"
-            readme = chrono_s = True
-            requires_review = True
+            reason_parts.append("Leading charge before first selected drive")
+        confidence = "high"
 
-    elif dataset == "lg_hg2":
-        if cn == 1:
-            role = "pre_capacity_test_topup"
-            readme = manifest = True
-            confidence = "high"
-            proposed_mi = False
-        elif prev_prof == "Cap_1C" and stats.get("full_voltage_reached") and frac >= FULL_FRAC:
-            role = "post_capacity_test_full_recharge"
-            readme = chrono_s = signal = True
-            proposed_mi = True
-            reason_parts.append("Post Cap_1C full CC-CV recharge before UDDS")
-        elif prev_prof == "Cap_1C" and cn == 9:
-            role = "post_capacity_test_full_recharge"
-            readme = chrono_s = True
-            proposed_mi = True
-        elif prev_drive and next_drive and row.get("record_role") == "model_input":
-            role = "normal_intercycle_charge"
-            paper = chrono_s = True
-            reason_parts.append(f"Between selected drives")
-            proposed_mi = True
-            confidence = "high"
-        elif prev_prof == "HWFET" or next_prof == "HWFET":
-            role = "tiny_topoff" if frac <= TINY_FRAC else "excluded_profile_related"
-            readme = chrono_s = True
-            requires_review = True
+    elif owner_prof and _is_hwfet_profile(owner_prof):
+        role = "excluded_profile_corresponding_charge"
+        readme = paper = chrono_s = True
+        if frac <= TINY_FRAC:
+            role = "tiny_topoff"
+            signal = True
+            reason_parts.append(f"HWFET-owned tiny top-off ({frac:.3f} Ah fraction)")
+        else:
+            reason_parts.append("Charge owned by excluded HWFET drive (not in Vidal test set)")
+        confidence = "high"
 
-    elif dataset == "samsung_30t":
-        if cn == 1:
-            role = "initial_topup"
-            readme = manifest = True
-            confidence = "high"
-            proposed_mi = False
-        elif cn == 9 and frac <= TINY_FRAC:
-            role = "pre_capacity_test_topup"
-            readme = chrono_s = True
-            proposed_mi = False
-        elif cn == 10 and stats.get("full_voltage_reached"):
-            role = "post_capacity_test_full_recharge"
-            readme = chrono_s = signal = True
-            proposed_mi = True
-            reason_parts.append("Post inferred Cap_1C before Mixed3")
-        elif prev_drive and next_drive and row.get("record_role") == "model_input":
-            role = "normal_intercycle_charge"
-            paper = chrono_s = True
-            proposed_mi = True
-            confidence = "high"
-        elif cn == 16:
-            role = "trailing_charge"
-            chrono_s = True
-            proposed_mi = True
+    elif frac <= TINY_FRAC and not _is_hwfet_profile(owner_prof):
+        role = "tiny_topoff"
+        signal = True
+        reason_parts.append(f"charge_ah_fraction={frac:.3f} <= {TINY_FRAC}")
 
-    # cross split between selected drives
-    if prev_drive_splits and next_drive_splits and prev_drive_splits != next_drive_splits:
-        if role == "normal_intercycle_charge":
-            role = "cross_split_bridge"
-        requires_review = True
-        chrono_s = True
-        reason_parts.append(f"bridges splits {prev_drive_splits} -> {next_drive_splits}")
+    elif is_trailing and owner_prof:
+        role = "trailing_corresponding_charge"
+        chrono_s = readme = True
+        reason_parts.append(f"Corresponding charge after last selected drive ({owner_prof})")
+        confidence = "high"
+
+    elif owner_prof:
+        role = "normal_corresponding_charge"
+        paper = readme = chrono_s = True
+        reason_parts.append(f"Corresponding charge owned by preceding {owner_prof}")
+        confidence = "high"
+        if split_rel == "true_test_train_boundary":
+            role = "true_test_train_boundary_charge"
+            reason_parts.append(f"Split boundary: {own['owned_by_previous_protocol_splits']} -> {own['next_actual_drive_protocol_splits']}")
+        elif split_rel == "partial_subset_boundary":
+            reason_parts.append("Partial train is subset of full train (not a conflict)")
 
     if stats.get("ah_reset_detected"):
-        requires_review = True
         signal = True
-        reason_parts.append("Ah counter reset detected")
-
-    if row.get("record_role") == "model_input" and role in ("initial_topup", "pre_capacity_test_topup", "tiny_topoff"):
-        requires_review = True
-        manifest = True
-        reason_parts.append("manifest model_input conflicts with charge role")
+        reason_parts.append("Ah counter reset detected (label concern only)")
 
     if not reason_parts:
-        reason_parts.append(f"Chronology: after {prev_prof}, before {next_prof}")
+        reason_parts.append(f"After {imm_prev_prof}, before {own['next_actual_drive_profile']}")
+
+    proto, label, review_reason = _recommended_actions(row, own, role, stats, split_rel)
 
     return _charge_result(
-        row, splits, stats, chrono_row, role, proposed_mi, confidence,
-        requires_review, reason_parts, paper, readme, chrono_s, signal, manifest,
+        row, splits, stats, chrono_row, own, role, confidence, reason_parts,
+        paper, readme, chrono_s, signal, manifest,
+        proto, label, review_reason,
     )
 
 
-def _charge_result(row, splits, stats, chrono_row, role, proposed_mi, confidence, requires_review, reason_parts, paper, readme, chrono_s, signal, manifest):
+def _recommended_actions(
+    row: dict,
+    own: dict,
+    role: str,
+    stats: dict,
+    split_rel: str,
+) -> tuple[str, str, str]:
+    ah_reset = bool(stats.get("ah_reset_detected"))
+    frac = float(stats.get("charge_ah_fraction") or 0)
+
+    if role in ("initial_topup", "pre_capacity_test_topup", "excluded_profile_corresponding_charge"):
+        return ("CHANGE_TO_EXCLUDED", "EXCLUDE_FROM_LABEL_EXPORT", f"Role {role} outside Vidal protocol")
+
+    if role == "tiny_topoff":
+        if _is_hwfet_profile(own["owned_by_previous_profile"]):
+            return (
+                "CHANGE_TO_EXCLUDED",
+                "EXCLUDE_FROM_LABEL_EXPORT",
+                f"HWFET-owned tiny top-off ({own['owned_by_previous_profile']})",
+            )
+        return ("MANUAL_REVIEW", "MANUAL_REVIEW", f"Tiny top-off ({frac:.3f} Ah fraction) — verify protocol intent")
+
+    if role in ("leading_full_charge_anchor", "post_capacity_test_full_recharge_anchor"):
+        label = "REGENERATE_SEQUENCE_AWARE" if ah_reset else "REGENERATE_SEQUENCE_AWARE"
+        return (
+            "CHANGE_TO_ANCHOR",
+            label,
+            "Leading/post-Cap anchor for SOC_init evidence; not in ordered drive->charge sequence",
+        )
+
+    if role in ("normal_corresponding_charge", "trailing_corresponding_charge", "true_test_train_boundary_charge"):
+        proto = "KEEP_MODEL_INPUT"
+        reason = f"Corresponding CC owned by {own['owned_by_previous_profile']} (Section IV.B / Figure 8)"
+        if ah_reset:
+            return proto, "REGENERATE_RESET_AWARE", reason + "; Ah reset requires reset-aware labelling"
+        return proto, "LABEL_OK", reason
+
+    return ("MANUAL_REVIEW", "MANUAL_REVIEW", f"Unresolved role {role}")
+
+
+def _charge_result(
+    row, splits, stats, chrono_row, own, role, confidence, reason_parts,
+    paper, readme, chrono_s, signal, manifest,
+    protocol_action="", label_action="", review_reason="",
+):
     return {
         "dataset": chrono_row["dataset"],
         "filename": row["filename"],
@@ -548,13 +743,10 @@ def _charge_result(row, splits, stats, chrono_row, role, proposed_mi, confidence
         "previous_file": chrono_row.get("previous_file", ""),
         "previous_profile": chrono_row.get("previous_profile", ""),
         "previous_file_type": chrono_row.get("previous_file_type", ""),
-        "previous_selected_drive": chrono_row.get("previous_selected_drive", ""),
-        "previous_selected_drive_split": chrono_row.get("previous_selected_drive_split", ""),
         "next_file": chrono_row.get("next_file", ""),
         "next_profile": chrono_row.get("next_profile", ""),
         "next_file_type": chrono_row.get("next_file_type", ""),
-        "next_selected_drive": chrono_row.get("next_selected_drive", ""),
-        "next_selected_drive_split": chrono_row.get("next_selected_drive_split", ""),
+        **own,
         **{k: stats.get(k, "") for k in (
             "ah_start", "ah_end", "ah_min", "ah_max", "charge_ah_max", "charge_ah_fraction",
             "voltage_start", "voltage_end", "voltage_max", "full_voltage_reached",
@@ -563,10 +755,11 @@ def _charge_result(row, splits, stats, chrono_row, role, proposed_mi, confidence
         )},
         "timestamp_conflict": chrono_row.get("timestamp_conflict", False),
         "proposed_charge_role": role,
-        "proposed_model_input": proposed_mi,
-        "confidence": confidence,
-        "requires_manual_review": requires_review,
+        "recommended_protocol_action": protocol_action,
+        "recommended_label_action": label_action,
         "reason": "; ".join(reason_parts),
+        "review_reason": review_reason,
+        "confidence": confidence,
         "paper_support": paper,
         "readme_support": readme,
         "chronology_support": chrono_s,
@@ -575,60 +768,51 @@ def _charge_result(row, splits, stats, chrono_row, role, proposed_mi, confidence
     }
 
 
-def _recommended_action(row: dict, cls: dict) -> tuple[str, str]:
-    role = cls["proposed_charge_role"]
-    splits = cls["current_split_memberships"]
-    if cls["requires_manual_review"] or role in ("ambiguous", "cross_split_bridge"):
-        if role in ("initial_topup", "pre_capacity_test_topup", "tiny_topoff") and cls["current_record_role"] == "model_input":
-            return "CHANGE_TO_EXCLUDED", "Role is top-up/tiny but marked model_input"
-        if cls.get("ah_reset_detected"):
-            return "MANUAL_REVIEW", "Ah reset may invalidate SOC label while sequence membership is plausible"
-        return "MANUAL_REVIEW", cls["reason"]
-    if role in ("initial_topup", "pre_capacity_test_topup", "tiny_topoff", "excluded_profile_related"):
-        return "CHANGE_TO_EXCLUDED", f"Proposed role {role} not in Vidal selected CC input set"
-    if role == "leading_full_charge_anchor":
-        return "KEEP_MODEL_INPUT", "Vidal FULL training includes accompanying CC before first Mix (Section IV.B)"
-    if role == "trailing_charge":
-        return "MANUAL_REVIEW", "Trailing charge after last training mix — paper silent on inclusion"
-    if role == "cross_split_bridge":
-        return "MANUAL_REVIEW", cls["reason"]
-    if role in ("normal_intercycle_charge", "post_capacity_test_full_recharge"):
-        if role == "post_capacity_test_full_recharge" and "test" in splits:
-            return "KEEP_MODEL_INPUT", "Full recharge before test drive (corresponding CC for UDDS)"
-        return "KEEP_MODEL_INPUT", "Accompanying/corresponding CC per Vidal Section IV.B"
-    return "MANUAL_REVIEW", cls["reason"]
-
-
 def build_review(class_df: pd.DataFrame) -> pd.DataFrame:
-    review_rows = []
-    mi = class_df[class_df["current_record_role"] == "model_input"]
-    for _, cls in mi.iterrows():
-        action, reason = _recommended_action(cls.to_dict(), cls.to_dict())
-        review_rows.append({**cls.to_dict(), "recommended_action": action, "review_reason": reason})
-    return pd.DataFrame(review_rows)
+    mi = class_df[class_df["current_record_role"] == "model_input"].copy()
+    review_cols = [
+        "dataset", "filename", "sequence_id", "charge_number",
+        "previous_actual_drive", "previous_actual_drive_selected", "previous_actual_drive_protocol_splits",
+        "next_actual_drive", "next_actual_drive_selected", "next_actual_drive_protocol_splits",
+        "ownership_basis", "owned_by_previous_profile", "owned_by_previous_protocol_splits",
+        "split_relation", "current_record_role", "current_split_memberships",
+        "charge_ah_max", "charge_ah_fraction", "ah_reset_detected",
+        "full_voltage_reached", "current_taper_detected",
+        "proposed_charge_role", "recommended_protocol_action", "recommended_label_action",
+        "reason", "confidence",
+        "paper_support", "readme_support", "chronology_support", "signal_support", "manifest_support",
+        "is_leading_charge", "is_trailing_charge", "review_reason",
+    ]
+    existing = [c for c in review_cols if c in mi.columns]
+    return mi[existing]
 
 
 def build_candidate_sequences(chrono: pd.DataFrame, class_df: pd.DataFrame) -> dict:
     out: dict[str, Any] = {}
     cls_by_fn = {r["filename"]: r for _, r in class_df.iterrows()}
-    for dataset in chrono["dataset"].unique():
+    chrono_by_ds: dict[str, pd.DataFrame] = {
+        ds: chrono[chrono["dataset"] == ds].reset_index(drop=True)
+        for ds in chrono["dataset"].unique()
+    }
+
+    anchor_roles = {"leading_full_charge_anchor", "post_capacity_test_full_recharge_anchor"}
+    exclude_roles = {"excluded_profile_corresponding_charge", "tiny_topoff", "initial_topup", "pre_capacity_test_topup"}
+
+    for dataset, ds in chrono_by_ds.items():
         out[dataset] = {}
-        ds = chrono[chrono["dataset"] == dataset]
         for split in ("full_train", "partial_train", "test"):
-            profiles = PAPER_PROFILES[dataset][split]
             drives = ds[
                 (ds["file_type"] == "drive_cycle")
                 & (ds["record_role"] == "model_input")
-                & (ds["paper_profile"].isin(profiles) | ds["profile"].isin(["UDDS", "LA92", "US06", "US06", "Cycle_1", "Cycle_2", "Cycle_3", "Cycle_4", "NN"] + [f"Mixed{i}" for i in range(1, 9)]))
-            ]
-            if split == "full_train" and dataset == "panasonic_18650pf":
-                drives = ds[(ds["file_type"] == "drive_cycle") & (ds["record_role"] == "model_input") & (ds[split] == "1")]
-            elif split in ("full_train", "partial_train", "test"):
-                drives = ds[(ds["file_type"] == "drive_cycle") & (ds["record_role"] == "model_input") & (ds[split] == "1")]
+                & (ds[split] == "1")
+                & (~ds["profile"].apply(_is_hwfet_profile))
+            ].sort_values("selected_start_datetime")
 
-            seq = []
+            seq: list[dict] = []
             order = 0
-            for _, d in drives.sort_values("selected_start_datetime").iterrows():
+            for _, d in drives.iterrows():
+                if split == "test" and d["profile"] not in ("UDDS", "LA92", "US06"):
+                    continue
                 order += 1
                 seq.append({
                     "sequence_order": order,
@@ -640,38 +824,69 @@ def build_candidate_sequences(chrono: pd.DataFrame, class_df: pd.DataFrame) -> d
                     "split_memberships": _split_memberships(d.to_dict()),
                     "evidence": "Section IV.B Table V",
                 })
-                # intercycle charge after drive (except last)
-                charges_after = ds[
-                    (ds["file_type"] == "charge")
-                    & (ds["previous_selected_drive"] == d["filename"])
-                    & (ds["record_role"] == "model_input")
-                ]
-                for _, c in charges_after.iterrows():
+                # corresponding charge: owned by this drive
+                for _, c in ds[ds["file_type"] == "charge"].iterrows():
                     cr = cls_by_fn.get(c["filename"], {})
-                    if cr.get("proposed_charge_role") in ("trailing_charge", "leading_full_charge_anchor"):
+                    if cr.get("owned_by_previous_sequence_id") != d["sequence_id"]:
+                        continue
+                    if cr.get("proposed_charge_role") in anchor_roles | exclude_roles:
+                        continue
+                    if split == "test":
+                        if cr.get("current_record_role") != "model_input":
+                            continue
+                    elif split == "partial_train":
+                        # partial_train ⊂ full_train: include Mix1-3 accompanying charges by ownership
+                        pass
+                    elif split not in cr.get("current_split_memberships", ""):
                         continue
                     order += 1
                     seq.append({
                         "sequence_order": order,
                         "filename": c["filename"],
                         "profile": c["profile"],
-                        "paper_profile": c.get("paper_profile", "CC"),
+                        "paper_profile": cr.get("paper_profile", "CC") if isinstance(cr, dict) else "CC",
                         "file_type": "charge",
                         "sequence_role": "intercycle_charge_input",
-                        "split_memberships": _split_memberships(c.to_dict()),
+                        "split_memberships": cr.get("current_split_memberships", ""),
                         "evidence": cr.get("reason", ""),
                     })
 
-            anchors = [r for _, r in class_df.iterrows() if r["proposed_charge_role"] == "leading_full_charge_anchor" and r["dataset"] == dataset]
-            trailing = [r for _, r in class_df.iterrows() if r["proposed_charge_role"] == "trailing_charge" and r["dataset"] == dataset]
+            anchors = class_df[
+                (class_df["dataset"] == dataset)
+                & (class_df["proposed_charge_role"].isin(anchor_roles))
+            ]["filename"].tolist()
+            hwfet_owned = class_df[
+                (class_df["dataset"] == dataset)
+                & (
+                    (class_df["proposed_charge_role"].isin(exclude_roles))
+                    | (class_df["owned_by_previous_profile"].apply(_is_hwfet_profile))
+                )
+            ]["filename"].tolist()
+            trailing = class_df[
+                (class_df["dataset"] == dataset)
+                & (class_df["proposed_charge_role"] == "trailing_corresponding_charge")
+            ]["filename"].tolist()
+
             out[dataset][split] = {
                 "ordered_model_sequence": seq,
-                "leading_anchors": [a["filename"] for a in anchors],
-                "trailing_candidates": [t["filename"] for t in trailing],
-                "excluded_related_charges": class_df[(class_df["dataset"] == dataset) & (class_df["proposed_charge_role"] == "excluded_profile_related")]["filename"].tolist(),
-                "capacity_test_related_charges": class_df[(class_df["dataset"] == dataset) & (class_df["proposed_charge_role"].isin(["initial_topup", "pre_capacity_test_topup", "post_capacity_test_full_recharge"]))]["filename"].tolist(),
-                "ambiguous_charges": class_df[(class_df["dataset"] == dataset) & (class_df["proposed_charge_role"] == "ambiguous")]["filename"].tolist(),
-                "cross_split_charges": class_df[(class_df["dataset"] == dataset) & (class_df["proposed_charge_role"] == "cross_split_bridge")]["filename"].tolist(),
+                "leading_anchors": anchors,
+                "trailing_corresponding_charges": trailing,
+                "excluded_related_charges": hwfet_owned,
+                "capacity_test_related_charges": class_df[
+                    (class_df["dataset"] == dataset)
+                    & (class_df["proposed_charge_role"].isin([
+                        "initial_topup", "pre_capacity_test_topup",
+                        "post_capacity_test_full_recharge_anchor",
+                    ]))
+                ]["filename"].tolist(),
+                "ambiguous_charges": class_df[
+                    (class_df["dataset"] == dataset)
+                    & (class_df["proposed_charge_role"] == "ambiguous")
+                ]["filename"].tolist(),
+                "partial_subset_boundary_charges": class_df[
+                    (class_df["dataset"] == dataset)
+                    & (class_df["split_relation"] == "partial_subset_boundary")
+                ]["filename"].tolist(),
             }
     return out
 
@@ -682,6 +897,7 @@ def write_report(
     class_df: pd.DataFrame,
     review_df: pd.DataFrame,
     sequences: dict,
+    prev_review: pd.DataFrame | None = None,
 ) -> None:
     lines = [
         "# Vidal Charge Protocol Audit Report",
@@ -701,102 +917,116 @@ def write_report(
 
     lines += [
         "",
-        "## 2. Vidal paper protocol summary",
+        "## 2. Charge ownership rule",
         "",
-        "Table I (p.1): Each dataset lists Mix profiles, UDDS/LA92/US06, and CC.",
-        "Section IV.B (p.4): FULL training = all Mixed drive cycles + **accompanying charges (CC)**.",
-        "Test dataset = UDDS, LA92, US06 + **corresponding charges (CC)**.",
-        "Table V (p.4): Case 1 FULL training; Case 3 PARTIAL Mix 1-3 (+ Samsung 48G Mix 1,2,6).",
-        "Section IV.A: SOC reference from **cycler-calculated Ah** during training.",
-        "Figure 8 (p.5): Samsung T30 example shows drive + charge in continuous input (Case 2 TL).",
+        "Default: **selected drive → corresponding/accompanying charge** (Figure 8: UDDS → CC → LA92 → CC → US06).",
+        "Pause files do not break ownership. Cap_1C/characterization before first selected drive → leading anchor.",
+        "Do not assign charge to the *following* drive.",
         "",
-        "## 3–5. README summaries",
+        "## 3. Partial is a subset of Full",
         "",
-        "**Panasonic:** Nine drive cycles (Cycle1-4, US06, HWFET, UDDS, LA92, NN); charged after each test; Ah reset before each segment; filename sort for pairing.",
+        "`partial_train` ⊂ `full_train`. Mix3 → Charge → Mix4 is **partial_subset_boundary**, not cross-split conflict.",
         "",
-        "**LG HG2:** UDDS→HWFET→LA92→US06→Mix1-8; two Cap_1C before UDDS and Mix3; charged after each test.",
+        "## 4. Protocol action vs label action",
         "",
-        "**Samsung 30T:** 16 charges; Charge1 initial top-up before Cap_1C; charges before/after every drive; two Cap_1C before UDDS and Mix3.",
+        "- **Protocol action**: should this file be model input, anchor-only, or excluded from Vidal protocol?",
+        "- **Label action**: given v1 per-file Ah normalization, is the SOC label OK, reset-aware, or sequence-aware?",
+        "- Ah reset affects **label action only**, not protocol role.",
         "",
-        "## 6. Four-way consistency",
+        "## 5. HWFET-owned charge exclusions",
         "",
-        "| Source | Agreement |",
-        "|--------|-----------|",
-        "| Paper vs README | Both expect CC with mix/test drives; README adds HWFET/Cap_1C not in paper test set |",
-        "| README vs chronology | File timestamps match README order for all three datasets |",
-        "| Chronology vs manifest | Pairing mostly confirmed; LG Charge4 tiny top-off and Samsung Charge6 cross-split flagged |",
-        "| Manifest vs paper | Selected charges marked model_input align with accompanying/corresponding CC intent; exceptions below |",
+        "Vidal test set = UDDS, LA92, US06 + corresponding CC. HWFET excluded → its charges → CHANGE_TO_EXCLUDED.",
         "",
-        "## 7. Chronology summary",
+        "## 6. Leading anchor handling",
+        "",
+        "Pre-first-drive and post-Cap_1C full recharges → CHANGE_TO_ANCHOR; stored in `leading_anchors`, not ordered sequence.",
+        "",
+        "## 7. Trailing corresponding charge handling",
+        "",
+        "Charge after last selected drive still **corresponds to that drive** → KEEP_MODEL_INPUT if profile is in Vidal set.",
+        "",
+        "## 8. Vidal paper protocol summary",
+        "",
+        "Section IV.B: FULL = Mix + accompanying CC; TEST = UDDS/LA92/US06 + corresponding CC.",
+        "",
+        "## 9. Chronology summary",
         "",
     ]
     for ds in chrono["dataset"].unique():
         sub = chrono[chrono["dataset"] == ds]
-        conflicts = sub["timestamp_conflict"].sum()
-        lines.append(f"- **{ds}**: {len(sub)} files; timestamp conflicts={int(conflicts)}; time regressions={int(sub['negative_time_step_count'].astype(float).sum())}")
+        lines.append(f"- **{ds}**: {len(sub)} files; timestamp conflicts={int(sub['timestamp_conflict'].sum())}")
 
-    lines += ["", "## 8–14. Charge counts", ""]
-    for ds in class_df["dataset"].unique():
-        sub = class_df[class_df["dataset"] == ds]
-        mi = sub[sub["current_record_role"] == "model_input"]
-        rev = review_df[review_df["dataset"] == ds] if len(review_df) else pd.DataFrame()
-        lines.append(f"### {ds}")
-        lines.append(f"- Total charges: {len(sub)}")
-        lines.append(f"- model_input charges: {len(mi)}")
+    lines += ["", "## 10. Protocol action counts (37 model_input charges)", ""]
+    for action in ("KEEP_MODEL_INPUT", "CHANGE_TO_ANCHOR", "CHANGE_TO_EXCLUDED", "MANUAL_REVIEW"):
+        n = len(review_df[review_df["recommended_protocol_action"] == action])
+        lines.append(f"- {action}: {n}")
+
+    lines += ["", "## 11. Label action counts", ""]
+    for action in (
+        "LABEL_OK", "REGENERATE_RESET_AWARE", "REGENERATE_SEQUENCE_AWARE",
+        "EXCLUDE_FROM_LABEL_EXPORT", "MANUAL_REVIEW",
+    ):
+        n = len(review_df[review_df["recommended_label_action"] == action])
+        lines.append(f"- {action}: {n}")
+
+    lines += ["", "## 12. Per-dataset breakdown", ""]
+    for ds in review_df["dataset"].unique():
+        sub = review_df[review_df["dataset"] == ds]
+        lines.append(f"### {ds} ({len(sub)} model_input charges)")
         for action in ("KEEP_MODEL_INPUT", "CHANGE_TO_ANCHOR", "CHANGE_TO_EXCLUDED", "MANUAL_REVIEW"):
-            n = len(rev[rev["recommended_action"] == action]) if len(rev) else 0
-            lines.append(f"- {action}: {n}")
-        roles = sub["proposed_charge_role"].value_counts()
-        lines.append("- proposed_charge_role: " + ", ".join(f"{k}={v}" for k, v in roles.items()))
+            lines.append(f"- Protocol {action}: {len(sub[sub['recommended_protocol_action'] == action])}")
+        for action in ("REGENERATE_RESET_AWARE", "REGENERATE_SEQUENCE_AWARE", "EXCLUDE_FROM_LABEL_EXPORT"):
+            lines.append(f"- Label {action}: {len(sub[sub['recommended_label_action'] == action])}")
         lines.append("")
 
-    def _list_section(title: str, df: pd.DataFrame, mask):
+    def _list_df(title, df, col="filename"):
         lines.append(f"## {title}")
         lines.append("")
-        sub = df[mask]
-        if len(sub) == 0:
+        if len(df) == 0:
             lines.append("_None_")
         else:
-            for _, r in sub.iterrows():
-                lines.append(f"- `{r['filename']}` ({r['dataset']}): {r.get('reason', r.get('review_reason', ''))}")
+            for _, r in df.iterrows():
+                lines.append(f"- `{r[col]}` ({r['dataset']}): {r.get('proposed_charge_role','')} / {r.get('recommended_protocol_action','')}")
         lines.append("")
 
-    _list_section(
-        "15. Tiny top-offs",
-        class_df,
-        pd.to_numeric(class_df["charge_ah_fraction"], errors="coerce") <= TINY_FRAC,
-    )
-    _list_section("16. Ah reset charges", class_df, class_df["ah_reset_detected"] == True)
-    _list_section("17. Capacity-test-related", class_df, class_df["proposed_charge_role"].isin(["initial_topup", "pre_capacity_test_topup", "post_capacity_test_full_recharge"]))
-    _list_section("18. Excluded-profile-related", class_df, class_df["proposed_charge_role"] == "excluded_profile_related")
-    _list_section("19. Cross-split charges", class_df, class_df["proposed_charge_role"] == "cross_split_bridge")
+    hw = review_df[review_df["owned_by_previous_profile"].apply(_is_hwfet_profile)]
+    _list_df("13. HWFET-owned charges", hw)
+    anchors = review_df[review_df["recommended_protocol_action"] == "CHANGE_TO_ANCHOR"]
+    _list_df("14. Leading anchors", anchors)
+    trailing = review_df[review_df["proposed_charge_role"] == "trailing_corresponding_charge"]
+    _list_df("15. Trailing corresponding charges", trailing)
+    reset = review_df[review_df["recommended_label_action"] == "REGENERATE_RESET_AWARE"]
+    _list_df("16. Reset-aware label charges", reset)
+    partial = review_df[review_df["split_relation"] == "partial_subset_boundary"]
+    _list_df("17. Partial subset boundary charges", partial)
 
-    lines += ["## 20. Likely mis-tagged model_input charges", ""]
-    bad = review_df[review_df["recommended_action"] != "KEEP_MODEL_INPUT"]
-    if len(bad) == 0:
-        lines.append("_None flagged_")
-    else:
-        for _, r in bad.iterrows():
-            lines.append(f"- `{r['filename']}`: {r['recommended_action']} — {r['review_reason']}")
-
-    lines += ["", "## 21–22. Disputed charge timelines", ""]
-    for _, r in bad.iterrows():
-        lines.append(f"### {r['filename']}")
-        lines.append(f"- Previous: `{r['previous_profile']}` ({r['previous_file_type']})")
-        lines.append(f"- Next: `{r['next_profile']}` ({r['next_file_type']})")
-        lines.append(f"- Evidence: PAPER={r['paper_support']} README={r['readme_support']} TIMESTAMP={r['chronology_support']} SIGNAL={r['signal_support']} MANIFEST={r['manifest_support']}")
-        lines.append("")
+    if prev_review is not None and len(prev_review) > 0:
+        lines += ["", "## 18. Changes vs previous audit", ""]
+        prev = prev_review.set_index("filename")
+        for _, r in review_df.iterrows():
+            fn = r["filename"]
+            if fn not in prev.index:
+                lines.append(f"- NEW `{fn}`")
+                continue
+            p = prev.loc[fn]
+            changes = []
+            if p.get("recommended_protocol_action", p.get("recommended_action")) != r["recommended_protocol_action"]:
+                old = p.get("recommended_protocol_action", p.get("recommended_action"))
+                changes.append(f"protocol {old} → {r['recommended_protocol_action']}")
+            if p.get("proposed_charge_role") != r["proposed_charge_role"]:
+                changes.append(f"role {p['proposed_charge_role']} → {r['proposed_charge_role']}")
+            if changes:
+                lines.append(f"- `{fn}`: {'; '.join(changes)}")
 
     for ds in ("panasonic_18650pf", "lg_hg2", "samsung_30t"):
         lines += [f"## Recommended actions — {ds}", ""]
-        lines.append("| filename | current role | splits | prev | next | proposed | action | reason | confidence |")
-        lines.append("|----------|--------------|--------|------|------|----------|--------|--------|------------|")
+        lines.append("| filename | owned_by | role | protocol | label | split_relation |")
+        lines.append("|----------|----------|------|----------|-------|----------------|")
         sub = review_df[review_df["dataset"] == ds]
         for _, r in sub.iterrows():
             lines.append(
-                f"| {r['filename']} | {r['current_record_role']} | {r['current_split_memberships']} | "
-                f"{r['previous_profile']} | {r['next_profile']} | {r['proposed_charge_role']} | "
-                f"{r['recommended_action']} | {r['review_reason'][:60]} | {r['confidence']} |"
+                f"| {r['filename']} | {r['owned_by_previous_profile']} | {r['proposed_charge_role']} | "
+                f"{r['recommended_protocol_action']} | {r['recommended_label_action']} | {r['split_relation']} |"
             )
         lines.append("")
 
@@ -853,11 +1083,11 @@ def create_notebook(output_path: Path) -> None:
                     "flagged = review[\n",
                     "    (review['ah_reset_detected'] == True)\n",
                     "    | (pd.to_numeric(review['charge_ah_fraction'], errors='coerce') <= TINY)\n",
-                    "    | (review['recommended_action'] != 'KEEP_MODEL_INPUT')\n",
-                    "    | (review['requires_manual_review'] == True)\n",
+                    "    | (review['recommended_protocol_action'] != 'KEEP_MODEL_INPUT')\n",
+                    "    | (review['recommended_label_action'] != 'LABEL_OK')\n",
                     "]\n",
                     "print(f'Flagged records: {len(flagged)}')\n",
-                    "flagged[['dataset','filename','proposed_charge_role','recommended_action']].head(20)\n",
+                    "flagged[['dataset','filename','proposed_charge_role','recommended_protocol_action','recommended_label_action']].head(20)\n",
                 ],
             },
             {
@@ -885,8 +1115,10 @@ def create_notebook(output_path: Path) -> None:
                     "    'next profile': row['next_profile'],\n",
                     "    'current role': row['current_record_role'],\n",
                     "    'current splits': row['current_split_memberships'],\n",
+                    "    'owned by': row['owned_by_previous_profile'],\n",
                     "    'proposed role': row['proposed_charge_role'],\n",
-                    "    'recommended action': row['recommended_action'],\n",
+                    "    'protocol action': row['recommended_protocol_action'],\n",
+                    "    'label action': row['recommended_label_action'],\n",
                     "    'Ah max': row['charge_ah_max'],\n",
                     "    'Ah end': row['ah_end'],\n",
                     "    'Ah fraction': row['charge_ah_fraction'],\n",
@@ -977,17 +1209,22 @@ def run_audit(overwrite: bool = False) -> None:
         all_chrono.append(chrono)
 
         charge_rows = [r for r in rows if r.get("file_type") == "charge"]
-        chrono_idx = {r["filename"]: r for _, r in chrono.iterrows()}
+        chrono_idx = {r["filename"]: i for i, r in chrono.iterrows()}
         for row in charge_rows:
             fn = row["filename"]
-            cr = chrono_idx[fn]
+            i = chrono_idx[fn]
             stats = _signal_stats(recs.get(fn))
-            all_class.append(_classify_charge(dataset, row, cr, stats))
+            all_class.append(_classify_charge(dataset, row, chrono, i, stats))
 
     chrono_df = pd.concat(all_chrono, ignore_index=True)
     class_df = pd.DataFrame(all_class)
     review_df = build_review(class_df)
     sequences = build_candidate_sequences(chrono_df, class_df)
+
+    review_path = outputs[3]
+    prev_review = None
+    if review_path.exists():
+        prev_review = pd.read_csv(review_path)
 
     chrono_df.to_csv(outputs[1], index=False)
     class_df.to_csv(outputs[2], index=False)
@@ -1001,7 +1238,7 @@ def run_audit(overwrite: bool = False) -> None:
         "manifests": {k: str(v) for k, v in MANIFEST_PATHS.items()},
         "raw_roots": {k: str(v) for k, v in RAW_ROOTS.items()},
     }
-    write_report(paths, chrono_df, class_df, review_df, sequences)
+    write_report(paths, chrono_df, class_df, review_df, sequences, prev_review=prev_review)
 
     nb_path = REPO_ROOT / "notebooks/review_vidal_charge_pairing.ipynb"
     create_notebook(nb_path)
@@ -1020,7 +1257,9 @@ def run_audit(overwrite: bool = False) -> None:
     print(f"Chronology rows: {len(chrono_df)}")
     print(f"Charge rows: {len(class_df)}")
     print(f"model_input review: {len(review_df)}")
-    print(review_df["recommended_action"].value_counts().to_string())
+    print(review_df["recommended_protocol_action"].value_counts().to_string())
+    print("--- label actions ---")
+    print(review_df["recommended_label_action"].value_counts().to_string())
 
 
 def main() -> int:
