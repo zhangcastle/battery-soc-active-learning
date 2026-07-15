@@ -51,8 +51,9 @@ class TestV2Integration:
             if not path.exists():
                 pytest.skip(f"Missing raw for {name}")
 
-    def test_exported_all_pass(self, v2_index):
-        assert set(v2_index["label_qc_status"].unique()) <= {"PASS"}
+    def test_exported_pass_or_warning_no_fail(self, v2_index):
+        assert set(v2_index["label_qc_status"].unique()) <= {"PASS", "WARNING"}
+        assert "FAIL" not in set(v2_index["label_qc_status"].unique())
 
     def test_reset_charges_unwrapped(self, qc_reset):
         targets = {
@@ -91,9 +92,52 @@ class TestV2Integration:
             assert list(v1.rglob("*.parquet"))
 
     def test_boundary_continuity(self):
-        p = REPO / "outputs/qc_reports/vidal_sequence_v2/boundary_continuity.csv"
+        p = REPO / "outputs/qc_reports/vidal_sequence_v2/exported_boundary_continuity.csv"
         df = pd.read_csv(p)
-        assert df["continuity_error"].max() <= 1e-6
+        within = df[df["boundary_type"] != "SEGMENT_BOUNDARY"]
+        assert within["continuity_error"].max() <= 1e-6
+        assert set(within["status"].unique()) <= {"PASS"}
+
+    def test_no_orphan_records(self):
+        p = REPO / "outputs/qc_reports/vidal_sequence_v2/orphan_records.csv"
+        if not p.exists() or p.stat().st_size == 0:
+            return
+        df = pd.read_csv(p)
+        assert df.empty
+
+    def test_partial_sequences_complete(self):
+        root = REPO / "outputs/labelled/vidal_sequence_v2"
+        expectations = {
+            ("lg_hg2", "partial_train"): [
+                "10-29-18_14.41 551_Mixed1_25degC_LGHG2.mat",
+                "10-29-18_16.50 551_Charge7.mat",
+                "10-29-18_20.16 551_Mixed2_25degC_LGHG2.mat",
+                "10-29-18_22.29 551_Charge8.mat",
+                "10-30-18_06.27 552_Mixed3_25degC_LGHG2.mat",
+                "10-30-18_08.31 552_Charge10.mat",
+            ],
+            ("samsung_30t", "partial_train"): [
+                "03-19-19_03.13 734_Mixed1_25degC_IN21700_30T.mat",
+                "03-19-19_04.07 734_Charge7_25degC_IN21700_30T.mat",
+                "03-19-19_05.44 734_Mixed2_25degC_IN21700_30T.mat",
+                "03-19-19_06.45 734_Charge8_25degC_IN21700_30T.mat",
+                "03-20-19_21.16 740_Mixed3_25degC_IN21700_30T.mat",
+                "03-20-19_22.00 740_Charge11_25degC_IN21700_30T.mat",
+            ],
+        }
+        for (dataset, split), expected in expectations.items():
+            idx = pd.read_csv(root / dataset / split / "sequence_index.csv")
+            assert list(idx.sort_values("sequence_order")["source_filename"]) == expected
+
+    def test_panasonic_cycle2_missing_charge_segment(self):
+        idx = pd.read_csv(
+            REPO / "outputs/labelled/vidal_sequence_v2/panasonic_18650pf/partial_train/sequence_index.csv"
+        )
+        cycle2 = idx[idx["source_filename"] == "03-19-17_03.25 25degC_Cycle_2_Pan18650PF.mat"].iloc[0]
+        assert cycle2["soc_init"] == pytest.approx(1.0)
+        assert cycle2["soc_init_source"] == "protocol_full_start_missing_charge"
+        assert bool(cycle2["missing_preceding_charge"])
+        assert cycle2["sequence_segment_start"]
 
     def test_charge_ends_near_one(self, v2_index):
         charges = v2_index[v2_index["file_type"] == "charge"]

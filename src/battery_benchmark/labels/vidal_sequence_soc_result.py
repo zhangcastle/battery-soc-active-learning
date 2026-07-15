@@ -43,6 +43,18 @@ class SequenceLabelRecordMeta:
     artifact_path: str = ""
     artifact_sha256: str = ""
     source_sha256: str = ""
+    source_raw_path: str = ""
+    sequence_segment_id: int = 1
+    segment_order: int = 1
+    segment_start_reason: str = ""
+    sequence_segment_start: bool = False
+    missing_preceding_charge: bool = False
+    missing_following_charge: bool = False
+    missing_charge_reason: str = ""
+    confidence: str = ""
+    owner_filename: str = ""
+    owner_sequence_order: int | None = None
+    git_dirty: bool = False
 
 
 @dataclass

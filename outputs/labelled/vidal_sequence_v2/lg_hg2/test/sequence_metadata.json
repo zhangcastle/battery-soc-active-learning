@@ -1,8 +1,10 @@
 {
   "dataset": "lg_hg2",
   "protocol_split": "test",
+  "artifact_status": "validated_for_training",
   "source_manifest": "data/manifests/lg_hg2_vidal2019_25c_manifest.csv",
-  "audit_commit_or_timestamp": "2026-07-15T15:08:57.899035+00:00",
+  "manifest_sha256": "f8cbda498d0f4947175102a8e39bd512b2784df70e07c3bd13081dec8ea7cda9",
+  "audit_commit_or_timestamp": "2026-07-15T16:23:42.617516+00:00",
   "capacity_policy": {
     "capacity_reference_ah": 3.0,
     "capacity_source": "adapter_capacity_hint_ah",
@@ -18,10 +20,13 @@
   "missing_corresponding_charge": false,
   "warnings": [],
   "label_policy_version": "vidal_sequence_v2",
-  "code_commit": "7187b568586e89c5edb30becae02964d6651f9d8",
-  "generated_at": "2026-07-15T15:08:57.934336+00:00",
+  "code_commit": "9381101bf668c5e7a11a126f49d0555d3fec8470",
+  "git_dirty": true,
+  "source_tree_hash": "60620f63f94e797bdc3cd65a7f97172ac4a61d832a7576a9c43b10dfd4e365ab",
+  "generated_at": "2026-07-15T16:23:47.930363+00:00",
   "artifact_hashes": {
-    "sequence_index.csv": "7d84f73a3485bfc0c4d746f80f2c2169059fa6a6f49e2773124fa80c112cba91",
-    "concatenated_sequence.parquet": "7141a554506f9667d4cfcda3c95fb4bb61d4e663bb7d4d5e0a4ccceeb1822b06"
-  }
+    "sequence_index.csv": "f9395866791f6a9428c4fee43c8e179d0637f6a1219ff0606a22f69e90a01c93",
+    "concatenated_sequence.parquet": "9d3d6c9b0204da1eed336e403ad0429fb8fb2efd574aa7f58218a22144b66f2c"
+  },
+  "export_policy": "pass_and_warning_excluding_fail"
 }

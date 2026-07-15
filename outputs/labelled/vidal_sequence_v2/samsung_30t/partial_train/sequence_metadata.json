@@ -1,8 +1,10 @@
 {
   "dataset": "samsung_30t",
   "protocol_split": "partial_train",
+  "artifact_status": "validated_for_training",
   "source_manifest": "data/manifests/samsung_30t_vidal2019_25c_manifest.csv",
-  "audit_commit_or_timestamp": "2026-07-15T15:08:59.738573+00:00",
+  "manifest_sha256": "1217404d3b1556a31b173ce187fbcc2ddb8d2d928f6c1e75868394c0f2dee268",
+  "audit_commit_or_timestamp": "2026-07-15T16:23:56.784594+00:00",
   "capacity_policy": {
     "capacity_reference_ah": 3.0,
     "capacity_source": "adapter_capacity_hint_ah",
@@ -18,10 +20,13 @@
   "missing_corresponding_charge": false,
   "warnings": [],
   "label_policy_version": "vidal_sequence_v2",
-  "code_commit": "7187b568586e89c5edb30becae02964d6651f9d8",
-  "generated_at": "2026-07-15T15:08:59.753666+00:00",
+  "code_commit": "9381101bf668c5e7a11a126f49d0555d3fec8470",
+  "git_dirty": true,
+  "source_tree_hash": "f77ab32b0b7ddc77cce0f21f184c3bd9ee7ff3723004f7ee57f870cbd130b941",
+  "generated_at": "2026-07-15T16:24:02.586430+00:00",
   "artifact_hashes": {
-    "sequence_index.csv": "43d5b0be2365de11da7f30f57ad6e9c8d3074d32ff04a78d2eda8ce2e3674e71",
-    "concatenated_sequence.parquet": "bb31d8889e2526594ee592e94f50eabcc573f577edaa7617527dcc02793eb1a1"
-  }
+    "sequence_index.csv": "629b9696d049ae1040cda50e65b7be1bac78b9db1b60106a112a5712e869474c",
+    "concatenated_sequence.parquet": "cdc5ed30b60fa314e871e7cbf5b422b5d37a4e24378446cab65ebe270e3cfaac"
+  },
+  "export_policy": "pass_and_warning_excluding_fail"
 }

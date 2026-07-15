@@ -1,8 +1,10 @@
 {
   "dataset": "lg_hg2",
   "protocol_split": "partial_train",
+  "artifact_status": "validated_for_training",
   "source_manifest": "data/manifests/lg_hg2_vidal2019_25c_manifest.csv",
-  "audit_commit_or_timestamp": "2026-07-15T15:08:57.061073+00:00",
+  "manifest_sha256": "f8cbda498d0f4947175102a8e39bd512b2784df70e07c3bd13081dec8ea7cda9",
+  "audit_commit_or_timestamp": "2026-07-15T16:23:35.759235+00:00",
   "capacity_policy": {
     "capacity_reference_ah": 3.0,
     "capacity_source": "adapter_capacity_hint_ah",
@@ -18,10 +20,13 @@
   "missing_corresponding_charge": false,
   "warnings": [],
   "label_policy_version": "vidal_sequence_v2",
-  "code_commit": "7187b568586e89c5edb30becae02964d6651f9d8",
-  "generated_at": "2026-07-15T15:08:57.171232+00:00",
+  "code_commit": "9381101bf668c5e7a11a126f49d0555d3fec8470",
+  "git_dirty": true,
+  "source_tree_hash": "6aea7b2317f6a11a9628e874733a14f7b62dbdac230cd8da584e76411c471bb4",
+  "generated_at": "2026-07-15T16:23:41.507865+00:00",
   "artifact_hashes": {
-    "sequence_index.csv": "644a60e478ef2641996b56a9d5565171326152a9154f1c6bfe561890305bf2b5",
-    "concatenated_sequence.parquet": "3b7e461faa43eae1917e92140a5d7130b909114d688f7c105cbe7fcfe575ef5e"
-  }
+    "sequence_index.csv": "3526632bf5b387f8acf022aa081fad99b9c19c05046ac32f8e53838a7fbcf84f",
+    "concatenated_sequence.parquet": "966471a2b00d74f5428b6991c8843949cc49b571338003a2c55eb54e52b29f82"
+  },
+  "export_policy": "pass_and_warning_excluding_fail"
 }

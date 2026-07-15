@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import shutil
 import sys
 from dataclasses import asdict
 from pathlib import Path
@@ -130,7 +131,7 @@ def write_manifest_change_log(qc_root: Path) -> list[dict]:
 
 
 def panasonic_missing_corresponding_charge(split: str) -> bool:
-    return split == "partial_train"
+    return split in {"full_train", "partial_train"}
 
 
 def compute_boundary_charge_ends(
@@ -197,12 +198,18 @@ def main() -> int:
     parser.add_argument("--dry-run", action="store_true")
     parser.add_argument("--overwrite", action="store_true")
     parser.add_argument("--include-warnings", action="store_true")
+    parser.add_argument("--pass-only", action="store_true")
     parser.add_argument("--fail-on-warning", action="store_true")
     args = parser.parse_args()
 
     if args.output_root.exists() and not args.overwrite and not args.dry_run:
         print(f"Output exists: {args.output_root} (use --overwrite)")
         return 1
+    if args.overwrite and not args.dry_run:
+        if args.output_root.exists():
+            shutil.rmtree(args.output_root)
+        if args.qc_root.exists():
+            shutil.rmtree(args.qc_root)
 
     sequences = load_candidate_sequences(args.audit_json)
     manifest_log = write_manifest_change_log(args.qc_root)
@@ -215,6 +222,9 @@ def main() -> int:
     reset_all: list[dict] = []
     anchor_all: list[dict] = []
     current_sign_all: list[dict] = []
+    exported_boundary_all: list[dict] = []
+    orphan_all: list[dict] = []
+    completeness_all: list[dict] = []
 
     exit_code = 0
 
@@ -308,6 +318,7 @@ def main() -> int:
                 protocol_split=split,
                 output_dir=args.output_root,
                 include_warnings=args.include_warnings,
+                pass_only=args.pass_only,
                 source_manifest=manifest_path,
                 capacity_policy=capacity_policy,
                 current_convention=convention,
@@ -315,6 +326,9 @@ def main() -> int:
                 warnings=["missing_corresponding_charge_for_panasonic_cycle1"] if missing_cc else [],
                 repo_root=REPO,
             )
+            exported_boundary_all.extend(export_info.get("exported_boundary_rows", []))
+            orphan_all.extend(export_info.get("orphan_rows", []))
+            completeness_all.extend(export_info.get("completeness_rows", []))
             print(f"Exported {dataset}/{split}: {export_info['record_count']} records")
 
     if not args.dry_run:
@@ -328,9 +342,14 @@ def main() -> int:
             anchor_rows=anchor_all,
             current_sign_rows=current_sign_all,
             manifest_log_rows=manifest_log,
+            exported_boundary_rows=exported_boundary_all,
+            orphan_rows=orphan_all,
+            completeness_rows=completeness_all,
         )
 
     if failures:
+        exit_code = 1
+    if orphan_all:
         exit_code = 1
     if args.fail_on_warning and warnings:
         exit_code = 1

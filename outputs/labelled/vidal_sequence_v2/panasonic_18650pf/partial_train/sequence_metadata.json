@@ -1,8 +1,10 @@
 {
   "dataset": "panasonic_18650pf",
   "protocol_split": "partial_train",
+  "artifact_status": "validated_for_training",
   "source_manifest": "data/manifests/panasonic_vidal2019_25c_manifest.csv",
-  "audit_commit_or_timestamp": "2026-07-15T15:08:52.334892+00:00",
+  "manifest_sha256": "5f820bbb003318fe0f6e3b6c7c1139154f70aef3d6370ec200d0ab7d72238925",
+  "audit_commit_or_timestamp": "2026-07-15T16:23:14.810826+00:00",
   "capacity_policy": {
     "capacity_reference_ah": 2.9,
     "capacity_source": "adapter_capacity_hint_ah",
@@ -20,10 +22,13 @@
     "missing_corresponding_charge_for_panasonic_cycle1"
   ],
   "label_policy_version": "vidal_sequence_v2",
-  "code_commit": "7187b568586e89c5edb30becae02964d6651f9d8",
-  "generated_at": "2026-07-15T15:08:52.358280+00:00",
+  "code_commit": "9381101bf668c5e7a11a126f49d0555d3fec8470",
+  "git_dirty": true,
+  "source_tree_hash": "2eea738a9597d720d38c2d09d0f4219c7e0166f9f50a958ec8640feb0eb02ef6",
+  "generated_at": "2026-07-15T16:23:19.777875+00:00",
   "artifact_hashes": {
-    "sequence_index.csv": "7f4845b5f31b8815f194468fd76e9dd9de53e3830774d3f83f1412f1b103ff99",
-    "concatenated_sequence.parquet": "8a1b1869c985843bebf2ffb826c1ef1e0d05f6c3ffcd106c8f549ee32e380b12"
-  }
+    "sequence_index.csv": "a5274aba90242de47c585c524619fafe05f9432b91dd75d33d27f22e2262d8b9",
+    "concatenated_sequence.parquet": "662c6251cf98eba85ff9ae712f37b227bd7e535fe8fabeade337ba2ef8de5d08"
+  },
+  "export_policy": "pass_and_warning_excluding_fail"
 }

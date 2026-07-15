@@ -21,6 +21,8 @@ from battery_benchmark.labels.vidal_sequence_soc_v2 import (
     compute_drive_soc,
     CONTINUITY_TOLERANCE,
 )
+from battery_benchmark.labels.vidal_sequence_exporter import export_split_artifacts
+from battery_benchmark.labels.vidal_sequence_soc_result import SequenceLabelRecordMeta, SequenceSOCResult
 from battery_benchmark.labels.vidal_time_integration import trapezoidal_coulomb_integration
 from battery_benchmark.labels.vidal_current_convention import CurrentConvention
 from battery_benchmark.labels.vidal_capacity_policy import VidalCapacityPolicy
@@ -149,6 +151,24 @@ class TestDriveChargeSOC:
         assert meta.raw_soc_end_before_correction is not None
         assert meta.endpoint_correction_magnitude >= 0
 
+    def test_charge_nonzero_ah_start_is_continuous(self):
+        conv = CurrentConvention(True, "positive_is_charge", "synthetic")
+        df = _charge_df()
+        df["cycler_ah"] = df["cycler_ah"] + 0.25
+        rec = _record(df, "charge")
+        out, meta, _ = compute_charge_soc(rec, 0.42, 3.0, conv, allow_endpoint_correction=True)
+        assert out["soc_sequence_v2"].iloc[0] == pytest.approx(0.42)
+        assert meta.soc_init == pytest.approx(0.42)
+
+    def test_invalid_charge_ah_fails_without_linspace(self):
+        conv = CurrentConvention(True, "positive_is_charge", "synthetic")
+        df = _charge_df()
+        df["cycler_ah"] = 0.0
+        rec = _record(df, "charge")
+        _, meta, _ = compute_charge_soc(rec, 0.4, 3.0, conv, allow_endpoint_correction=True)
+        assert meta.label_qc_status == "FAIL"
+        assert "invalid_effective_charge_ah" in meta.label_qc_reasons
+
 
 class TestAhUnwrap:
     def test_reset_unwrap(self):
@@ -164,6 +184,17 @@ class TestAhUnwrap:
         out, _, _ = compute_charge_soc(rec, 0.3, 3.0, conv, allow_endpoint_correction=True)
         soc = out["soc_sequence_v2"].to_numpy()
         assert not np.any(np.diff(soc) < -0.05)
+
+    def test_double_reset_unwrap(self):
+        ah = np.array([0.0, 1.0, 2.0, 0.05, 0.7, 1.5, 0.02, 0.6])
+        res = unwrap_cycler_ah(ah, adapter_reset_detected=True)
+        assert res.reset_indices == [3, 6]
+        assert np.all(np.diff(res.cycler_ah_effective) >= -0.01)
+
+    def test_small_noise_not_reset(self):
+        ah = np.array([0.0, 1.0, 1.005, 1.0, 1.01])
+        res = unwrap_cycler_ah(ah)
+        assert res.reset_indices == []
 
 
 class TestAnchorExcluded:
@@ -191,10 +222,85 @@ class TestV1Untouched:
 
 
 class TestExporterDedup:
-    def test_split_identity_not_filename_only(self):
-        a = ("panasonic_18650pf", "full_train", 1, "a.mat")
-        b = ("panasonic_18650pf", "partial_train", 1, "a.mat")
-        assert a != b
+    def _result(self, split: str, status: str, filename: str = "a.mat") -> SequenceSOCResult:
+        df = pd.DataFrame({
+            "time_s": [0.0, 1.0],
+            "timestamp": [0.0, 1.0],
+            "voltage_v": [4.0, 3.9],
+            "current_a": [-1.0, -1.0],
+            "temperature_c": [25.0, 25.0],
+            "cycler_ah_raw": [0.0, -0.1],
+            "cycler_ah_effective": [0.0, -0.1],
+            "soc_cc_raw": [1.0, 0.9],
+            "soc_sequence_v2": [1.0, 0.9],
+        })
+        meta = SequenceLabelRecordMeta(
+            dataset="panasonic_18650pf",
+            protocol_split=split,
+            sequence_id="seq",
+            sequence_order=1,
+            source_filename=filename,
+            file_type="drive_cycle",
+            profile="Mix1",
+            record_role="model_input",
+            soc_init=1.0,
+            soc_end=0.9,
+            soc_init_source="full_charge_anchor",
+            capacity_reference_ah=2.9,
+            label_qc_status=status,
+            row_count=2,
+        )
+        return SequenceSOCResult(df, meta)
+
+    def test_exporter_keeps_same_filename_across_splits(self, tmp_path):
+        manifest = tmp_path / "manifest.csv"
+        manifest.write_text("x\n", encoding="utf-8")
+        out = tmp_path / "out"
+        cap = VidalCapacityPolicy.resolve("panasonic_18650pf")
+        conv = CurrentConvention(True, "positive_is_charge", "panasonic_18650pf")
+        export_split_artifacts(
+            [self._result("full_train", "PASS", "a.mat")],
+            dataset="panasonic_18650pf",
+            protocol_split="full_train",
+            output_dir=out,
+            source_manifest=manifest,
+            capacity_policy=cap,
+            current_convention=conv,
+            repo_root=tmp_path,
+        )
+        export_split_artifacts(
+            [self._result("partial_train", "PASS", "a.mat")],
+            dataset="panasonic_18650pf",
+            protocol_split="partial_train",
+            output_dir=out,
+            source_manifest=manifest,
+            capacity_policy=cap,
+            current_convention=conv,
+            repo_root=tmp_path,
+        )
+        assert (out / "panasonic_18650pf/full_train/records/01__a.mat.parquet").exists()
+        assert (out / "panasonic_18650pf/partial_train/records/01__a.mat.parquet").exists()
+
+    def test_exporter_default_keeps_warning_and_excludes_fail(self, tmp_path):
+        manifest = tmp_path / "manifest.csv"
+        manifest.write_text("x\n", encoding="utf-8")
+        cap = VidalCapacityPolicy.resolve("panasonic_18650pf")
+        conv = CurrentConvention(True, "positive_is_charge", "panasonic_18650pf")
+        info = export_split_artifacts(
+            [
+                self._result("full_train", "WARNING", "warn.mat"),
+                self._result("full_train", "FAIL", "fail.mat"),
+            ],
+            dataset="panasonic_18650pf",
+            protocol_split="full_train",
+            output_dir=tmp_path / "out",
+            source_manifest=manifest,
+            capacity_policy=cap,
+            current_convention=conv,
+            repo_root=tmp_path,
+        )
+        idx = pd.read_csv(info["index_path"])
+        assert list(idx["source_filename"]) == ["warn.mat"]
 
 
 class TestMissingSocInit:
@@ -202,4 +308,5 @@ class TestMissingSocInit:
         conv = CurrentConvention(True, "positive_is_charge", "synthetic")
         rec = _record(_drive_df(n=10), "drive_cycle")
         df, meta = compute_drive_soc(rec, float("nan"), 3.0, conv)
-        assert not np.isfinite(meta.soc_end) or meta.label_qc_status in ("PASS", "WARNING", "FAIL")
+        assert meta.label_qc_status == "FAIL"
+        assert "missing_soc_init" in meta.label_qc_reasons

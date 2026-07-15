@@ -63,21 +63,23 @@ def unwrap_cycler_ah(
     """Build monotonic ``cycler_ah_effective`` preserving raw values."""
     raw = np.asarray(raw_ah, dtype=float).copy()
     resets = detect_ah_resets(raw, adapter_reset_detected=adapter_reset_detected)
-    effective = raw.copy()
+    effective = np.empty_like(raw)
     offsets: list[float] = []
     cumulative_offset = 0.0
 
-    for idx in resets:
-        if idx <= 0:
+    reset_set = set(resets)
+    previous_effective = float(raw[0]) if len(raw) else 0.0
+    for idx, value in enumerate(raw):
+        if idx == 0:
+            effective[idx] = value
             continue
-        before = effective[idx - 1]
-        after = effective[idx]
-        offset = before - after
-        if offset <= NOISE_TOL_AH:
-            continue
-        cumulative_offset += offset
-        offsets.append(offset)
-        effective[idx:] += cumulative_offset
+        if idx in reset_set:
+            increment = previous_effective - value
+            if increment > NOISE_TOL_AH:
+                cumulative_offset += increment
+                offsets.append(increment)
+        effective[idx] = value + cumulative_offset
+        previous_effective = effective[idx]
 
     reasons: list[str] = []
     status = "PASS"

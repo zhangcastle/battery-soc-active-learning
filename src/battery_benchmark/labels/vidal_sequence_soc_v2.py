@@ -35,7 +35,19 @@ from battery_benchmark.labels.vidal_time_integration import (
 
 CONTINUITY_TOLERANCE = 1e-6
 FULL_VOLTAGE_V = 4.15
-TAPER_CURRENT_A = 0.05
+MIN_EFFECTIVE_CHARGE_AH = 1e-6
+SOC_CLIP_WARNING_FRACTION = 0.001
+SOC_CLIP_FAIL_FRACTION = 0.05
+SOC_CLIP_FAIL_EXCESS = 0.02
+
+VIDAL_CHARGE_TERMINATION_POLICY = {
+    "panasonic_18650pf": {"full_voltage_v": 4.15, "taper_current_a": 0.05},
+    "lg_hg2": {"full_voltage_v": 4.15, "taper_current_a": 0.05},
+    "samsung_30t": {"full_voltage_v": 4.15, "taper_current_a": 0.01},
+}
+
+PANASONIC_CYCLE1 = "03-18-17_02.17 25degC_Cycle_1_Pan18650PF.mat"
+PANASONIC_CYCLE2 = "03-19-17_03.25 25degC_Cycle_2_Pan18650PF.mat"
 
 
 def _sha256_bytes(data: bytes) -> str:
@@ -55,11 +67,15 @@ def safe_filename(name: str) -> str:
 
 
 def _charge_signals(record: SequenceRecord) -> tuple[bool, bool]:
+    policy = VIDAL_CHARGE_TERMINATION_POLICY.get(
+        record.metadata.get("dataset", ""),
+        {"full_voltage_v": FULL_VOLTAGE_V, "taper_current_a": 0.05},
+    )
     v = record.data["voltage_v"].to_numpy(dtype=float)
     i_arr = record.data["current_a"].to_numpy(dtype=float)
-    full_v = bool(np.nanmax(v) >= FULL_VOLTAGE_V) if len(v) else False
+    full_v = bool(np.nanmax(v) >= policy["full_voltage_v"]) if len(v) else False
     tail = i_arr[-min(20, len(i_arr)):] if len(i_arr) else i_arr
-    taper = bool(np.nanmin(np.abs(tail)) <= TAPER_CURRENT_A) if len(tail) else False
+    taper = bool(np.nanmin(np.abs(tail)) <= policy["taper_current_a"]) if len(tail) else False
     qc = record.qc
     if hasattr(qc, "details"):
         details = getattr(qc, "details", {}) or {}
@@ -67,6 +83,36 @@ def _charge_signals(record: SequenceRecord) -> tuple[bool, bool]:
             full_v = full_v or bool(details.get("full_voltage_reached", False))
             taper = taper or bool(details.get("current_taper_detected", False))
     return full_v, taper
+
+
+def _raw_source_path(record: SequenceRecord) -> str:
+    rel = record.metadata.get("relative_path") or record.metadata.get("source_path")
+    return str(rel or record.metadata.get("source_file", ""))
+
+
+def _source_sha(record: SequenceRecord) -> str:
+    return str(record.metadata.get("source_sha256", ""))
+
+
+def _apply_clip_qc(
+    *,
+    status: str,
+    reasons: list[str],
+    clip_count: int,
+    clip_excess: float,
+    row_count: int,
+) -> str:
+    if not clip_count:
+        return status
+    clip_fraction = clip_count / max(row_count, 1)
+    reasons.append(f"soc_clip_count={clip_count}")
+    reasons.append(f"soc_clip_fraction={clip_fraction:.6f}")
+    if clip_excess > SOC_CLIP_FAIL_EXCESS or (
+        clip_fraction > SOC_CLIP_FAIL_FRACTION and clip_excess > 1e-3
+    ):
+        reasons.append(f"soc_clip_excess={clip_excess:.6f}")
+        return "FAIL"
+    return "WARNING" if status == "PASS" else status
 
 
 def _adapter_reset_flag(record: SequenceRecord) -> bool:
@@ -87,6 +133,33 @@ def compute_drive_soc(
 ) -> tuple[pd.DataFrame, SequenceLabelRecordMeta]:
     """Compute drive SOC from coulomb integration."""
     df = record.data.copy()
+    if not np.isfinite(soc_init):
+        df_out = df.copy()
+        df_out["cycler_ah_raw"] = df.get("cycler_ah", np.nan)
+        df_out["cycler_ah_effective"] = df.get("cycler_ah", np.nan)
+        df_out["soc_cc_raw"] = np.nan
+        df_out["soc_sequence_v2"] = np.nan
+        meta = SequenceLabelRecordMeta(
+            dataset=record.metadata["dataset"],
+            protocol_split=record.metadata["split"],
+            sequence_id=record.metadata["sequence_id"],
+            sequence_order=0,
+            source_filename=record.metadata["source_file"],
+            file_type=record.metadata["file_type"],
+            profile=record.metadata.get("profile", ""),
+            record_role=record.metadata["record_role"],
+            soc_init=float("nan"),
+            soc_end=float("nan"),
+            soc_init_source="unresolved",
+            capacity_reference_ah=capacity_ah,
+            label_qc_status="FAIL",
+            label_qc_reasons=["missing_soc_init"],
+            row_count=len(df_out),
+            source_sha256=_source_sha(record),
+            source_raw_path=_raw_source_path(record),
+        )
+        return df_out, meta
+
     integration = trapezoidal_coulomb_integration(
         df["time_s"].to_numpy(dtype=float),
         df["current_a"].to_numpy(dtype=float),
@@ -99,12 +172,18 @@ def compute_drive_soc(
     status = "PASS"
     if integration.issues:
         reasons.extend(integration.issues)
+    if integration.negative_dt_count:
+        status = "FAIL"
     if len(soc_raw) >= 2 and float(soc_raw[-1]) > float(soc_raw[0]) + 1e-4:
         status = "WARNING"
         reasons.append("drive_soc_not_overall_falling")
-    if clip_count:
-        status = "WARNING" if status == "PASS" else status
-        reasons.append(f"soc_clip_count={clip_count}")
+    status = _apply_clip_qc(
+        status=status,
+        reasons=reasons,
+        clip_count=clip_count,
+        clip_excess=clip_excess,
+        row_count=len(soc_raw),
+    )
 
     out = pd.DataFrame({
         "time_s": df["time_s"].values,
@@ -136,6 +215,8 @@ def compute_drive_soc(
         soc_clip_count=clip_count,
         soc_clip_max_excess=clip_excess,
         row_count=len(out),
+        source_sha256=_source_sha(record),
+        source_raw_path=_raw_source_path(record),
     )
     return out, meta
 
@@ -162,13 +243,15 @@ def compute_charge_soc(
 
     soc_cc_raw = soc_start + integration.cumulative_signed_ah / capacity_ah
     effective_ah = unwrap.cycler_ah_effective
-    ah_end = float(np.nanmax(effective_ah)) if len(effective_ah) else 0.0
-    if ah_end <= 0:
-        progress = np.linspace(0.0, 1.0, len(df)) if len(df) else np.array([])
+    delta_effective_ah = effective_ah - effective_ah[0] if len(effective_ah) else effective_ah
+    total_effective_charge_ah = float(delta_effective_ah[-1]) if len(delta_effective_ah) else 0.0
+    if total_effective_charge_ah > MIN_EFFECTIVE_CHARGE_AH and np.isfinite(total_effective_charge_ah):
+        progress = delta_effective_ah / total_effective_charge_ah
+        progress = np.clip(progress, 0.0, 1.0)
+        soc_seq = soc_start + (1.0 - soc_start) * progress
     else:
-        progress = effective_ah / ah_end
-
-    soc_seq = soc_start + (1.0 - soc_start) * progress
+        progress = np.full(len(df), np.nan)
+        soc_seq = np.full(len(df), np.nan)
     endpoint_applied = False
     raw_end = float(soc_cc_raw[-1]) if len(soc_cc_raw) else soc_start
     corrected_end = float(soc_seq[-1]) if len(soc_seq) else soc_start
@@ -178,7 +261,8 @@ def compute_charge_soc(
     reasons: list[str] = []
     status = "PASS"
 
-    if allow_endpoint_correction and full_v and (taper or correction_mag <= ENDPOINT_CORRECTION_THRESHOLD):
+    valid_effective_ah = bool(total_effective_charge_ah > MIN_EFFECTIVE_CHARGE_AH and np.isfinite(total_effective_charge_ah))
+    if allow_endpoint_correction and full_v and taper and valid_effective_ah:
         endpoint_applied = True
         if correction_mag > ENDPOINT_CORRECTION_THRESHOLD:
             status = "WARNING"
@@ -188,14 +272,33 @@ def compute_charge_soc(
     else:
         soc_seq = soc_cc_raw.copy()
         endpoint_applied = False
-        if allow_endpoint_correction and not full_v:
-            status = "WARNING"
-            reasons.append("endpoint_correction_skipped_no_full_voltage")
+        if allow_endpoint_correction:
+            status = "FAIL" if not valid_effective_ah else "WARNING"
+            if not full_v:
+                reasons.append("endpoint_correction_skipped_no_full_voltage")
+            if not taper:
+                reasons.append("endpoint_correction_skipped_no_taper")
+            if not valid_effective_ah:
+                reasons.append("invalid_effective_charge_ah")
 
     soc_seq, clip_count, clip_excess = apply_soc_clipping(soc_seq)
+    if integration.issues:
+        reasons.extend(integration.issues)
+    if integration.negative_dt_count:
+        status = "FAIL"
     if len(soc_seq) >= 2 and float(soc_seq[-1]) < float(soc_seq[0]) - 1e-4:
         status = "FAIL"
         reasons.append("charge_soc_not_overall_rising")
+    if len(soc_seq) and np.isnan(soc_seq).any():
+        status = "FAIL"
+        reasons.append("soc_sequence_contains_nan")
+    status = _apply_clip_qc(
+        status=status,
+        reasons=reasons,
+        clip_count=clip_count,
+        clip_excess=clip_excess,
+        row_count=len(soc_seq),
+    )
 
     if unwrap.reset_indices:
         reasons.append(f"reset_unwrap_at={unwrap.reset_indices}")
@@ -223,7 +326,7 @@ def compute_charge_soc(
         record_role=record.metadata["record_role"],
         soc_init=soc_start,
         soc_end=float(soc_seq[-1]) if len(soc_seq) else soc_start,
-        soc_init_source="previous_charge_end",
+        soc_init_source="previous_drive_end",
         capacity_reference_ah=capacity_ah,
         reset_unwrap_applied=bool(unwrap.reset_indices),
         endpoint_correction_applied=endpoint_applied,
@@ -235,6 +338,8 @@ def compute_charge_soc(
         soc_clip_count=clip_count,
         soc_clip_max_excess=clip_excess,
         row_count=len(out),
+        source_sha256=_source_sha(record),
+        source_raw_path=_raw_source_path(record),
     )
     unwrap_info = {
         "filename": record.metadata["source_file"],
@@ -317,6 +422,28 @@ def validate_sequence_item(
     return issues
 
 
+def _is_panasonic_cycle2(dataset: str, filename: str) -> bool:
+    return dataset == "panasonic_18650pf" and filename == PANASONIC_CYCLE2
+
+
+def _is_panasonic_cycle1(dataset: str, filename: str) -> bool:
+    return dataset == "panasonic_18650pf" and filename == PANASONIC_CYCLE1
+
+
+def _mark_segment(
+    meta: SequenceLabelRecordMeta,
+    *,
+    segment_id: int,
+    segment_order: int,
+    segment_start: bool,
+    reason: str,
+) -> None:
+    meta.sequence_segment_id = segment_id
+    meta.segment_order = segment_order
+    meta.sequence_segment_start = segment_start
+    meta.segment_start_reason = reason
+
+
 def reconstruct_split_sequence(
     dataset: str,
     protocol_split: str,
@@ -348,6 +475,8 @@ def reconstruct_split_sequence(
 
     prior_soc_end: float | None = None
     prior_meta: SequenceLabelRecordMeta | None = None
+    segment_id = 1
+    segment_order = 0
 
     for item in ordered_items:
         order = int(item["sequence_order"])
@@ -362,17 +491,40 @@ def reconstruct_split_sequence(
         if item["file_type"] == "drive_cycle":
             soc_init_source = "unresolved"
             soc_init: float | None = None
+            segment_start = False
+            segment_start_reason = "previous_corresponding_charge"
 
-            if prior_soc_end is not None:
-                soc_init = prior_soc_end
-                soc_init_source = "previous_charge_end"
+            if _is_panasonic_cycle2(dataset, fn):
+                if prior_meta is not None:
+                    prior_meta.missing_following_charge = True
+                    prior_meta.missing_charge_reason = (
+                        "No public post-Cycle1 corresponding charge found; "
+                        "Cycle2 begins a new protocol full-start segment."
+                    )
+                if results:
+                    results[-1].meta = prior_meta if prior_meta is not None else results[-1].meta
+                if prior_meta is not None:
+                    segment_id += 1
+                segment_order = 0
+                soc_init = 1.0
+                soc_init_source = "protocol_full_start_missing_charge"
+                segment_start = True
+                segment_start_reason = "protocol_full_start_missing_charge"
             elif fn in anchor_records:
                 anc = anchor_records[fn]
                 if anc.anchor_qc_status == "PASS":
                     soc_init = 1.0
                     soc_init_source = "full_charge_anchor"
+                    if prior_meta is not None:
+                        segment_id += 1
+                        segment_order = 0
+                    segment_start = True
+                    segment_start_reason = "full_charge_anchor"
                 else:
                     soc_init_source = "unresolved"
+            elif prior_soc_end is not None:
+                soc_init = prior_soc_end
+                soc_init_source = "previous_charge_end"
             elif boundary_charge_ends and fn in boundary_charge_ends:
                 soc_init = boundary_charge_ends[fn]
                 soc_init_source = "previous_charge_end"
@@ -404,6 +556,16 @@ def reconstruct_split_sequence(
                     label_qc_status="FAIL",
                     label_qc_reasons=["missing_soc_init"],
                     row_count=len(df_out),
+                    source_sha256=_source_sha(rec),
+                    source_raw_path=_raw_source_path(rec),
+                )
+                segment_order += 1
+                _mark_segment(
+                    meta,
+                    segment_id=segment_id,
+                    segment_order=segment_order,
+                    segment_start=segment_start or segment_order == 1,
+                    reason=segment_start_reason if segment_start else "unresolved",
                 )
                 results.append(SequenceSOCResult(dataframe=df_out, meta=meta))
                 prior_soc_end = None
@@ -413,17 +575,45 @@ def reconstruct_split_sequence(
             df_out, meta = compute_drive_soc(rec, soc_init, cap, convention)
             meta.sequence_order = order
             meta.soc_init_source = soc_init_source
+            segment_order += 1
+            _mark_segment(
+                meta,
+                segment_id=segment_id,
+                segment_order=segment_order,
+                segment_start=segment_start or segment_order == 1,
+                reason=segment_start_reason if (segment_start or segment_order == 1) else "previous_corresponding_charge",
+            )
+            if _is_panasonic_cycle2(dataset, fn):
+                meta.missing_preceding_charge = True
+                meta.missing_charge_reason = (
+                    "No public pre-Cycle2 charge file; drive starts from full-charge "
+                    "protocol state based on manifest chronology and cycler Ah."
+                )
+                meta.confidence = "medium"
+                if meta.label_qc_status == "PASS":
+                    meta.label_qc_status = "WARNING"
+                meta.label_qc_reasons.append("protocol_full_start_missing_charge")
+            if _is_panasonic_cycle1(dataset, fn):
+                meta.missing_following_charge = True
+                meta.missing_charge_reason = (
+                    "No post-Cycle1 corresponding charge found under preceding-drive "
+                    "ownership rule; next selected train drive starts a new segment."
+                )
 
-            if prior_meta is not None:
+            if prior_meta is not None and not meta.sequence_segment_start:
                 gap = abs(soc_init - prior_meta.soc_end)
                 boundary_rows.append({
                     "dataset": dataset,
                     "protocol_split": protocol_split,
+                    "sequence_segment_id": segment_id,
                     "previous_filename": prior_meta.source_filename,
                     "next_filename": fn,
+                    "previous_file_type": prior_meta.file_type,
+                    "next_file_type": "drive_cycle",
                     "previous_soc_end": prior_meta.soc_end,
                     "next_soc_start": soc_init,
                     "continuity_error": gap,
+                    "boundary_type": "charge_to_drive",
                     "status": "PASS" if gap <= CONTINUITY_TOLERANCE else "FAIL",
                 })
                 if gap > CONTINUITY_TOLERANCE:
@@ -452,6 +642,16 @@ def reconstruct_split_sequence(
                     label_qc_status="FAIL",
                     label_qc_reasons=["missing_previous_drive_soc_end"],
                     row_count=len(rec.data),
+                    source_sha256=_source_sha(rec),
+                    source_raw_path=_raw_source_path(rec),
+                )
+                segment_order += 1
+                _mark_segment(
+                    meta,
+                    segment_id=segment_id,
+                    segment_order=segment_order,
+                    segment_start=segment_order == 1,
+                    reason="unresolved",
                 )
                 results.append(SequenceSOCResult(dataframe=rec.data, meta=meta))
                 prior_meta = meta
@@ -465,17 +665,31 @@ def reconstruct_split_sequence(
                 allow_endpoint_correction=True,
             )
             meta.sequence_order = order
-            meta.soc_init_source = "previous_charge_end"
+            meta.soc_init_source = "previous_drive_end"
+            meta.owner_filename = prior_meta.source_filename if prior_meta is not None else ""
+            meta.owner_sequence_order = prior_meta.sequence_order if prior_meta is not None else None
+            segment_order += 1
+            _mark_segment(
+                meta,
+                segment_id=segment_id,
+                segment_order=segment_order,
+                segment_start=segment_order == 1,
+                reason="previous_corresponding_charge",
+            )
             if prior_meta is not None:
                 gap = abs(prior_soc_end - prior_meta.soc_end)
                 boundary_rows.append({
                     "dataset": dataset,
                     "protocol_split": protocol_split,
+                    "sequence_segment_id": segment_id,
                     "previous_filename": prior_meta.source_filename,
                     "next_filename": fn,
+                    "previous_file_type": prior_meta.file_type,
+                    "next_file_type": "charge",
                     "previous_soc_end": prior_meta.soc_end,
                     "next_soc_start": prior_soc_end,
                     "continuity_error": gap,
+                    "boundary_type": "drive_to_charge",
                     "status": "PASS" if gap <= CONTINUITY_TOLERANCE else "FAIL",
                 })
             if unwrap_info.get("reset_indices"):

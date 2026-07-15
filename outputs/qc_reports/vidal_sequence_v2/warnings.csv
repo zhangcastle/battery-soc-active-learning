@@ -1,12 +1,10 @@
 dataset,protocol_split,source_filename,sequence_order,file_type,label_qc_status,soc_init_source,soc_end,reasons
-panasonic_18650pf,full_train,03-19-17_03.25 25degC_Cycle_2_Pan18650PF.mat,2,drive_cycle,WARNING,previous_charge_end,0.0,duplicate_dt_count=1;soc_clip_count=103330
-panasonic_18650pf,full_train,03-19-17_06.31 3406_Charge2.mat,3,charge,WARNING,previous_charge_end,1.0,endpoint_deviation=0.0852>0.03
-panasonic_18650pf,partial_train,03-19-17_03.25 25degC_Cycle_2_Pan18650PF.mat,2,drive_cycle,WARNING,previous_charge_end,0.0,duplicate_dt_count=1;soc_clip_count=103330
-panasonic_18650pf,partial_train,03-19-17_06.31 3406_Charge2.mat,3,charge,WARNING,previous_charge_end,1.0,endpoint_deviation=0.0852>0.03
-panasonic_18650pf,test,03-21-17_06.44 3416_Charge3.mat,4,charge,WARNING,previous_charge_end,1.0,endpoint_deviation=0.0300>0.03
-lg_hg2,full_train,10-29-18_20.16 551_Mixed2_25degC_LGHG2.mat,3,drive_cycle,WARNING,previous_charge_end,0.1368451071622343,duplicate_dt_count=1;soc_clip_count=175
-lg_hg2,full_train,10-30-18_06.27 552_Mixed3_25degC_LGHG2.mat,5,drive_cycle,WARNING,previous_charge_end,0.14565913202267533,duplicate_dt_count=1;soc_clip_count=32
-lg_hg2,partial_train,10-29-18_20.16 551_Mixed2_25degC_LGHG2.mat,3,drive_cycle,WARNING,previous_charge_end,0.1368451071622343,duplicate_dt_count=1;soc_clip_count=175
-lg_hg2,partial_train,10-30-18_06.27 552_Mixed3_25degC_LGHG2.mat,5,drive_cycle,WARNING,previous_charge_end,0.14565913202267533,duplicate_dt_count=1;soc_clip_count=32
-samsung_30t,full_train,03-19-19_05.44 734_Mixed2_25degC_IN21700_30T.mat,3,drive_cycle,WARNING,previous_charge_end,0.06751366619307708,duplicate_dt_count=2;soc_clip_count=169
-samsung_30t,partial_train,03-19-19_05.44 734_Mixed2_25degC_IN21700_30T.mat,3,drive_cycle,WARNING,previous_charge_end,0.06751366619307708,duplicate_dt_count=2;soc_clip_count=169
+panasonic_18650pf,full_train,03-19-17_03.25 25degC_Cycle_2_Pan18650PF.mat,2,drive_cycle,WARNING,protocol_full_start_missing_charge,0.06516422168277425,duplicate_dt_count=1;protocol_full_start_missing_charge
+panasonic_18650pf,partial_train,03-19-17_03.25 25degC_Cycle_2_Pan18650PF.mat,2,drive_cycle,WARNING,protocol_full_start_missing_charge,0.06516422168277425,duplicate_dt_count=1;protocol_full_start_missing_charge
+panasonic_18650pf,test,03-21-17_06.44 3416_Charge3.mat,4,charge,WARNING,previous_drive_end,1.0,endpoint_deviation=0.0300>0.03;duplicate_dt_count=1
+lg_hg2,full_train,10-29-18_20.16 551_Mixed2_25degC_LGHG2.mat,3,drive_cycle,WARNING,previous_charge_end,0.1368451071622343,duplicate_dt_count=1;soc_clip_count=175;soc_clip_fraction=0.002210
+lg_hg2,full_train,10-30-18_06.27 552_Mixed3_25degC_LGHG2.mat,5,drive_cycle,WARNING,full_charge_anchor,0.14565913202267533,duplicate_dt_count=1;soc_clip_count=32;soc_clip_fraction=0.000433
+lg_hg2,partial_train,10-29-18_20.16 551_Mixed2_25degC_LGHG2.mat,3,drive_cycle,WARNING,previous_charge_end,0.1368451071622343,duplicate_dt_count=1;soc_clip_count=175;soc_clip_fraction=0.002210
+lg_hg2,partial_train,10-30-18_06.27 552_Mixed3_25degC_LGHG2.mat,5,drive_cycle,WARNING,full_charge_anchor,0.14565913202267533,duplicate_dt_count=1;soc_clip_count=32;soc_clip_fraction=0.000433
+samsung_30t,full_train,03-19-19_05.44 734_Mixed2_25degC_IN21700_30T.mat,3,drive_cycle,WARNING,previous_charge_end,0.06751366619307708,duplicate_dt_count=2;soc_clip_count=169;soc_clip_fraction=0.004647
+samsung_30t,partial_train,03-19-19_05.44 734_Mixed2_25degC_IN21700_30T.mat,3,drive_cycle,WARNING,previous_charge_end,0.06751366619307708,duplicate_dt_count=2;soc_clip_count=169;soc_clip_fraction=0.004647

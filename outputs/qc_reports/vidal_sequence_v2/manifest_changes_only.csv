@@ -1,0 +1,9 @@
+dataset,filename,old_record_role,new_record_role,old_splits,new_splits,audit_action,reason
+panasonic_18650pf,03-18-17_00.05 3406_Charge1.mat,model_input,soc_anchor,"full_train,partial_train","full_train,partial_train",CHANGE_TO_ANCHOR,Leading charge before first selected drive
+panasonic_18650pf,03-20-17_21.35 3416_Charge2.mat,model_input,excluded,test,,CHANGE_TO_EXCLUDED,Charge owned by excluded HWFET drive (not in Vidal test set)
+lg_hg2,10-28-18_14.16 551_Charge2.mat,model_input,soc_anchor,test,test,CHANGE_TO_ANCHOR,Post Cap_1C full recharge before next selected drive (UDDS); Ah counter reset detected (label concern only)
+lg_hg2,10-29-18_01.47 551_Charge4.mat,model_input,excluded,test,,CHANGE_TO_EXCLUDED,HWFET-owned tiny top-off (0.005 Ah fraction)
+lg_hg2,10-30-18_03.00 552_Charge9.mat,model_input,soc_anchor,"full_train,partial_train","full_train,partial_train",CHANGE_TO_ANCHOR,Post Cap_1C full recharge before next selected drive (Mixed3); Ah counter reset detected (label concern only)
+samsung_30t,03-18-19_14.47 734_Charge2_25degC_IN21700_30T.mat,model_input,soc_anchor,test,test,CHANGE_TO_ANCHOR,Post Cap_1C full recharge before next selected drive (UDDS); Ah counter reset detected (label concern only)
+samsung_30t,03-18-19_20.36 734_Charge4_25degC_IN21700_30T.mat,model_input,excluded,test,,CHANGE_TO_EXCLUDED,Charge owned by excluded HWFET drive (not in Vidal test set)
+samsung_30t,03-20-19_19.37 740_Charge10_25degC_IN21700_30T.mat,model_input,soc_anchor,"full_train,partial_train","full_train,partial_train",CHANGE_TO_ANCHOR,Post Cap_1C full recharge before next selected drive (Mixed3); Ah counter reset detected (label concern only)
