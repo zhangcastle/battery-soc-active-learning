@@ -1,22 +1,16 @@
 {
   "lg_hg2": {
     "full_train": {
-      "ambiguous_charges": [
-        "10-25-18_04.09 549_Charge.mat"
-      ],
-      "capacity_test_related_charges": [
-        "10-28-18_11.04 551_Charge1.mat",
-        "10-28-18_14.16 551_Charge2.mat",
-        "10-30-18_03.00 552_Charge9.mat"
-      ],
-      "excluded_related_charges": [
-        "10-28-18_11.04 551_Charge1.mat",
-        "10-29-18_01.47 551_Charge4.mat",
-        "10-31-18_17.41 552_Charge16.mat"
-      ],
+      "capacity_test_topups": [],
+      "hwfet_owned_charges": [],
+      "initial_topups": [],
       "leading_anchors": [
-        "10-28-18_14.16 551_Charge2.mat",
-        "10-30-18_03.00 552_Charge9.mat"
+        {
+          "filename": "10-30-18_03.00 552_Charge9.mat",
+          "next_selected_drive": "10-30-18_06.27 552_Mixed3_25degC_LGHG2.mat",
+          "next_selected_profile": "Mixed3",
+          "recommended_protocol_action": "CHANGE_TO_ANCHOR"
+        }
       ],
       "ordered_model_sequence": [
         {
@@ -189,7 +183,7 @@
           ]
         },
         {
-          "evidence": "Corresponding charge after last selected drive (Mixed8)",
+          "evidence": "Corresponding charge owned by preceding Mixed8",
           "file_type": "charge",
           "filename": "10-31-18_12.30 552_Charge15.mat",
           "paper_profile": "CC",
@@ -199,30 +193,26 @@
           "split_memberships": "full_train"
         }
       ],
+      "other_excluded_charges": [],
       "partial_subset_boundary_charges": [
         "10-30-18_08.31 552_Charge10.mat"
       ],
-      "trailing_corresponding_charges": [
-        "10-31-18_12.30 552_Charge15.mat"
+      "trailing_corresponding_charges": [],
+      "true_test_train_boundary_charges": [
+        "10-29-18_11.15 551_Charge6.mat"
       ]
     },
     "partial_train": {
-      "ambiguous_charges": [
-        "10-25-18_04.09 549_Charge.mat"
-      ],
-      "capacity_test_related_charges": [
-        "10-28-18_11.04 551_Charge1.mat",
-        "10-28-18_14.16 551_Charge2.mat",
-        "10-30-18_03.00 552_Charge9.mat"
-      ],
-      "excluded_related_charges": [
-        "10-28-18_11.04 551_Charge1.mat",
-        "10-29-18_01.47 551_Charge4.mat",
-        "10-31-18_17.41 552_Charge16.mat"
-      ],
+      "capacity_test_topups": [],
+      "hwfet_owned_charges": [],
+      "initial_topups": [],
       "leading_anchors": [
-        "10-28-18_14.16 551_Charge2.mat",
-        "10-30-18_03.00 552_Charge9.mat"
+        {
+          "filename": "10-30-18_03.00 552_Charge9.mat",
+          "next_selected_drive": "10-30-18_06.27 552_Mixed3_25degC_LGHG2.mat",
+          "next_selected_profile": "Mixed3",
+          "recommended_protocol_action": "CHANGE_TO_ANCHOR"
+        }
       ],
       "ordered_model_sequence": [
         {
@@ -295,30 +285,33 @@
           "split_memberships": "full_train,partial_train"
         }
       ],
+      "other_excluded_charges": [],
       "partial_subset_boundary_charges": [
         "10-30-18_08.31 552_Charge10.mat"
       ],
-      "trailing_corresponding_charges": [
-        "10-31-18_12.30 552_Charge15.mat"
+      "trailing_corresponding_charges": [],
+      "true_test_train_boundary_charges": [
+        "10-29-18_11.15 551_Charge6.mat"
       ]
     },
     "test": {
-      "ambiguous_charges": [
-        "10-25-18_04.09 549_Charge.mat"
+      "capacity_test_topups": [],
+      "hwfet_owned_charges": [
+        {
+          "current_split_memberships": "test",
+          "filename": "10-29-18_01.47 551_Charge4.mat",
+          "owned_by": "HWFET",
+          "recommended_protocol_action": "CHANGE_TO_EXCLUDED"
+        }
       ],
-      "capacity_test_related_charges": [
-        "10-28-18_11.04 551_Charge1.mat",
-        "10-28-18_14.16 551_Charge2.mat",
-        "10-30-18_03.00 552_Charge9.mat"
-      ],
-      "excluded_related_charges": [
-        "10-28-18_11.04 551_Charge1.mat",
-        "10-29-18_01.47 551_Charge4.mat",
-        "10-31-18_17.41 552_Charge16.mat"
-      ],
+      "initial_topups": [],
       "leading_anchors": [
-        "10-28-18_14.16 551_Charge2.mat",
-        "10-30-18_03.00 552_Charge9.mat"
+        {
+          "filename": "10-28-18_14.16 551_Charge2.mat",
+          "next_selected_drive": "10-28-18_17.44 551_UDDS_25degC_LGHG2.mat",
+          "next_selected_profile": "UDDS",
+          "recommended_protocol_action": "CHANGE_TO_ANCHOR"
+        }
       ],
       "ordered_model_sequence": [
         {
@@ -388,40 +381,26 @@
           "split_memberships": "test"
         }
       ],
-      "partial_subset_boundary_charges": [
-        "10-30-18_08.31 552_Charge10.mat"
-      ],
-      "trailing_corresponding_charges": [
-        "10-31-18_12.30 552_Charge15.mat"
+      "other_excluded_charges": [],
+      "partial_subset_boundary_charges": [],
+      "trailing_corresponding_charges": [],
+      "true_test_train_boundary_charges": [
+        "10-29-18_11.15 551_Charge6.mat"
       ]
     }
   },
   "panasonic_18650pf": {
     "full_train": {
-      "ambiguous_charges": [
-        "03-09-17_15.13 3349_Charge1.mat",
-        "03-09-17_19.03 3349_Charge2.mat",
-        "03-09-17_21.57 3349_ChargeRp.mat",
-        "03-11-17_00.39 3349_Charge3.mat",
-        "03-12-17_11.58 3390_Charge_2.mat"
-      ],
-      "capacity_test_related_charges": [
-        "04-27-17_08.52 3541_Charge1a.mat",
-        "07-22-17_22.09 4020_Charge1.mat"
-      ],
-      "excluded_related_charges": [
-        "03-20-17_08.04 3415_Charge2.mat",
-        "03-20-17_21.35 3416_Charge2.mat",
-        "03-28-17_15.29 3423_Charge1.mat",
-        "04-27-17_08.52 3541_Charge1a.mat",
-        "04-29-17_13.07 3541_Charge2a.mat",
-        "07-22-17_22.09 4020_Charge1.mat",
-        "07-22-17_23.40 4020_Charge2.mat",
-        "07-23-17_02.36 4020_ChargeRp.mat",
-        "07-24-17_07.55 4020_Charge3.mat"
-      ],
+      "capacity_test_topups": [],
+      "hwfet_owned_charges": [],
+      "initial_topups": [],
       "leading_anchors": [
-        "03-18-17_00.05 3406_Charge1.mat"
+        {
+          "filename": "03-18-17_00.05 3406_Charge1.mat",
+          "next_selected_drive": "03-18-17_02.17 25degC_Cycle_1_Pan18650PF.mat",
+          "next_selected_profile": "Cycle_1",
+          "recommended_protocol_action": "CHANGE_TO_ANCHOR"
+        }
       ],
       "ordered_model_sequence": [
         {
@@ -518,7 +497,7 @@
           ]
         },
         {
-          "evidence": "Corresponding charge after last selected drive (NN)",
+          "evidence": "Corresponding charge owned by preceding NN",
           "file_type": "charge",
           "filename": "03-21-17_19.43 3416_Charge5.mat",
           "paper_profile": "CC",
@@ -528,38 +507,27 @@
           "split_memberships": "full_train"
         }
       ],
+      "other_excluded_charges": [],
       "partial_subset_boundary_charges": [
         "03-19-17_11.59 3406_Charge3.mat"
       ],
-      "trailing_corresponding_charges": [
-        "03-21-17_19.43 3416_Charge5.mat"
+      "trailing_corresponding_charges": [],
+      "true_test_train_boundary_charges": [
+        "03-19-17_17.53 3406_Charge4.mat",
+        "03-21-17_13.34 3416_Charge4.mat"
       ]
     },
     "partial_train": {
-      "ambiguous_charges": [
-        "03-09-17_15.13 3349_Charge1.mat",
-        "03-09-17_19.03 3349_Charge2.mat",
-        "03-09-17_21.57 3349_ChargeRp.mat",
-        "03-11-17_00.39 3349_Charge3.mat",
-        "03-12-17_11.58 3390_Charge_2.mat"
-      ],
-      "capacity_test_related_charges": [
-        "04-27-17_08.52 3541_Charge1a.mat",
-        "07-22-17_22.09 4020_Charge1.mat"
-      ],
-      "excluded_related_charges": [
-        "03-20-17_08.04 3415_Charge2.mat",
-        "03-20-17_21.35 3416_Charge2.mat",
-        "03-28-17_15.29 3423_Charge1.mat",
-        "04-27-17_08.52 3541_Charge1a.mat",
-        "04-29-17_13.07 3541_Charge2a.mat",
-        "07-22-17_22.09 4020_Charge1.mat",
-        "07-22-17_23.40 4020_Charge2.mat",
-        "07-23-17_02.36 4020_ChargeRp.mat",
-        "07-24-17_07.55 4020_Charge3.mat"
-      ],
+      "capacity_test_topups": [],
+      "hwfet_owned_charges": [],
+      "initial_topups": [],
       "leading_anchors": [
-        "03-18-17_00.05 3406_Charge1.mat"
+        {
+          "filename": "03-18-17_00.05 3406_Charge1.mat",
+          "next_selected_drive": "03-18-17_02.17 25degC_Cycle_1_Pan18650PF.mat",
+          "next_selected_profile": "Cycle_1",
+          "recommended_protocol_action": "CHANGE_TO_ANCHOR"
+        }
       ],
       "ordered_model_sequence": [
         {
@@ -622,39 +590,25 @@
           "split_memberships": "full_train,partial_train"
         }
       ],
+      "other_excluded_charges": [],
       "partial_subset_boundary_charges": [
         "03-19-17_11.59 3406_Charge3.mat"
       ],
-      "trailing_corresponding_charges": [
-        "03-21-17_19.43 3416_Charge5.mat"
-      ]
+      "trailing_corresponding_charges": [],
+      "true_test_train_boundary_charges": []
     },
     "test": {
-      "ambiguous_charges": [
-        "03-09-17_15.13 3349_Charge1.mat",
-        "03-09-17_19.03 3349_Charge2.mat",
-        "03-09-17_21.57 3349_ChargeRp.mat",
-        "03-11-17_00.39 3349_Charge3.mat",
-        "03-12-17_11.58 3390_Charge_2.mat"
+      "capacity_test_topups": [],
+      "hwfet_owned_charges": [
+        {
+          "current_split_memberships": "test",
+          "filename": "03-20-17_21.35 3416_Charge2.mat",
+          "owned_by": "HWFET",
+          "recommended_protocol_action": "CHANGE_TO_EXCLUDED"
+        }
       ],
-      "capacity_test_related_charges": [
-        "04-27-17_08.52 3541_Charge1a.mat",
-        "07-22-17_22.09 4020_Charge1.mat"
-      ],
-      "excluded_related_charges": [
-        "03-20-17_08.04 3415_Charge2.mat",
-        "03-20-17_21.35 3416_Charge2.mat",
-        "03-28-17_15.29 3423_Charge1.mat",
-        "04-27-17_08.52 3541_Charge1a.mat",
-        "04-29-17_13.07 3541_Charge2a.mat",
-        "07-22-17_22.09 4020_Charge1.mat",
-        "07-22-17_23.40 4020_Charge2.mat",
-        "07-23-17_02.36 4020_ChargeRp.mat",
-        "07-24-17_07.55 4020_Charge3.mat"
-      ],
-      "leading_anchors": [
-        "03-18-17_00.05 3406_Charge1.mat"
-      ],
+      "initial_topups": [],
+      "leading_anchors": [],
       "ordered_model_sequence": [
         {
           "evidence": "Section IV.B Table V",
@@ -723,31 +677,27 @@
           "split_memberships": "test"
         }
       ],
-      "partial_subset_boundary_charges": [
-        "03-19-17_11.59 3406_Charge3.mat"
-      ],
-      "trailing_corresponding_charges": [
-        "03-21-17_19.43 3416_Charge5.mat"
+      "other_excluded_charges": [],
+      "partial_subset_boundary_charges": [],
+      "trailing_corresponding_charges": [],
+      "true_test_train_boundary_charges": [
+        "03-19-17_17.53 3406_Charge4.mat",
+        "03-21-17_13.34 3416_Charge4.mat"
       ]
     }
   },
   "samsung_30t": {
     "full_train": {
-      "ambiguous_charges": [],
-      "capacity_test_related_charges": [
-        "03-18-19_13.03 734_Charge1_25degC_IN21700_30T.mat",
-        "03-18-19_14.47 734_Charge2_25degC_IN21700_30T.mat",
-        "03-20-19_17.52 740_Charge9_25degC_IN21700_30T.mat",
-        "03-20-19_19.37 740_Charge10_25degC_IN21700_30T.mat"
-      ],
-      "excluded_related_charges": [
-        "03-18-19_13.03 734_Charge1_25degC_IN21700_30T.mat",
-        "03-18-19_20.36 734_Charge4_25degC_IN21700_30T.mat",
-        "03-20-19_17.52 740_Charge9_25degC_IN21700_30T.mat"
-      ],
+      "capacity_test_topups": [],
+      "hwfet_owned_charges": [],
+      "initial_topups": [],
       "leading_anchors": [
-        "03-18-19_14.47 734_Charge2_25degC_IN21700_30T.mat",
-        "03-20-19_19.37 740_Charge10_25degC_IN21700_30T.mat"
+        {
+          "filename": "03-20-19_19.37 740_Charge10_25degC_IN21700_30T.mat",
+          "next_selected_drive": "03-20-19_21.16 740_Mixed3_25degC_IN21700_30T.mat",
+          "next_selected_profile": "Mixed3",
+          "recommended_protocol_action": "CHANGE_TO_ANCHOR"
+        }
       ],
       "ordered_model_sequence": [
         {
@@ -930,29 +880,28 @@
           "split_memberships": "full_train"
         }
       ],
+      "other_excluded_charges": [],
       "partial_subset_boundary_charges": [
         "03-20-19_22.00 740_Charge11_25degC_IN21700_30T.mat"
       ],
       "trailing_corresponding_charges": [
         "03-21-19_10.49 740_Charge16_25degC_IN21700_30T.mat"
+      ],
+      "true_test_train_boundary_charges": [
+        "03-19-19_01.36 734_Charge6_25degC_IN21700_30T.mat"
       ]
     },
     "partial_train": {
-      "ambiguous_charges": [],
-      "capacity_test_related_charges": [
-        "03-18-19_13.03 734_Charge1_25degC_IN21700_30T.mat",
-        "03-18-19_14.47 734_Charge2_25degC_IN21700_30T.mat",
-        "03-20-19_17.52 740_Charge9_25degC_IN21700_30T.mat",
-        "03-20-19_19.37 740_Charge10_25degC_IN21700_30T.mat"
-      ],
-      "excluded_related_charges": [
-        "03-18-19_13.03 734_Charge1_25degC_IN21700_30T.mat",
-        "03-18-19_20.36 734_Charge4_25degC_IN21700_30T.mat",
-        "03-20-19_17.52 740_Charge9_25degC_IN21700_30T.mat"
-      ],
+      "capacity_test_topups": [],
+      "hwfet_owned_charges": [],
+      "initial_topups": [],
       "leading_anchors": [
-        "03-18-19_14.47 734_Charge2_25degC_IN21700_30T.mat",
-        "03-20-19_19.37 740_Charge10_25degC_IN21700_30T.mat"
+        {
+          "filename": "03-20-19_19.37 740_Charge10_25degC_IN21700_30T.mat",
+          "next_selected_drive": "03-20-19_21.16 740_Mixed3_25degC_IN21700_30T.mat",
+          "next_selected_profile": "Mixed3",
+          "recommended_protocol_action": "CHANGE_TO_ANCHOR"
+        }
       ],
       "ordered_model_sequence": [
         {
@@ -1025,29 +974,33 @@
           "split_memberships": "full_train,partial_train"
         }
       ],
+      "other_excluded_charges": [],
       "partial_subset_boundary_charges": [
         "03-20-19_22.00 740_Charge11_25degC_IN21700_30T.mat"
       ],
-      "trailing_corresponding_charges": [
-        "03-21-19_10.49 740_Charge16_25degC_IN21700_30T.mat"
+      "trailing_corresponding_charges": [],
+      "true_test_train_boundary_charges": [
+        "03-19-19_01.36 734_Charge6_25degC_IN21700_30T.mat"
       ]
     },
     "test": {
-      "ambiguous_charges": [],
-      "capacity_test_related_charges": [
-        "03-18-19_13.03 734_Charge1_25degC_IN21700_30T.mat",
-        "03-18-19_14.47 734_Charge2_25degC_IN21700_30T.mat",
-        "03-20-19_17.52 740_Charge9_25degC_IN21700_30T.mat",
-        "03-20-19_19.37 740_Charge10_25degC_IN21700_30T.mat"
+      "capacity_test_topups": [],
+      "hwfet_owned_charges": [
+        {
+          "current_split_memberships": "test",
+          "filename": "03-18-19_20.36 734_Charge4_25degC_IN21700_30T.mat",
+          "owned_by": "HWFET",
+          "recommended_protocol_action": "CHANGE_TO_EXCLUDED"
+        }
       ],
-      "excluded_related_charges": [
-        "03-18-19_13.03 734_Charge1_25degC_IN21700_30T.mat",
-        "03-18-19_20.36 734_Charge4_25degC_IN21700_30T.mat",
-        "03-20-19_17.52 740_Charge9_25degC_IN21700_30T.mat"
-      ],
+      "initial_topups": [],
       "leading_anchors": [
-        "03-18-19_14.47 734_Charge2_25degC_IN21700_30T.mat",
-        "03-20-19_19.37 740_Charge10_25degC_IN21700_30T.mat"
+        {
+          "filename": "03-18-19_14.47 734_Charge2_25degC_IN21700_30T.mat",
+          "next_selected_drive": "03-18-19_16.26 734_UDDS_25degC_IN21700_30T.mat",
+          "next_selected_profile": "UDDS",
+          "recommended_protocol_action": "CHANGE_TO_ANCHOR"
+        }
       ],
       "ordered_model_sequence": [
         {
@@ -1117,11 +1070,11 @@
           "split_memberships": "test"
         }
       ],
-      "partial_subset_boundary_charges": [
-        "03-20-19_22.00 740_Charge11_25degC_IN21700_30T.mat"
-      ],
-      "trailing_corresponding_charges": [
-        "03-21-19_10.49 740_Charge16_25degC_IN21700_30T.mat"
+      "other_excluded_charges": [],
+      "partial_subset_boundary_charges": [],
+      "trailing_corresponding_charges": [],
+      "true_test_train_boundary_charges": [
+        "03-19-19_01.36 734_Charge6_25degC_IN21700_30T.mat"
       ]
     }
   }

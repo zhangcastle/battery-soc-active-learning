@@ -7,6 +7,8 @@ import argparse
 import csv
 import json
 import re
+import sys
+from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
 from typing import Any
@@ -18,30 +20,114 @@ from battery_benchmark.data.panasonic import PanasonicAdapter
 from battery_benchmark.data.samsung_30t import Samsung30TAdapter
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
-AUDIT_DIR = REPO_ROOT / "outputs/audits"
 
-VIDAL_PDF = Path(
-    "/Users/yue/Zotero/storage/DUPS5B62/"
-    "Vidal et al. - 2019 - Li-ion Battery State of Charge Estimation Using "
-    "Long Short-Term Memory Recurrent Neural Network with.pdf"
-)
-README_PATHS = {
-    "panasonic_18650pf": REPO_ROOT
-    / "data/raw/Panasonic_18650PF/Readme file - desc of tests performed.txt",
-    "lg_hg2": REPO_ROOT
-    / "data/raw/LG_HG2/Readme file - Description of Experimental Tests.txt",
-    "samsung_30t": REPO_ROOT / "data/raw/Samsung_30T/Readme IN21700-30T.txt",
+DEFAULT_README_PATHS = {
+    "panasonic_18650pf": "data/raw/Panasonic_18650PF/Readme file - desc of tests performed.txt",
+    "lg_hg2": "data/raw/LG_HG2/Readme file - Description of Experimental Tests.txt",
+    "samsung_30t": "data/raw/Samsung_30T/Readme IN21700-30T.txt",
 }
-MANIFEST_PATHS = {
-    "panasonic_18650pf": REPO_ROOT / "data/manifests/panasonic_vidal2019_25c_manifest.csv",
-    "lg_hg2": REPO_ROOT / "data/manifests/lg_hg2_vidal2019_25c_manifest.csv",
-    "samsung_30t": REPO_ROOT / "data/manifests/samsung_30t_vidal2019_25c_manifest.csv",
+DEFAULT_MANIFEST_PATHS = {
+    "panasonic_18650pf": "data/manifests/panasonic_vidal2019_25c_manifest.csv",
+    "lg_hg2": "data/manifests/lg_hg2_vidal2019_25c_manifest.csv",
+    "samsung_30t": "data/manifests/samsung_30t_vidal2019_25c_manifest.csv",
 }
-RAW_ROOTS = {
-    "panasonic_18650pf": REPO_ROOT / "data/raw/Panasonic_18650PF/25degC",
-    "lg_hg2": REPO_ROOT / "data/raw/LG_HG2/25degC",
-    "samsung_30t": REPO_ROOT / "data/raw/Samsung_30T/25degC",
+DEFAULT_RAW_ROOTS = {
+    "panasonic_18650pf": "data/raw/Panasonic_18650PF/25degC",
+    "lg_hg2": "data/raw/LG_HG2/25degC",
+    "samsung_30t": "data/raw/Samsung_30T/25degC",
 }
+DEFAULT_OUTPUT_DIR = "outputs/audits"
+VIDAL_PDF_SEARCH_DIRS = ("", "docs", "references", "data")
+
+
+@dataclass
+class AuditConfig:
+    repo_root: Path = field(default_factory=lambda: REPO_ROOT)
+    audit_dir: Path = field(default_factory=lambda: REPO_ROOT / DEFAULT_OUTPUT_DIR)
+    vidal_pdf: Path | None = None
+    paper_reference_status: str = "NOT_AVAILABLE"
+    readme_paths: dict[str, Path] = field(default_factory=dict)
+    manifest_paths: dict[str, Path] = field(default_factory=dict)
+    raw_roots: dict[str, Path] = field(default_factory=dict)
+
+    def __post_init__(self) -> None:
+        if not self.readme_paths:
+            self.readme_paths = {
+                k: self.repo_root / v for k, v in DEFAULT_README_PATHS.items()
+            }
+        if not self.manifest_paths:
+            self.manifest_paths = {
+                k: self.repo_root / v for k, v in DEFAULT_MANIFEST_PATHS.items()
+            }
+        if not self.raw_roots:
+            self.raw_roots = {k: self.repo_root / v for k, v in DEFAULT_RAW_ROOTS.items()}
+
+
+def _rel_path(path: Path | None, repo: Path) -> str:
+    if path is None:
+        return "<external Vidal PDF>"
+    try:
+        return str(path.relative_to(repo))
+    except ValueError:
+        return str(path)
+
+
+def _resolve_path(repo: Path, value: str | None, default: str) -> Path:
+    p = Path(value) if value else repo / default
+    return p if p.is_absolute() else repo / p
+
+
+def _find_vidal_pdf(repo: Path, explicit: Path | None) -> tuple[Path | None, str]:
+    if explicit is not None:
+        if explicit.exists():
+            return explicit, "EXPLICIT"
+        return None, "EXPLICIT_NOT_FOUND"
+    patterns = ("*Vidal*.pdf", "*vidal*.pdf", "*VIDAL*.pdf")
+    for sub in VIDAL_PDF_SEARCH_DIRS:
+        base = repo / sub if sub else repo
+        if not base.is_dir():
+            continue
+        for pat in patterns:
+            matches = sorted(base.glob(pat))
+            if matches:
+                return matches[0], "DISCOVERED"
+    return None, "NOT_AVAILABLE"
+
+
+def _build_audit_config(args: argparse.Namespace) -> AuditConfig:
+    repo = Path(args.repo_root).resolve() if args.repo_root else REPO_ROOT
+    explicit_pdf = Path(args.vidal_pdf).resolve() if args.vidal_pdf else None
+    vidal_pdf, paper_status = _find_vidal_pdf(repo, explicit_pdf)
+    cfg = AuditConfig(
+        repo_root=repo,
+        audit_dir=_resolve_path(repo, args.output_dir, DEFAULT_OUTPUT_DIR),
+        vidal_pdf=vidal_pdf,
+        paper_reference_status=paper_status,
+        readme_paths={
+            "panasonic_18650pf": _resolve_path(
+                repo, args.panasonic_readme, DEFAULT_README_PATHS["panasonic_18650pf"]
+            ),
+            "lg_hg2": _resolve_path(repo, args.lg_readme, DEFAULT_README_PATHS["lg_hg2"]),
+            "samsung_30t": _resolve_path(
+                repo, args.samsung_readme, DEFAULT_README_PATHS["samsung_30t"]
+            ),
+        },
+        manifest_paths={
+            "panasonic_18650pf": repo / DEFAULT_MANIFEST_PATHS["panasonic_18650pf"],
+            "lg_hg2": repo / DEFAULT_MANIFEST_PATHS["lg_hg2"],
+            "samsung_30t": repo / DEFAULT_MANIFEST_PATHS["samsung_30t"],
+        },
+        raw_roots={
+            "panasonic_18650pf": _resolve_path(
+                repo, args.panasonic_root, DEFAULT_RAW_ROOTS["panasonic_18650pf"]
+            ),
+            "lg_hg2": _resolve_path(repo, args.lg_root, DEFAULT_RAW_ROOTS["lg_hg2"]),
+            "samsung_30t": _resolve_path(
+                repo, args.samsung_root, DEFAULT_RAW_ROOTS["samsung_30t"]
+            ),
+        },
+    )
+    return cfg
 ADAPTERS = {
     "panasonic_18650pf": PanasonicAdapter,
     "lg_hg2": LGHG2Adapter,
@@ -150,25 +236,95 @@ def _protocol_split_set(row: dict | pd.Series | None) -> set[str]:
 
 
 def _find_previous_actual_drive(chrono: pd.DataFrame, idx: int) -> pd.Series | None:
+    return _lookup_previous_actual_drive(chrono, idx)["drive"]
+
+
+def _find_next_selected_drive(chrono: pd.DataFrame, idx: int) -> pd.Series | None:
+    return _lookup_next_selected_drive(chrono, idx)["drive"]
+
+
+def _ownership_barrier_kind(row: dict | pd.Series) -> str | None:
+    """Return barrier category when row blocks backward/forward drive lookup."""
+    if _skippable_gap(row):
+        return None
+    if _is_actual_drive(row):
+        return None
+    ft = str(row.get("file_type", ""))
+    prof = str(row.get("profile", ""))
+    if ft == "charge":
+        return "CHARGE"
+    if _is_cap_1c_row(row):
+        return "CHARACTERIZATION"
+    if ft == "characterization":
+        return "CHARACTERIZATION"
+    if any(k in prof.upper() for k in ("HPPC", "EIS", "C20", "DIS_2C", "DISCHARGE", "TELEMETRY")):
+        return "CHARACTERIZATION"
+    if prof in ("Pause", "PausCycl"):
+        return None
+    return "UNKNOWN"
+
+
+def _lookup_previous_actual_drive(chrono: pd.DataFrame, idx: int) -> dict[str, Any]:
     for j in range(idx - 1, -1, -1):
         row = chrono.iloc[j]
         if _skippable_gap(row):
             continue
         if _is_actual_drive(row):
-            return row
-    return None
+            return {
+                "drive": row,
+                "ownership_search_status": "FOUND_PREVIOUS_DRIVE",
+                "ownership_barrier_type": "",
+                "ownership_barrier_filename": "",
+            }
+        barrier = _ownership_barrier_kind(row)
+        if barrier:
+            return {
+                "drive": None,
+                "ownership_search_status": f"STOPPED_BY_{barrier}",
+                "ownership_barrier_type": barrier.lower(),
+                "ownership_barrier_filename": row["filename"],
+            }
+    return {
+        "drive": None,
+        "ownership_search_status": "START_OF_SESSION",
+        "ownership_barrier_type": "",
+        "ownership_barrier_filename": "",
+    }
 
 
-def _find_next_selected_drive(chrono: pd.DataFrame, idx: int) -> pd.Series | None:
+def _lookup_next_selected_drive(chrono: pd.DataFrame, idx: int) -> dict[str, Any]:
     for j in range(idx + 1, len(chrono)):
         row = chrono.iloc[j]
         if _skippable_gap(row):
             continue
         if _is_selected_drive(row):
-            return row
+            return {
+                "drive": row,
+                "next_drive_search_status": "FOUND_NEXT_SELECTED_DRIVE",
+                "next_drive_barrier_type": "",
+                "next_drive_barrier_filename": "",
+            }
         if _is_actual_drive(row):
-            continue
-    return None
+            return {
+                "drive": None,
+                "next_drive_search_status": "STOPPED_BY_UNSELECTED_DRIVE",
+                "next_drive_barrier_type": "unselected_drive",
+                "next_drive_barrier_filename": row["filename"],
+            }
+        barrier = _ownership_barrier_kind(row)
+        if barrier:
+            return {
+                "drive": None,
+                "next_drive_search_status": f"STOPPED_BY_{barrier}",
+                "next_drive_barrier_type": barrier.lower(),
+                "next_drive_barrier_filename": row["filename"],
+            }
+    return {
+        "drive": None,
+        "next_drive_search_status": "END_OF_SESSION",
+        "next_drive_barrier_type": "",
+        "next_drive_barrier_filename": "",
+    }
 
 
 def _find_immediate_prev_non_skippable(chrono: pd.DataFrame, idx: int) -> pd.Series | None:
@@ -261,8 +417,10 @@ def _infer_post_cap_anchor(chrono: pd.DataFrame, idx: int, stats: dict) -> tuple
 
 
 def _resolve_ownership(chrono: pd.DataFrame, idx: int, row: dict, stats: dict | None = None) -> dict[str, Any]:
-    prev_actual = _find_previous_actual_drive(chrono, idx)
-    next_selected = _find_next_selected_drive(chrono, idx)
+    prev_lookup = _lookup_previous_actual_drive(chrono, idx)
+    next_lookup = _lookup_next_selected_drive(chrono, idx)
+    prev_actual = prev_lookup["drive"]
+    next_selected = next_lookup["drive"]
     imm_prev = _find_immediate_prev_non_skippable(chrono, idx)
     is_leading_ctx, leading_reason = _leading_context(chrono, idx)
     post_cap, post_cap_reason = _infer_post_cap_anchor(chrono, idx, stats or {})
@@ -288,6 +446,7 @@ def _resolve_ownership(chrono: pd.DataFrame, idx: int, row: dict, stats: dict | 
         owner is not None
         and _is_selected_drive(owner)
         and next_selected is None
+        and next_lookup["next_drive_search_status"] == "END_OF_SESSION"
     )
 
     split_relation = _compute_split_relation(
@@ -312,6 +471,12 @@ def _resolve_ownership(chrono: pd.DataFrame, idx: int, row: dict, stats: dict | 
         "split_relation": split_relation,
         "immediate_previous_profile": imm_prev["profile"] if imm_prev is not None else "",
         "immediate_previous_file_type": imm_prev["file_type"] if imm_prev is not None else "",
+        "ownership_search_status": prev_lookup["ownership_search_status"],
+        "ownership_barrier_type": prev_lookup["ownership_barrier_type"],
+        "ownership_barrier_filename": prev_lookup["ownership_barrier_filename"],
+        "next_drive_search_status": next_lookup["next_drive_search_status"],
+        "next_drive_barrier_type": next_lookup["next_drive_barrier_type"],
+        "next_drive_barrier_filename": next_lookup["next_drive_barrier_filename"],
     }
 
 
@@ -327,12 +492,67 @@ def _load_manifest(path: Path) -> list[dict]:
         return list(csv.DictReader(f))
 
 
-def _load_record(adapter, row: dict, split: str = "full_train"):
-    entry = next(e for e in adapter.entries if e.filename == row["filename"])
+def _load_record(adapter, row: dict, split: str = "full_train") -> dict[str, Any]:
+    fn = row["filename"]
     try:
-        return adapter.load_entry(entry, requested_split=split)
-    except Exception:
-        return None
+        entry = next(e for e in adapter.entries if e.filename == fn)
+    except StopIteration:
+        return {
+            "record": None,
+            "load_status": "FAIL",
+            "load_error_type": "EntryNotFound",
+            "load_error_message": f"Manifest entry not found for {fn}",
+        }
+    try:
+        rec = adapter.load_entry(entry, requested_split=split)
+        return {
+            "record": rec,
+            "load_status": "PASS",
+            "load_error_type": "",
+            "load_error_message": "",
+        }
+    except Exception as exc:
+        return {
+            "record": None,
+            "load_status": "FAIL",
+            "load_error_type": type(exc).__name__,
+            "load_error_message": str(exc),
+        }
+
+
+def _reconstruction_fields(protocol_action: str, ah_reset: bool) -> dict[str, Any]:
+    empty = {
+        "previous_drive_end_soc_required": False,
+        "capacity_reference_required": False,
+        "ah_unwrap_required": False,
+        "full_charge_anchor_required": False,
+        "sequence_continuity_required": False,
+        "expected_soc_start_source": "",
+        "expected_soc_end_target": "",
+    }
+    if protocol_action == "KEEP_MODEL_INPUT":
+        return {
+            "previous_drive_end_soc_required": True,
+            "capacity_reference_required": True,
+            "ah_unwrap_required": ah_reset,
+            "full_charge_anchor_required": False,
+            "sequence_continuity_required": True,
+            "expected_soc_start_source": "previous_drive_soc_end",
+            "expected_soc_end_target": 1.0,
+        }
+    if protocol_action == "CHANGE_TO_ANCHOR":
+        return {
+            "previous_drive_end_soc_required": False,
+            "capacity_reference_required": True,
+            "ah_unwrap_required": ah_reset,
+            "full_charge_anchor_required": True,
+            "sequence_continuity_required": False,
+            "expected_soc_start_source": "",
+            "expected_soc_end_target": 1.0,
+        }
+    if protocol_action in ("CHANGE_TO_EXCLUDED", "MANUAL_REVIEW"):
+        return empty
+    return empty
 
 
 def _signal_stats(rec) -> dict[str, Any]:
@@ -394,12 +614,13 @@ def _signal_stats(rec) -> dict[str, Any]:
     }
 
 
-def build_paper_reference() -> pd.DataFrame:
+def build_paper_reference(paper_status: str = "NOT_AVAILABLE") -> pd.DataFrame:
+    available = paper_status in ("EXPLICIT", "DISCOVERED")
     rows = [
         {
             "dataset": "panasonic_18650pf",
             "paper_battery_name": "PANASONIC 18650PF (PANASONIC)",
-            "paper_dataset_available": True,
+            "paper_dataset_available": available,
             "paper_training_profiles": "Mix (1-5) drive cycles + accompanying CC charges",
             "paper_partial_profiles": "Mix (1-3) drive cycles + accompanying CC (Case 3/4)",
             "paper_test_profiles": "UDDS, LA92, US06 + corresponding CC charges",
@@ -413,7 +634,7 @@ def build_paper_reference() -> pd.DataFrame:
         {
             "dataset": "lg_hg2",
             "paper_battery_name": "LG HG2 (LG_HG2)",
-            "paper_dataset_available": True,
+            "paper_dataset_available": available,
             "paper_training_profiles": "Mix (1-8) + accompanying CC",
             "paper_partial_profiles": "Mix (1-3) + accompanying CC",
             "paper_test_profiles": "UDDS, LA92, US06 + corresponding CC",
@@ -427,7 +648,7 @@ def build_paper_reference() -> pd.DataFrame:
         {
             "dataset": "samsung_30t",
             "paper_battery_name": "SAMSUNG T30 (SAM_T30)",
-            "paper_dataset_available": True,
+            "paper_dataset_available": available,
             "paper_training_profiles": "Mix (1-8) + accompanying CC",
             "paper_partial_profiles": "Mix (1-3) + accompanying CC",
             "paper_test_profiles": "UDDS, LA92, US06 + corresponding CC",
@@ -456,11 +677,16 @@ def build_paper_reference() -> pd.DataFrame:
     return pd.DataFrame(rows)
 
 
-def build_chronology(dataset: str, rows: list[dict], records: dict[str, Any]) -> pd.DataFrame:
+def build_chronology(
+    dataset: str,
+    rows: list[dict],
+    load_results: dict[str, dict[str, Any]],
+) -> pd.DataFrame:
     enriched = []
     for row in rows:
         fn = row["filename"]
-        rec = records.get(fn)
+        lr = load_results.get(fn, {})
+        rec = lr.get("record")
         sig = _signal_stats(rec) if rec else {}
         fn_dt = _parse_filename_dt(fn)
         man_dt = _parse_manifest_dt(row.get("start_datetime", ""))
@@ -522,6 +748,9 @@ def build_chronology(dataset: str, rows: list[dict], records: dict[str, Any]) ->
             "charge_ah_fraction": sig.get("charge_ah_fraction", ""),
             "full_voltage_reached": sig.get("full_voltage_reached", ""),
             "current_taper_detected": sig.get("current_taper_detected", ""),
+            "load_status": lr.get("load_status", "FAIL" if row.get("file_type") == "charge" else ""),
+            "load_error_type": lr.get("load_error_type", ""),
+            "load_error_message": lr.get("load_error_message", ""),
             "README_expected_order": "",
             "order_consistent_with_readme": "",
         })
@@ -590,12 +819,26 @@ def _classify_charge(
     chrono: pd.DataFrame,
     chrono_idx: int,
     stats: dict,
+    load_status: str = "PASS",
 ) -> dict[str, Any]:
     fn = row["filename"]
     splits = _split_memberships(row)
     frac = float(stats.get("charge_ah_fraction") or 0)
     own = _resolve_ownership(chrono, chrono_idx, row, stats)
     chrono_row = chrono.iloc[chrono_idx]
+
+    if load_status != "PASS" and row.get("record_role") == "model_input":
+        return _charge_result(
+            row, splits, stats, chrono_row, own,
+            role="ambiguous",
+            confidence="low",
+            reason_parts=[f"Adapter load failed: {chrono_row.get('load_error_type', '')}"],
+            paper=False, readme=False, chrono_s=False, signal=False, manifest=True,
+            protocol_action="MANUAL_REVIEW",
+            label_action="MANUAL_REVIEW",
+            review_reason=f"Load failure: {chrono_row.get('load_error_message', '')}",
+            load_status=load_status,
+        )
 
     role = "ambiguous"
     confidence = "medium"
@@ -618,7 +861,14 @@ def _classify_charge(
             role = "excluded_profile_corresponding_charge" if owner_prof else "ambiguous"
         readme = manifest = True
         reason_parts.append("manifest excluded")
-        return _charge_result(row, splits, stats, chrono_row, own, role, confidence, reason_parts, paper, readme, chrono_s, signal, manifest)
+        return _charge_result(
+            row, splits, stats, chrono_row, own, role, confidence, reason_parts,
+            paper, readme, chrono_s, signal, manifest,
+            protocol_action="CHANGE_TO_EXCLUDED",
+            label_action="EXCLUDE_FROM_LABEL_EXPORT",
+            review_reason=f"Role {role} outside Vidal protocol",
+            load_status=load_status,
+        )
 
     # --- model_input / reviewable selected charges ---
     post_cap = own["ownership_basis"].startswith("post_capacity_test:")
@@ -682,6 +932,7 @@ def _classify_charge(
         row, splits, stats, chrono_row, own, role, confidence, reason_parts,
         paper, readme, chrono_s, signal, manifest,
         proto, label, review_reason,
+        load_status=load_status,
     )
 
 
@@ -708,10 +959,9 @@ def _recommended_actions(
         return ("MANUAL_REVIEW", "MANUAL_REVIEW", f"Tiny top-off ({frac:.3f} Ah fraction) — verify protocol intent")
 
     if role in ("leading_full_charge_anchor", "post_capacity_test_full_recharge_anchor"):
-        label = "REGENERATE_SEQUENCE_AWARE" if ah_reset else "REGENERATE_SEQUENCE_AWARE"
         return (
             "CHANGE_TO_ANCHOR",
-            label,
+            "ANCHOR_ONLY_NO_POINTWISE_LABEL",
             "Leading/post-Cap anchor for SOC_init evidence; not in ordered drive->charge sequence",
         )
 
@@ -719,8 +969,16 @@ def _recommended_actions(
         proto = "KEEP_MODEL_INPUT"
         reason = f"Corresponding CC owned by {own['owned_by_previous_profile']} (Section IV.B / Figure 8)"
         if ah_reset:
-            return proto, "REGENERATE_RESET_AWARE", reason + "; Ah reset requires reset-aware labelling"
-        return proto, "LABEL_OK", reason
+            return (
+                proto,
+                "REGENERATE_RESET_AND_SEQUENCE_AWARE",
+                reason + "; Ah reset and per-file normalization require sequence reconstruction",
+            )
+        return (
+            proto,
+            "REGENERATE_SEQUENCE_AWARE",
+            reason + "; v1 per-file SOC is not continuous Vidal SOC — sequence reconstruction required",
+        )
 
     return ("MANUAL_REVIEW", "MANUAL_REVIEW", f"Unresolved role {role}")
 
@@ -729,7 +987,10 @@ def _charge_result(
     row, splits, stats, chrono_row, own, role, confidence, reason_parts,
     paper, readme, chrono_s, signal, manifest,
     protocol_action="", label_action="", review_reason="",
+    load_status: str = "PASS",
 ):
+    ah_reset = bool(stats.get("ah_reset_detected"))
+    recon = _reconstruction_fields(protocol_action, ah_reset)
     return {
         "dataset": chrono_row["dataset"],
         "filename": row["filename"],
@@ -747,12 +1008,16 @@ def _charge_result(
         "next_profile": chrono_row.get("next_profile", ""),
         "next_file_type": chrono_row.get("next_file_type", ""),
         **own,
+        **recon,
         **{k: stats.get(k, "") for k in (
             "ah_start", "ah_end", "ah_min", "ah_max", "charge_ah_max", "charge_ah_fraction",
             "voltage_start", "voltage_end", "voltage_max", "full_voltage_reached",
             "current_start", "current_end", "current_max", "current_taper_detected",
             "ah_reset_detected",
         )},
+        "load_status": load_status,
+        "load_error_type": chrono_row.get("load_error_type", ""),
+        "load_error_message": chrono_row.get("load_error_message", ""),
         "timestamp_conflict": chrono_row.get("timestamp_conflict", False),
         "proposed_charge_role": role,
         "recommended_protocol_action": protocol_action,
@@ -775,9 +1040,15 @@ def build_review(class_df: pd.DataFrame) -> pd.DataFrame:
         "previous_actual_drive", "previous_actual_drive_selected", "previous_actual_drive_protocol_splits",
         "next_actual_drive", "next_actual_drive_selected", "next_actual_drive_protocol_splits",
         "ownership_basis", "owned_by_previous_profile", "owned_by_previous_protocol_splits",
+        "ownership_search_status", "ownership_barrier_type", "ownership_barrier_filename",
+        "next_drive_search_status", "next_drive_barrier_type", "next_drive_barrier_filename",
         "split_relation", "current_record_role", "current_split_memberships",
         "charge_ah_max", "charge_ah_fraction", "ah_reset_detected",
         "full_voltage_reached", "current_taper_detected",
+        "previous_drive_end_soc_required", "capacity_reference_required",
+        "ah_unwrap_required", "full_charge_anchor_required", "sequence_continuity_required",
+        "expected_soc_start_source", "expected_soc_end_target",
+        "load_status", "load_error_type", "load_error_message",
         "proposed_charge_role", "recommended_protocol_action", "recommended_label_action",
         "reason", "confidence",
         "paper_support", "readme_support", "chronology_support", "signal_support", "manifest_support",
@@ -785,6 +1056,39 @@ def build_review(class_df: pd.DataFrame) -> pd.DataFrame:
     ]
     existing = [c for c in review_cols if c in mi.columns]
     return mi[existing]
+
+
+def _row_in_split(row: dict | pd.Series, split: str) -> bool:
+    return str(row.get(split, "0")).strip() in ("1", "1.0", "True", "true")
+
+
+def _charge_splits_for_list(cr: dict) -> set[str]:
+    return set(str(cr.get("current_split_memberships", "")).split(",")) - {""}
+
+
+def _anchor_applies_to_split(cr: dict, split: str) -> bool:
+    """Anchor applies to splits of its following selected drive."""
+    next_splits = set(str(cr.get("next_actual_drive_protocol_splits", "")).split(",")) - {""}
+    if not next_splits:
+        return False
+    if split in next_splits:
+        return True
+    if split == "partial_train" and "full_train" in next_splits:
+        # partial anchor before Mix1/Mix3 gateway
+        nxt_prof = str(cr.get("next_actual_drive_profile", ""))
+        if re.match(r"(Cycle_[123]|Mixed?[123])", nxt_prof, re.I):
+            return True
+    return False
+
+
+def _owner_drive_in_split(chrono: pd.DataFrame, cr: dict, split: str) -> bool:
+    sid = cr.get("owned_by_previous_sequence_id", "")
+    if not sid:
+        return False
+    owners = chrono[chrono["sequence_id"] == sid]
+    if len(owners) == 0:
+        return False
+    return _row_in_split(owners.iloc[0], split)
 
 
 def build_candidate_sequences(chrono: pd.DataFrame, class_df: pd.DataFrame) -> dict:
@@ -795,11 +1099,10 @@ def build_candidate_sequences(chrono: pd.DataFrame, class_df: pd.DataFrame) -> d
         for ds in chrono["dataset"].unique()
     }
 
-    anchor_roles = {"leading_full_charge_anchor", "post_capacity_test_full_recharge_anchor"}
-    exclude_roles = {"excluded_profile_corresponding_charge", "tiny_topoff", "initial_topup", "pre_capacity_test_topup"}
-
     for dataset, ds in chrono_by_ds.items():
         out[dataset] = {}
+        all_cls = class_df[class_df["dataset"] == dataset]
+
         for split in ("full_train", "partial_train", "test"):
             drives = ds[
                 (ds["file_type"] == "drive_cycle")
@@ -824,79 +1127,119 @@ def build_candidate_sequences(chrono: pd.DataFrame, class_df: pd.DataFrame) -> d
                     "split_memberships": _split_memberships(d.to_dict()),
                     "evidence": "Section IV.B Table V",
                 })
-                # corresponding charge: owned by this drive
                 for _, c in ds[ds["file_type"] == "charge"].iterrows():
                     cr = cls_by_fn.get(c["filename"], {})
                     if cr.get("owned_by_previous_sequence_id") != d["sequence_id"]:
                         continue
-                    if cr.get("proposed_charge_role") in anchor_roles | exclude_roles:
+                    if cr.get("recommended_protocol_action") != "KEEP_MODEL_INPUT":
                         continue
-                    if split == "test":
-                        if cr.get("current_record_role") != "model_input":
+                    if split == "test" and cr.get("current_record_role") != "model_input":
+                        continue
+                    if split == "partial_train":
+                        if not _owner_drive_in_split(ds, cr, "partial_train"):
                             continue
-                    elif split == "partial_train":
-                        # partial_train ⊂ full_train: include Mix1-3 accompanying charges by ownership
-                        pass
-                    elif split not in cr.get("current_split_memberships", ""):
-                        continue
+                    elif split == "full_train":
+                        if split not in _charge_splits_for_list(cr) and not _owner_drive_in_split(ds, cr, split):
+                            continue
                     order += 1
                     seq.append({
                         "sequence_order": order,
                         "filename": c["filename"],
                         "profile": c["profile"],
-                        "paper_profile": cr.get("paper_profile", "CC") if isinstance(cr, dict) else "CC",
+                        "paper_profile": cr.get("paper_profile", "CC"),
                         "file_type": "charge",
                         "sequence_role": "intercycle_charge_input",
                         "split_memberships": cr.get("current_split_memberships", ""),
                         "evidence": cr.get("reason", ""),
                     })
 
-            anchors = class_df[
-                (class_df["dataset"] == dataset)
-                & (class_df["proposed_charge_role"].isin(anchor_roles))
-            ]["filename"].tolist()
-            hwfet_owned = class_df[
-                (class_df["dataset"] == dataset)
-                & (
-                    (class_df["proposed_charge_role"].isin(exclude_roles))
-                    | (class_df["owned_by_previous_profile"].apply(_is_hwfet_profile))
-                )
-            ]["filename"].tolist()
-            trailing = class_df[
-                (class_df["dataset"] == dataset)
-                & (class_df["proposed_charge_role"] == "trailing_corresponding_charge")
-            ]["filename"].tolist()
+            split_cls = []
+            for _, cr in all_cls.iterrows():
+                crd = cr.to_dict()
+                fn = crd["filename"]
+                memberships = _charge_splits_for_list(crd)
+                in_split = split in memberships or _owner_drive_in_split(ds, crd, split)
+                if split == "partial_train" and _owner_drive_in_split(ds, crd, "partial_train"):
+                    in_split = True
+                if split == "test" and crd.get("current_record_role") == "model_input" and "test" in memberships:
+                    in_split = True
+                if not in_split and crd.get("recommended_protocol_action") != "CHANGE_TO_ANCHOR":
+                    if not _anchor_applies_to_split(crd, split):
+                        continue
+                split_cls.append(crd)
+
+            leading = [
+                {
+                    "filename": r["filename"],
+                    "next_selected_drive": r.get("next_actual_drive", ""),
+                    "next_selected_profile": r.get("next_actual_drive_profile", ""),
+                    "recommended_protocol_action": r.get("recommended_protocol_action", ""),
+                }
+                for r in split_cls
+                if r.get("recommended_protocol_action") == "CHANGE_TO_ANCHOR"
+                and _anchor_applies_to_split(r, split)
+            ]
+
+            hwfet = [
+                {
+                    "filename": r["filename"],
+                    "owned_by": r.get("owned_by_previous_profile", ""),
+                    "current_split_memberships": r.get("current_split_memberships", ""),
+                    "recommended_protocol_action": r.get("recommended_protocol_action", ""),
+                }
+                for r in split_cls
+                if _is_hwfet_profile(str(r.get("owned_by_previous_profile", "")))
+            ]
+
+            initial_topups = [
+                r["filename"] for r in split_cls
+                if r.get("proposed_charge_role") == "initial_topup"
+            ]
+            capacity_test_topups = [
+                r["filename"] for r in split_cls
+                if r.get("proposed_charge_role") == "pre_capacity_test_topup"
+            ]
+            other_excluded = [
+                r["filename"] for r in split_cls
+                if r.get("recommended_protocol_action") == "CHANGE_TO_EXCLUDED"
+                and r["filename"] not in {h["filename"] for h in hwfet}
+            ]
+            trailing = [
+                r["filename"] for r in split_cls
+                if r.get("proposed_charge_role") == "trailing_corresponding_charge"
+                and _owner_drive_in_split(ds, r, split)
+            ]
+            partial_boundary = [
+                r["filename"] for r in split_cls
+                if r.get("split_relation") == "partial_subset_boundary"
+            ]
+            test_train_boundary = [
+                r["filename"] for r in split_cls
+                if r.get("split_relation") == "true_test_train_boundary"
+            ]
 
             out[dataset][split] = {
                 "ordered_model_sequence": seq,
-                "leading_anchors": anchors,
-                "trailing_corresponding_charges": trailing,
-                "excluded_related_charges": hwfet_owned,
-                "capacity_test_related_charges": class_df[
-                    (class_df["dataset"] == dataset)
-                    & (class_df["proposed_charge_role"].isin([
-                        "initial_topup", "pre_capacity_test_topup",
-                        "post_capacity_test_full_recharge_anchor",
-                    ]))
-                ]["filename"].tolist(),
-                "ambiguous_charges": class_df[
-                    (class_df["dataset"] == dataset)
-                    & (class_df["proposed_charge_role"] == "ambiguous")
-                ]["filename"].tolist(),
-                "partial_subset_boundary_charges": class_df[
-                    (class_df["dataset"] == dataset)
-                    & (class_df["split_relation"] == "partial_subset_boundary")
-                ]["filename"].tolist(),
+                "leading_anchors": leading,
+                "hwfet_owned_charges": hwfet,
+                "initial_topups": sorted(set(initial_topups)),
+                "capacity_test_topups": sorted(set(capacity_test_topups)),
+                "other_excluded_charges": sorted(set(other_excluded)),
+                "trailing_corresponding_charges": sorted(set(trailing)),
+                "partial_subset_boundary_charges": sorted(set(partial_boundary)),
+                "true_test_train_boundary_charges": sorted(set(test_train_boundary)),
             }
     return out
 
 
 def write_report(
+    cfg: AuditConfig,
     paths: dict,
     chrono: pd.DataFrame,
     class_df: pd.DataFrame,
     review_df: pd.DataFrame,
     sequences: dict,
+    load_failures: list[dict],
     prev_review: pd.DataFrame | None = None,
 ) -> None:
     lines = [
@@ -906,7 +1249,7 @@ def write_report(
         "",
         "## 1. Evidence paths used",
         "",
-        f"- Vidal PDF: `{paths['vidal_pdf']}`",
+        f"- Vidal PDF: `{paths['vidal_pdf']}` (status: {paths['paper_reference_status']})",
     ]
     for ds, p in paths["readmes"].items():
         lines.append(f"- {ds} README: `{p}`")
@@ -917,120 +1260,150 @@ def write_report(
 
     lines += [
         "",
-        "## 2. Charge ownership rule",
+        "## 2. Path portability",
         "",
-        "Default: **selected drive → corresponding/accompanying charge** (Figure 8: UDDS → CC → LA92 → CC → US06).",
-        "Pause files do not break ownership. Cap_1C/characterization before first selected drive → leading anchor.",
-        "Do not assign charge to the *following* drive.",
+        "All paths above are repo-relative unless marked `<external Vidal PDF>`.",
+        "Pass `--vidal-pdf` to supply the paper PDF explicitly.",
         "",
-        "## 3. Partial is a subset of Full",
+        "## 3. Current v1 label positioning",
         "",
-        "`partial_train` ⊂ `full_train`. Mix3 → Charge → Mix4 is **partial_subset_boundary**, not cross-split conflict.",
+        "Current v1 charge SOC is **open_reference_per_record_v1** (per-file normalized audit label):",
+        "`SOC_file = Ah / max(Ah)` within each charge file.",
+        "It must **not** be treated as formal continuous Vidal SOC (Figure 8).",
+        "All KEEP model-input charges require **sequence-aware reconstruction**.",
         "",
-        "## 4. Protocol action vs label action",
+        "## 4. Sequence-aware label definition",
         "",
-        "- **Protocol action**: should this file be model input, anchor-only, or excluded from Vidal protocol?",
-        "- **Label action**: given v1 per-file Ah normalization, is the SOC label OK, reset-aware, or sequence-aware?",
-        "- Ah reset affects **label action only**, not protocol role.",
+        "For corresponding charges, future SOC reconstruction must ensure:",
         "",
-        "## 5. HWFET-owned charge exclusions",
+        "1. Start SOC continuous with ownership drive end SOC",
+        "2. End SOC ≈ 1.0 at confirmed full charge",
+        "3. Do not force SOC start to 0 because Ah counter starts at 0 in-file",
+        "4. Do not allow SOC 1→0 jump when Ah counter resets at file end",
+        "5. Use effective cumulative Ah within charge, not per-file normalization",
         "",
-        "Vidal test set = UDDS, LA92, US06 + corresponding CC. HWFET excluded → its charges → CHANGE_TO_EXCLUDED.",
+        "Reconstruction metadata is recorded in the review CSV (`expected_soc_start_source`, etc.).",
         "",
-        "## 6. Leading anchor handling",
+        "## 5. Charge ownership rule (unchanged)",
         "",
-        "Pre-first-drive and post-Cap_1C full recharges → CHANGE_TO_ANCHOR; stored in `leading_anchors`, not ordered sequence.",
+        "Default: **selected drive → corresponding/accompanying charge** (Figure 8).",
+        "Pause does not break ownership. Barrier-aware lookup stops at charge/characterization.",
         "",
-        "## 7. Trailing corresponding charge handling",
+        "## 6. Partial is a subset of Full",
         "",
-        "Charge after last selected drive still **corresponds to that drive** → KEEP_MODEL_INPUT if profile is in Vidal set.",
+        "`partial_train` ⊂ `full_train`. Mix3 → Charge → Mix4 is **partial_subset_boundary**.",
         "",
-        "## 8. Vidal paper protocol summary",
+        "## 7. Protocol action vs label action",
         "",
-        "Section IV.B: FULL = Mix + accompanying CC; TEST = UDDS/LA92/US06 + corresponding CC.",
+        "- **Protocol action**: model input / anchor / excluded",
+        "- **Label action**: sequence reconstruction requirement for v1 labels",
+        "- Ah reset adds `ah_unwrap_required` but does not change protocol role",
         "",
-        "## 9. Chronology summary",
+        "## 8. Protocol action counts (37 model_input charges)",
         "",
     ]
-    for ds in chrono["dataset"].unique():
-        sub = chrono[chrono["dataset"] == ds]
-        lines.append(f"- **{ds}**: {len(sub)} files; timestamp conflicts={int(sub['timestamp_conflict'].sum())}")
-
-    lines += ["", "## 10. Protocol action counts (37 model_input charges)", ""]
     for action in ("KEEP_MODEL_INPUT", "CHANGE_TO_ANCHOR", "CHANGE_TO_EXCLUDED", "MANUAL_REVIEW"):
         n = len(review_df[review_df["recommended_protocol_action"] == action])
         lines.append(f"- {action}: {n}")
 
-    lines += ["", "## 11. Label action counts", ""]
+    lines += ["", "## 9. Label action counts", ""]
     for action in (
-        "LABEL_OK", "REGENERATE_RESET_AWARE", "REGENERATE_SEQUENCE_AWARE",
-        "EXCLUDE_FROM_LABEL_EXPORT", "MANUAL_REVIEW",
+        "REGENERATE_SEQUENCE_AWARE",
+        "REGENERATE_RESET_AND_SEQUENCE_AWARE",
+        "ANCHOR_ONLY_NO_POINTWISE_LABEL",
+        "EXCLUDE_FROM_LABEL_EXPORT",
+        "MANUAL_REVIEW",
     ):
         n = len(review_df[review_df["recommended_label_action"] == action])
         lines.append(f"- {action}: {n}")
+    if "LABEL_OK" in review_df["recommended_label_action"].values:
+        lines.append("- **WARNING**: LABEL_OK still present (should be 0)")
 
-    lines += ["", "## 12. Per-dataset breakdown", ""]
+    lines += ["", "## 10. Per-dataset breakdown", ""]
     for ds in review_df["dataset"].unique():
         sub = review_df[review_df["dataset"] == ds]
         lines.append(f"### {ds} ({len(sub)} model_input charges)")
         for action in ("KEEP_MODEL_INPUT", "CHANGE_TO_ANCHOR", "CHANGE_TO_EXCLUDED", "MANUAL_REVIEW"):
             lines.append(f"- Protocol {action}: {len(sub[sub['recommended_protocol_action'] == action])}")
-        for action in ("REGENERATE_RESET_AWARE", "REGENERATE_SEQUENCE_AWARE", "EXCLUDE_FROM_LABEL_EXPORT"):
+        for action in (
+            "REGENERATE_SEQUENCE_AWARE", "REGENERATE_RESET_AND_SEQUENCE_AWARE",
+            "ANCHOR_ONLY_NO_POINTWISE_LABEL", "EXCLUDE_FROM_LABEL_EXPORT",
+        ):
             lines.append(f"- Label {action}: {len(sub[sub['recommended_label_action'] == action])}")
         lines.append("")
 
-    def _list_df(title, df, col="filename"):
+    def _list_df(title, df, extra=""):
         lines.append(f"## {title}")
         lines.append("")
         if len(df) == 0:
             lines.append("_None_")
         else:
             for _, r in df.iterrows():
-                lines.append(f"- `{r[col]}` ({r['dataset']}): {r.get('proposed_charge_role','')} / {r.get('recommended_protocol_action','')}")
+                lines.append(
+                    f"- `{r['filename']}` ({r['dataset']}): {r.get('proposed_charge_role','')} / "
+                    f"{r.get('recommended_protocol_action','')} / {r.get('recommended_label_action','')}{extra}"
+                )
         lines.append("")
 
-    hw = review_df[review_df["owned_by_previous_profile"].apply(_is_hwfet_profile)]
-    _list_df("13. HWFET-owned charges", hw)
+    reset_seq = review_df[review_df["recommended_label_action"] == "REGENERATE_RESET_AND_SEQUENCE_AWARE"]
+    _list_df("11. Reset + sequence-aware charges", reset_seq)
     anchors = review_df[review_df["recommended_protocol_action"] == "CHANGE_TO_ANCHOR"]
-    _list_df("14. Leading anchors", anchors)
-    trailing = review_df[review_df["proposed_charge_role"] == "trailing_corresponding_charge"]
-    _list_df("15. Trailing corresponding charges", trailing)
-    reset = review_df[review_df["recommended_label_action"] == "REGENERATE_RESET_AWARE"]
-    _list_df("16. Reset-aware label charges", reset)
-    partial = review_df[review_df["split_relation"] == "partial_subset_boundary"]
-    _list_df("17. Partial subset boundary charges", partial)
+    _list_df("12. Anchor-only charges", anchors)
+    hw = review_df[review_df["owned_by_previous_profile"].apply(_is_hwfet_profile)]
+    _list_df("13. HWFET-owned excluded charges", hw)
 
-    if prev_review is not None and len(prev_review) > 0:
-        lines += ["", "## 18. Changes vs previous audit", ""]
-        prev = prev_review.set_index("filename")
-        for _, r in review_df.iterrows():
-            fn = r["filename"]
-            if fn not in prev.index:
-                lines.append(f"- NEW `{fn}`")
-                continue
-            p = prev.loc[fn]
-            changes = []
-            if p.get("recommended_protocol_action", p.get("recommended_action")) != r["recommended_protocol_action"]:
-                old = p.get("recommended_protocol_action", p.get("recommended_action"))
-                changes.append(f"protocol {old} → {r['recommended_protocol_action']}")
-            if p.get("proposed_charge_role") != r["proposed_charge_role"]:
-                changes.append(f"role {p['proposed_charge_role']} → {r['proposed_charge_role']}")
-            if changes:
-                lines.append(f"- `{fn}`: {'; '.join(changes)}")
-
-    for ds in ("panasonic_18650pf", "lg_hg2", "samsung_30t"):
-        lines += [f"## Recommended actions — {ds}", ""]
-        lines.append("| filename | owned_by | role | protocol | label | split_relation |")
-        lines.append("|----------|----------|------|----------|-------|----------------|")
-        sub = review_df[review_df["dataset"] == ds]
-        for _, r in sub.iterrows():
+    barrier_issues = review_df[
+        (review_df["ownership_search_status"] != "FOUND_PREVIOUS_DRIVE")
+        & (review_df["recommended_protocol_action"] == "KEEP_MODEL_INPUT")
+        & (~review_df["ownership_basis"].str.startswith("post_capacity_test", na=False))
+        & (review_df["ownership_basis"] != "leading_context:session_start")
+    ]
+    lines += ["", "## 14. Ownership barrier check", ""]
+    if len(barrier_issues) == 0:
+        lines.append("No unexpected barrier stops for KEEP corresponding charges.")
+    else:
+        for _, r in barrier_issues.iterrows():
             lines.append(
-                f"| {r['filename']} | {r['owned_by_previous_profile']} | {r['proposed_charge_role']} | "
-                f"{r['recommended_protocol_action']} | {r['recommended_label_action']} | {r['split_relation']} |"
+                f"- `{r['filename']}`: {r['ownership_search_status']} "
+                f"({r['ownership_barrier_type']} @ {r['ownership_barrier_filename']})"
+            )
+
+    lines += ["", "## 15. Load failures", ""]
+    mi_fail = [f for f in load_failures if f.get("model_input")]
+    if not mi_fail:
+        lines.append("All model_input charges: load_status == PASS")
+    else:
+        for f in mi_fail:
+            lines.append(
+                f"- `{f['filename']}` ({f['dataset']}): {f['load_error_type']}: {f['load_error_message']}"
+            )
+
+    lines += ["", "## 16. Candidate sequence split summary", ""]
+    for ds, splits in sequences.items():
+        lines.append(f"### {ds}")
+        for split, data in splits.items():
+            n_seq = len(data.get("ordered_model_sequence", []))
+            n_anchors = len(data.get("leading_anchors", []))
+            lines.append(
+                f"- **{split}**: ordered={n_seq} items, leading_anchors={n_anchors}, "
+                f"hwfet={len(data.get('hwfet_owned_charges', []))}"
             )
         lines.append("")
 
-    (AUDIT_DIR / "VIDAL_CHARGE_AUDIT_REPORT.md").write_text("\n".join(lines), encoding="utf-8")
+    for ds in ("panasonic_18650pf", "lg_hg2", "samsung_30t"):
+        lines += [f"## Recommended actions — {ds}", ""]
+        lines.append("| filename | owned_by | protocol | label | split_relation | load |")
+        lines.append("|----------|----------|----------|-------|----------------|------|")
+        sub = review_df[review_df["dataset"] == ds]
+        for _, r in sub.iterrows():
+            lines.append(
+                f"| {r['filename']} | {r['owned_by_previous_profile']} | "
+                f"{r['recommended_protocol_action']} | {r['recommended_label_action']} | "
+                f"{r['split_relation']} | {r.get('load_status','')} |"
+            )
+        lines.append("")
+
+    (cfg.audit_dir / "VIDAL_CHARGE_AUDIT_REPORT.md").write_text("\n".join(lines), encoding="utf-8")
 
 
 def create_notebook(output_path: Path) -> None:
@@ -1081,13 +1454,18 @@ def create_notebook(output_path: Path) -> None:
                 "metadata": {},
                 "source": [
                     "flagged = review[\n",
-                    "    (review['ah_reset_detected'] == True)\n",
-                    "    | (pd.to_numeric(review['charge_ah_fraction'], errors='coerce') <= TINY)\n",
+                    "    (review['recommended_label_action'] == 'REGENERATE_RESET_AND_SEQUENCE_AWARE')\n",
+                    "    | (review['recommended_label_action'] == 'ANCHOR_ONLY_NO_POINTWISE_LABEL')\n",
+                    "    | (review['recommended_label_action'] == 'EXCLUDE_FROM_LABEL_EXPORT')\n",
                     "    | (review['recommended_protocol_action'] != 'KEEP_MODEL_INPUT')\n",
-                    "    | (review['recommended_label_action'] != 'LABEL_OK')\n",
+                    "    | (review['load_status'] != 'PASS')\n",
+                    "    | (review['ownership_search_status'] != 'FOUND_PREVIOUS_DRIVE')\n",
                     "]\n",
                     "print(f'Flagged records: {len(flagged)}')\n",
-                    "flagged[['dataset','filename','proposed_charge_role','recommended_protocol_action','recommended_label_action']].head(20)\n",
+                    "cols = ['dataset','filename','owned_by_previous_profile','ownership_search_status',\n",
+                    "        'recommended_protocol_action','recommended_label_action','expected_soc_start_source',\n",
+                    "        'expected_soc_end_target','load_status','ah_unwrap_required']\n",
+                    "flagged[cols].head(20)\n",
                 ],
             },
             {
@@ -1122,7 +1500,10 @@ def create_notebook(output_path: Path) -> None:
                     "    'Ah max': row['charge_ah_max'],\n",
                     "    'Ah end': row['ah_end'],\n",
                     "    'Ah fraction': row['charge_ah_fraction'],\n",
-                    "    'reset flag': row['ah_reset_detected'],\n",
+                    "    'ownership barrier': row.get('ownership_barrier_type', ''),\n",
+                    "    'load status': row.get('load_status', ''),\n",
+                    "    'SOC start source': row.get('expected_soc_start_source', ''),\n",
+                    "    'SOC end target': row.get('expected_soc_end_target', ''),\n",
                     "    'paper support': row['paper_support'],\n",
                     "    'README support': row['readme_support'],\n",
                     "}\n",
@@ -1169,43 +1550,50 @@ def create_notebook(output_path: Path) -> None:
     output_path.write_text(_json.dumps(nb, indent=1), encoding="utf-8")
 
 
-def run_audit(overwrite: bool = False) -> None:
-    AUDIT_DIR.mkdir(parents=True, exist_ok=True)
+def run_audit(cfg: AuditConfig, overwrite: bool = False) -> int:
+    audit_dir = cfg.audit_dir
+    audit_dir.mkdir(parents=True, exist_ok=True)
     outputs = [
-        AUDIT_DIR / "vidal_paper_protocol_reference.csv",
-        AUDIT_DIR / "vidal_charge_chronology.csv",
-        AUDIT_DIR / "vidal_charge_classification.csv",
-        AUDIT_DIR / "vidal_model_input_charge_review.csv",
-        AUDIT_DIR / "vidal_candidate_sequences.json",
+        audit_dir / "vidal_paper_protocol_reference.csv",
+        audit_dir / "vidal_charge_chronology.csv",
+        audit_dir / "vidal_charge_classification.csv",
+        audit_dir / "vidal_model_input_charge_review.csv",
+        audit_dir / "vidal_candidate_sequences.json",
     ]
     if not overwrite:
         existing = [p for p in outputs if p.exists()]
         if existing:
             raise FileExistsError(f"Outputs exist: {existing[0]}. Pass --overwrite")
 
-    paper_df = build_paper_reference()
+    paper_df = build_paper_reference(cfg.paper_reference_status)
     paper_df.to_csv(outputs[0], index=False)
 
     all_chrono = []
     all_class = []
-    records_cache: dict[str, dict[str, Any]] = {}
+    load_failures: list[dict] = []
 
-    for dataset, manifest_path in MANIFEST_PATHS.items():
+    for dataset, manifest_path in cfg.manifest_paths.items():
         rows = _load_manifest(manifest_path)
-        adapter = ADAPTERS[dataset](raw_root=REPO_ROOT, manifest_path=manifest_path)
-        recs = {}
+        adapter = ADAPTERS[dataset](raw_root=cfg.repo_root, manifest_path=manifest_path)
+        load_results: dict[str, dict[str, Any]] = {}
         for row in rows:
             split = "full_train"
             if row.get("test") == "1":
                 split = "test"
             elif row.get("exclude") == "1":
                 split = "exclude"
-            rec = _load_record(adapter, row, split=split)
-            if rec:
-                recs[row["filename"]] = rec
-        records_cache[dataset] = recs
+            lr = _load_record(adapter, row, split=split)
+            load_results[row["filename"]] = lr
+            if lr["load_status"] != "PASS" and row.get("file_type") == "charge":
+                load_failures.append({
+                    "dataset": dataset,
+                    "filename": row["filename"],
+                    "model_input": row.get("record_role") == "model_input",
+                    "load_error_type": lr["load_error_type"],
+                    "load_error_message": lr["load_error_message"],
+                })
 
-        chrono = build_chronology(dataset, rows, recs)
+        chrono = build_chronology(dataset, rows, load_results)
         all_chrono.append(chrono)
 
         charge_rows = [r for r in rows if r.get("file_type") == "charge"]
@@ -1213,8 +1601,15 @@ def run_audit(overwrite: bool = False) -> None:
         for row in charge_rows:
             fn = row["filename"]
             i = chrono_idx[fn]
-            stats = _signal_stats(recs.get(fn))
-            all_class.append(_classify_charge(dataset, row, chrono, i, stats))
+            lr = load_results[fn]
+            rec = lr["record"]
+            stats = _signal_stats(rec) if rec else {}
+            all_class.append(
+                _classify_charge(
+                    dataset, row, chrono, i, stats,
+                    load_status=lr["load_status"],
+                )
+            )
 
     chrono_df = pd.concat(all_chrono, ignore_index=True)
     class_df = pd.DataFrame(all_class)
@@ -1222,9 +1617,7 @@ def run_audit(overwrite: bool = False) -> None:
     sequences = build_candidate_sequences(chrono_df, class_df)
 
     review_path = outputs[3]
-    prev_review = None
-    if review_path.exists():
-        prev_review = pd.read_csv(review_path)
+    prev_review = pd.read_csv(review_path) if review_path.exists() else None
 
     chrono_df.to_csv(outputs[1], index=False)
     class_df.to_csv(outputs[2], index=False)
@@ -1233,41 +1626,60 @@ def run_audit(overwrite: bool = False) -> None:
         json.dump(sequences, f, indent=2, sort_keys=True)
 
     paths = {
-        "vidal_pdf": str(VIDAL_PDF),
-        "readmes": {k: str(v) for k, v in README_PATHS.items()},
-        "manifests": {k: str(v) for k, v in MANIFEST_PATHS.items()},
-        "raw_roots": {k: str(v) for k, v in RAW_ROOTS.items()},
+        "vidal_pdf": _rel_path(cfg.vidal_pdf, cfg.repo_root),
+        "paper_reference_status": cfg.paper_reference_status,
+        "readmes": {k: _rel_path(v, cfg.repo_root) for k, v in cfg.readme_paths.items()},
+        "manifests": {k: _rel_path(v, cfg.repo_root) for k, v in cfg.manifest_paths.items()},
+        "raw_roots": {k: _rel_path(v, cfg.repo_root) for k, v in cfg.raw_roots.items()},
     }
-    write_report(paths, chrono_df, class_df, review_df, sequences, prev_review=prev_review)
+    write_report(cfg, paths, chrono_df, class_df, review_df, sequences, load_failures, prev_review)
 
-    nb_path = REPO_ROOT / "notebooks/review_vidal_charge_pairing.ipynb"
+    nb_path = cfg.repo_root / "notebooks/review_vidal_charge_pairing.ipynb"
     create_notebook(nb_path)
 
     # Self-checks
-    assert len(chrono_df) == sum(len(_load_manifest(p)) for p in MANIFEST_PATHS.values())
-    assert len(class_df) == sum(1 for p in MANIFEST_PATHS.values() for r in _load_manifest(p) if r["file_type"] == "charge")
+    assert len(chrono_df) == sum(len(_load_manifest(p)) for p in cfg.manifest_paths.values())
+    assert len(class_df) == sum(
+        1 for p in cfg.manifest_paths.values()
+        for r in _load_manifest(p) if r["file_type"] == "charge"
+    )
     assert len(review_df) == len(class_df[class_df["current_record_role"] == "model_input"])
-    for ds in chrono_df["dataset"].unique():
-        sub = chrono_df[chrono_df["dataset"] == ds].copy()
-        sub["_t"] = pd.to_datetime(sub["selected_start_datetime"], errors="coerce")
-        if not sub["_t"].is_monotonic_increasing:
-            raise AssertionError(f"Chronology not monotonic for {ds}")
-    print(f"Wrote audit to {AUDIT_DIR}")
-    print(f"Notebook: {REPO_ROOT / 'notebooks/review_vidal_charge_pairing.ipynb'}")
+    assert "LABEL_OK" not in review_df["recommended_label_action"].values
+
+    mi_load_fail = [f for f in load_failures if f.get("model_input")]
+    exit_code = 0
+    if mi_load_fail:
+        exit_code = 1
+        print("ERROR: model_input charge load failures:", file=sys.stderr)
+        for f in mi_load_fail:
+            print(f"  {f['filename']}: {f['load_error_type']}: {f['load_error_message']}", file=sys.stderr)
+
+    print(f"Wrote audit to {audit_dir}")
+    print(f"Notebook: {nb_path}")
     print(f"Chronology rows: {len(chrono_df)}")
     print(f"Charge rows: {len(class_df)}")
     print(f"model_input review: {len(review_df)}")
     print(review_df["recommended_protocol_action"].value_counts().to_string())
     print("--- label actions ---")
     print(review_df["recommended_label_action"].value_counts().to_string())
+    return exit_code
 
 
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--overwrite", action="store_true")
+    parser.add_argument("--repo-root", default=None, help="Repository root (default: auto-detect)")
+    parser.add_argument("--output-dir", default=None, help=f"Audit output dir (default: {DEFAULT_OUTPUT_DIR})")
+    parser.add_argument("--vidal-pdf", default=None, help="Path to Vidal 2019 PDF")
+    parser.add_argument("--panasonic-root", default=None)
+    parser.add_argument("--lg-root", default=None)
+    parser.add_argument("--samsung-root", default=None)
+    parser.add_argument("--panasonic-readme", default=None)
+    parser.add_argument("--lg-readme", default=None)
+    parser.add_argument("--samsung-readme", default=None)
     args = parser.parse_args()
-    run_audit(overwrite=args.overwrite)
-    return 0
+    cfg = _build_audit_config(args)
+    return run_audit(cfg, overwrite=args.overwrite)
 
 
 if __name__ == "__main__":
