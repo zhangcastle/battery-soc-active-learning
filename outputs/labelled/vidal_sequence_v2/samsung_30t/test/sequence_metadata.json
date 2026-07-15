@@ -1,0 +1,27 @@
+{
+  "dataset": "samsung_30t",
+  "protocol_split": "test",
+  "source_manifest": "data/manifests/samsung_30t_vidal2019_25c_manifest.csv",
+  "audit_commit_or_timestamp": "2026-07-15T15:09:00.081946+00:00",
+  "capacity_policy": {
+    "capacity_reference_ah": 3.0,
+    "capacity_source": "adapter_capacity_hint_ah",
+    "capacity_policy_version": "vidal_nominal_v1"
+  },
+  "current_convention": {
+    "positive_is_charge": true,
+    "convention_name": "positive_is_charge",
+    "dataset": "samsung_30t"
+  },
+  "integration_method": "trapezoidal_time_s",
+  "endpoint_correction_policy": "progress_to_1_when_full_charge_qc_pass",
+  "missing_corresponding_charge": false,
+  "warnings": [],
+  "label_policy_version": "vidal_sequence_v2",
+  "code_commit": "7187b568586e89c5edb30becae02964d6651f9d8",
+  "generated_at": "2026-07-15T15:09:00.101793+00:00",
+  "artifact_hashes": {
+    "sequence_index.csv": "2d956a9efd4ed1160d123119e1d6914c69e3be1abef3227bbde4ca54be5e572b",
+    "concatenated_sequence.parquet": "3ce266ed7b52a0c6d6e6f60af0e18a11433175d4601fd16968be4b4e1dc58283"
+  }
+}

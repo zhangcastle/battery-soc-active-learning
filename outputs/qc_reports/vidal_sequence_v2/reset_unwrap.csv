@@ -1,0 +1,7 @@
+filename,reset_indices,raw_ah_before,raw_ah_after,effective_ah_before,effective_ah_after,unwrap_offset_added,status
+10-29-18_22.29 551_Charge8.mat,[210],[2.61443],[0.0],[2.61443],[2.61443],[np.float64(2.61443)],PASS
+10-29-18_22.29 551_Charge8.mat,[210],[2.61443],[0.0],[2.61443],[2.61443],[np.float64(2.61443)],PASS
+03-19-19_06.45 734_Charge8_25degC_IN21700_30T.mat,[104],[2.80748],[0.0],[2.80748],[2.80748],[np.float64(2.80748)],PASS
+03-20-19_22.00 740_Charge11_25degC_IN21700_30T.mat,[103],[2.7858],[0.0],[2.7858],[2.7858],[np.float64(2.7858)],PASS
+03-19-19_06.45 734_Charge8_25degC_IN21700_30T.mat,[104],[2.80748],[0.0],[2.80748],[2.80748],[np.float64(2.80748)],PASS
+03-20-19_22.00 740_Charge11_25degC_IN21700_30T.mat,[103],[2.7858],[0.0],[2.7858],[2.7858],[np.float64(2.7858)],PASS

@@ -1,0 +1,27 @@
+{
+  "dataset": "lg_hg2",
+  "protocol_split": "full_train",
+  "source_manifest": "data/manifests/lg_hg2_vidal2019_25c_manifest.csv",
+  "audit_commit_or_timestamp": "2026-07-15T15:08:56.940306+00:00",
+  "capacity_policy": {
+    "capacity_reference_ah": 3.0,
+    "capacity_source": "adapter_capacity_hint_ah",
+    "capacity_policy_version": "vidal_nominal_v1"
+  },
+  "current_convention": {
+    "positive_is_charge": true,
+    "convention_name": "positive_is_charge",
+    "dataset": "lg_hg2"
+  },
+  "integration_method": "trapezoidal_time_s",
+  "endpoint_correction_policy": "progress_to_1_when_full_charge_qc_pass",
+  "missing_corresponding_charge": false,
+  "warnings": [],
+  "label_policy_version": "vidal_sequence_v2",
+  "code_commit": "7187b568586e89c5edb30becae02964d6651f9d8",
+  "generated_at": "2026-07-15T15:08:56.962204+00:00",
+  "artifact_hashes": {
+    "sequence_index.csv": "ca5bc48b8e3ce950062f12b930bcb344faae04fcee6b7de4272430887be36943",
+    "concatenated_sequence.parquet": "601ed01753f1a5eef5618535d33f72729cf7038d924be1013690a53d297d9628"
+  }
+}

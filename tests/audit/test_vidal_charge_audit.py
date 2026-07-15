@@ -232,7 +232,52 @@ class TestCandidateSequenceSplit:
         chrono["dataset"] = "lg_hg2"
         seq = audit.build_candidate_sequences(chrono, class_df)
         assert len(seq["lg_hg2"]["test"]["leading_anchors"]) == 0
-        assert len(seq["lg_hg2"]["partial_train"]["leading_anchors"]) >= 0
+        assert len(seq["lg_hg2"]["partial_train"]["leading_anchors"]) == 1
+
+
+class TestPartialSequenceOrderFromAuditJson:
+    @pytest.fixture(scope="class")
+    def candidate_sequences(self):
+        import json
+        with open(REPO / "outputs/audits/vidal_candidate_sequences.json", encoding="utf-8") as f:
+            return json.load(f)
+
+    def test_lg_partial_ordered_sequence(self, candidate_sequences):
+        partial_ordered = [
+            x["filename"]
+            for x in candidate_sequences["lg_hg2"]["partial_train"]["ordered_model_sequence"]
+        ]
+        assert partial_ordered == [
+            "10-29-18_14.41 551_Mixed1_25degC_LGHG2.mat",
+            "10-29-18_16.50 551_Charge7.mat",
+            "10-29-18_20.16 551_Mixed2_25degC_LGHG2.mat",
+            "10-29-18_22.29 551_Charge8.mat",
+            "10-30-18_06.27 552_Mixed3_25degC_LGHG2.mat",
+            "10-30-18_08.31 552_Charge10.mat",
+        ]
+
+    def test_panasonic_partial_missing_corresponding_charge(self, candidate_sequences):
+        partial = candidate_sequences["panasonic_18650pf"]["partial_train"]["ordered_model_sequence"]
+        filenames = [x["filename"] for x in partial]
+        assert filenames[0].endswith("Cycle_1_Pan18650PF.mat")
+        assert "03-19-17_06.31 3406_Charge2.mat" in filenames
+        assert "03-18-17_00.05 3406_Charge1.mat" not in filenames
+        leading = candidate_sequences["panasonic_18650pf"]["partial_train"]["leading_anchors"]
+        assert any(a["filename"].endswith("3406_Charge1.mat") for a in leading)
+
+    def test_samsung_partial_ordered_sequence(self, candidate_sequences):
+        partial_ordered = [
+            x["filename"]
+            for x in candidate_sequences["samsung_30t"]["partial_train"]["ordered_model_sequence"]
+        ]
+        assert partial_ordered == [
+            "03-19-19_03.13 734_Mixed1_25degC_IN21700_30T.mat",
+            "03-19-19_04.07 734_Charge7_25degC_IN21700_30T.mat",
+            "03-19-19_05.44 734_Mixed2_25degC_IN21700_30T.mat",
+            "03-19-19_06.45 734_Charge8_25degC_IN21700_30T.mat",
+            "03-20-19_21.16 740_Mixed3_25degC_IN21700_30T.mat",
+            "03-20-19_22.00 740_Charge11_25degC_IN21700_30T.mat",
+        ]
 
 
 class TestPaths:

@@ -1,0 +1,27 @@
+{
+  "dataset": "panasonic_18650pf",
+  "protocol_split": "full_train",
+  "source_manifest": "data/manifests/panasonic_vidal2019_25c_manifest.csv",
+  "audit_commit_or_timestamp": "2026-07-15T15:08:52.119302+00:00",
+  "capacity_policy": {
+    "capacity_reference_ah": 2.9,
+    "capacity_source": "adapter_capacity_hint_ah",
+    "capacity_policy_version": "vidal_nominal_v1"
+  },
+  "current_convention": {
+    "positive_is_charge": true,
+    "convention_name": "positive_is_charge",
+    "dataset": "panasonic_18650pf"
+  },
+  "integration_method": "trapezoidal_time_s",
+  "endpoint_correction_policy": "progress_to_1_when_full_charge_qc_pass",
+  "missing_corresponding_charge": false,
+  "warnings": [],
+  "label_policy_version": "vidal_sequence_v2",
+  "code_commit": "7187b568586e89c5edb30becae02964d6651f9d8",
+  "generated_at": "2026-07-15T15:08:52.148302+00:00",
+  "artifact_hashes": {
+    "sequence_index.csv": "fd1b9ff72665ad92bcc21a5cb7dc6185f600a2f1fc82accc1cf631cbc66c6585",
+    "concatenated_sequence.parquet": "f113405e425af07fadc8fa7a926b0e1636cfdc343467a131bd0e6b53d6ede7fe"
+  }
+}

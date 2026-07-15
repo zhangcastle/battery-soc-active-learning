@@ -1,0 +1,9 @@
+dataset,filename,next_selected_drive,next_selected_profile,anchor_soc,full_voltage_reached,current_taper_detected,anchor_qc_status,anchor_qc_reasons
+panasonic_18650pf,03-18-17_00.05 3406_Charge1.mat,03-18-17_02.17 25degC_Cycle_1_Pan18650PF.mat,Cycle_1,1.0,True,True,PASS,[]
+panasonic_18650pf,03-18-17_00.05 3406_Charge1.mat,03-18-17_02.17 25degC_Cycle_1_Pan18650PF.mat,Cycle_1,1.0,True,True,PASS,[]
+lg_hg2,10-30-18_03.00 552_Charge9.mat,10-30-18_06.27 552_Mixed3_25degC_LGHG2.mat,Mixed3,1.0,True,True,PASS,[]
+lg_hg2,10-30-18_03.00 552_Charge9.mat,10-30-18_06.27 552_Mixed3_25degC_LGHG2.mat,Mixed3,1.0,True,True,PASS,[]
+lg_hg2,10-28-18_14.16 551_Charge2.mat,10-28-18_17.44 551_UDDS_25degC_LGHG2.mat,UDDS,1.0,True,True,PASS,[]
+samsung_30t,03-20-19_19.37 740_Charge10_25degC_IN21700_30T.mat,03-20-19_21.16 740_Mixed3_25degC_IN21700_30T.mat,Mixed3,1.0,True,True,PASS,[]
+samsung_30t,03-20-19_19.37 740_Charge10_25degC_IN21700_30T.mat,03-20-19_21.16 740_Mixed3_25degC_IN21700_30T.mat,Mixed3,1.0,True,True,PASS,[]
+samsung_30t,03-18-19_14.47 734_Charge2_25degC_IN21700_30T.mat,03-18-19_16.26 734_UDDS_25degC_IN21700_30T.mat,UDDS,1.0,True,True,PASS,[]

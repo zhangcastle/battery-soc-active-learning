@@ -77,9 +77,11 @@ selected drive-cycle **与** selected CC charge 记录均可进入标签与模�
 
 **Vidal-compatible SOC reconstruction（``labels/`` 模块）：**
 
-- ``SOCCalculator.calculate_vidal()`` — open-reference per-record Ah 归一化
-- ``label_source = "vidal_compatible_cycler_ah"``（非官方 Vidal 源码复刻）
-- 带版本导出：``outputs/labelled/vidal_compatible_v1/``（Parquet + JSON manifest）
+- ``SOCCalculator.calculate_vidal()`` — v1 open-reference per-record Ah 归一化（``outputs/labelled/vidal_compatible_v1/``）
+- ``scripts/generate_vidal_sequence_soc_v2.py`` — v2 sequence-aware 正式 benchmark label（``outputs/labelled/vidal_sequence_v2/``）
+- v1 定位：`open_reference_per_record_v1`；v2 定位：sequence-aware 连续 SOC（见 ``docs/vidal_sequence_soc_v2.md``）
+- ``label_source = "vidal_compatible_cycler_ah"``（v1，非 sequence-aware）
+- SOC labels are benchmark reference labels derived from cycler current/Ah measurements and protocol constraints, not independent ground truth.
 - ``calculate_cmu()`` — 占位，未实现
 
 **Samsung 特有说明：**
