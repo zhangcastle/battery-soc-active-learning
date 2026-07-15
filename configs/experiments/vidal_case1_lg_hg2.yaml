@@ -1,0 +1,15 @@
+run_mode: formal
+random_seed: 42
+seq_len: 50
+stride: 50
+epochs: 515
+batch_size: 512
+learning_rate: 0.01
+scheduler_step_size: 100
+scheduler_gamma: 0.5
+shuffle: true
+num_workers: 0
+max_train_windows: null
+allowed_statuses: [PASS, WARNING]
+development_only: false
+verify_hashes: true

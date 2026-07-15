@@ -54,6 +54,8 @@ battery-soc-transfer-benchmark/
 | `cycle_dataset.py` | 将 numpy 数组封装为 PyTorch Dataset | ✅ |
 | `datamodule.py` | 组合 source + target DataLoader | ✅ |
 | `collate.py` | 变长序列的 batch collate 函数 | ✅ |
+| `vidal_sequence_v2_dataset.py` | 只读加载 sequence v2 index/Parquet，并执行 Case 1 QC | ✅ |
+| `vidal_case1_windows.py` | record/segment-safe 窗口与 padding mask | ✅ |
 
 **Panasonic / LG / Samsung Adapter 当前实现范围（`PanasonicAdapter` / `LGHG2Adapter` / `Samsung30TAdapter`）：**
 - ✅ 读取各自 Vidal 2019 25 °C manifest CSV
@@ -177,6 +179,7 @@ selected drive-cycle **与** selected CC charge 记录均可进入标签与模�
 | 文件 | 作用 |
 |------|------|
 | `runner.py` | `ExperimentRunner`：读 config → 建数据集 → 建模型 → 迁移 → 训练 → 评估 → 保存，一条龙 |
+| `vidal_case1.py` | Vidal Case 1 独立训练、mask-aware 评估、Drive 输出与图表 | ✅ |
 | `result_schema.py` | 实验结果的标准数据结构 |
 | `comparison.py` | 多实验对比汇总 |
 

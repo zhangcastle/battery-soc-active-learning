@@ -342,7 +342,7 @@ class TestLGIntegration:
 
     def test_test_count(self, adapter):
         records = adapter.load_split("test")
-        assert len(records) == 8
+        assert len(records) == 7
 
     def test_required_columns_and_rows(self, adapter):
         for rec in adapter.load_split("full_train"):
@@ -387,7 +387,7 @@ class TestLGIntegration:
             if rec.metadata["file_type"] == "drive_cycle":
                 assert rec.metadata["record_role"] == "model_input"
             elif rec.metadata["file_type"] == "charge":
-                assert rec.metadata["record_role"] == "model_input"
+                assert rec.metadata["record_role"] in {"model_input", "soc_anchor"}
 
     def test_excluded_records_have_excluded_role(self, adapter):
         for rec in adapter.load_split("exclude"):

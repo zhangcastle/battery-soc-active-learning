@@ -36,8 +36,11 @@ coverage.xml
 .ipynb_checkpoints/
 *.ipynb_checkpoints
 
-# Docs — kept local; clean up and commit when ready
-docs/
+# Docs — most audit artifacts stay local; protocol docs are versioned.
+docs/*
+!docs/reproduction_protocol.md
+!docs/known_uncertainties.md
+!docs/colab_workflow.md
 
 # Data — NEVER commit raw or processed battery data
 data/raw/

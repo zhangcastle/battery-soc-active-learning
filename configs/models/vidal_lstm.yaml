@@ -1,7 +1,6 @@
 name: vidal_lstm
-# Minimal LSTM matching the reported Vidal et al. architecture.
-# NOTE: exact sequence construction and normalisation details are unconfirmed.
-# See docs/known_uncertainties.md before claiming paper-faithful results.
+# Architecture-matched Vidal et al. (2019) LSTM (571 trainable parameters).
+# Sequence construction and normalisation remain reconstruction assumptions.
 input_size: 3       # voltage, current, temperature
 hidden_size: 10
 num_layers: 1

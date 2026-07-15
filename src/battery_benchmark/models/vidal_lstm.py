@@ -1,13 +1,8 @@
-"""Minimal LSTM approximating the Vidal et al. architecture.
+"""Vidal et al. (2019) sequence-to-sequence SOC architecture.
 
-IMPORTANT UNCERTAINTY NOTICE
-------------------------------
-The exact details of the Vidal et al. (2022) sequence construction,
-normalisation, and training procedure have NOT yet been confirmed from the
-paper.  This implementation should NOT be used to claim paper-faithful
-reproduction results until those details are verified.
-
-See docs/known_uncertainties.md.
+The architecture and 571 trainable-parameter count match the paper. Sequence
+construction and normalisation remain explicitly documented reconstruction
+assumptions.
 
 Architecture
 ------------
@@ -68,6 +63,12 @@ class VidalLSTM(BaseSOCModel):
             batch_first=True,
             dropout=dropout if num_layers > 1 else 0.0,
         )
+        if num_layers != 1:
+            raise ValueError("VidalLSTM supports the paper's single LSTM layer only")
+        # MATLAB reports one 4H bias vector. PyTorch stores two; freezing the
+        # recurrent-side bias at zero preserves the paper's 571 learnables.
+        nn.init.zeros_(self.lstm.bias_hh_l0)
+        self.lstm.bias_hh_l0.requires_grad_(False)
         self.fc = nn.Linear(hidden_size, 1)
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
@@ -98,9 +99,20 @@ class VidalLSTM(BaseSOCModel):
             "num_layers": self.num_layers,
             "output_clip": self.output_clip,
             "n_parameters": self.count_parameters(),
-            "reproduction_status": "scaffold_only",
+            "n_frozen_parameters": sum(p.numel() for p in self.parameters() if not p.requires_grad),
+            "reproduction_status": "architecture_matched_training_protocol_reconstructed",
             "uncertainty_note": (
-                "Sequence construction and normalisation details "
-                "not yet confirmed from Vidal et al. paper."
+                "Sequence construction, normalisation, shuffle, and PyTorch/MATLAB "
+                "framework details are reconstruction assumptions."
             ),
         }
+
+    def count_trainable_parameters(self) -> int:
+        return sum(p.numel() for p in self.parameters() if p.requires_grad)
+
+    def load_state_dict(self, state_dict: dict[str, torch.Tensor], strict: bool = True):
+        result = super().load_state_dict(state_dict, strict=strict)
+        with torch.no_grad():
+            self.lstm.bias_hh_l0.zero_()
+        self.lstm.bias_hh_l0.requires_grad_(False)
+        return result

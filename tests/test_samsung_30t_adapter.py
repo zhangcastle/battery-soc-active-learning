@@ -111,16 +111,17 @@ class TestSamsungManifestLoad:
         entries = load_manifest(_MANIFEST)
         assert len(entries) == 34
         roles = {e.record_role for e in entries}
-        assert roles == {"model_input", "excluded"}
+        assert roles == {"model_input", "soc_anchor", "excluded"}
 
     def test_record_role_counts(self):
         entries = load_manifest(_MANIFEST)
         model_input = sum(1 for e in entries if e.record_role == "model_input")
         soc_anchor = sum(1 for e in entries if e.record_role == "soc_anchor")
         excluded = sum(1 for e in entries if e.record_role == "excluded")
-        assert model_input == 25
-        assert excluded == 9
-        assert model_input + excluded == len(entries)
+        assert model_input == 22
+        assert soc_anchor == 2
+        assert excluded == 10
+        assert model_input + soc_anchor + excluded == len(entries)
 
 
 class TestSamsungBasicLoad:
@@ -163,11 +164,11 @@ class TestSamsungSplitSelection:
 
     def test_test_selection(self):
         entries = select_manifest_entries(load_manifest(_MANIFEST), "test")
-        assert len(entries) == 8
+        assert len(entries) == 7
 
     def test_exclude_selection(self):
         entries = select_manifest_entries(load_manifest(_MANIFEST), "exclude")
-        assert len(entries) == 9
+        assert len(entries) == 10
 
 
 class TestSamsungRequestedSplit:
@@ -445,10 +446,10 @@ class TestSamsungIntegration:
         assert len(adapter.load_split("partial_train")) == 7
 
     def test_test_loads(self, adapter):
-        assert len(adapter.load_split("test")) == 8
+        assert len(adapter.load_split("test")) == 7
 
     def test_exclude_loads(self, adapter):
-        assert len(adapter.load_split("exclude")) == 9
+        assert len(adapter.load_split("exclude")) == 10
 
     def test_selected_counts_match_manifest(self, adapter):
         for split in ("full_train", "partial_train", "test", "exclude"):
