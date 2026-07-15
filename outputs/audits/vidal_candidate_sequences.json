@@ -1,0 +1,1246 @@
+{
+  "lg_hg2": {
+    "full_train": {
+      "ambiguous_charges": [
+        "10-31-18_12.30 552_Charge15.mat"
+      ],
+      "capacity_test_related_charges": [
+        "10-28-18_11.04 551_Charge1.mat",
+        "10-28-18_14.16 551_Charge2.mat",
+        "10-30-18_03.00 552_Charge9.mat",
+        "10-31-18_17.41 552_Charge16.mat"
+      ],
+      "cross_split_charges": [
+        "10-29-18_11.15 551_Charge6.mat",
+        "10-30-18_08.31 552_Charge10.mat"
+      ],
+      "excluded_related_charges": [
+        "10-25-18_04.09 549_Charge.mat"
+      ],
+      "leading_anchors": [],
+      "ordered_model_sequence": [
+        {
+          "evidence": "Section IV.B Table V",
+          "file_type": "drive_cycle",
+          "filename": "10-29-18_14.41 551_Mixed1_25degC_LGHG2.mat",
+          "paper_profile": "Mix1",
+          "profile": "Mixed1",
+          "sequence_order": 1,
+          "sequence_role": "drive_input",
+          "split_memberships": [
+            "full_train",
+            "partial_train"
+          ]
+        },
+        {
+          "evidence": "Between selected drives",
+          "file_type": "charge",
+          "filename": "10-29-18_16.50 551_Charge7.mat",
+          "paper_profile": "CC",
+          "profile": "Charge",
+          "sequence_order": 2,
+          "sequence_role": "intercycle_charge_input",
+          "split_memberships": [
+            "full_train",
+            "partial_train"
+          ]
+        },
+        {
+          "evidence": "Section IV.B Table V",
+          "file_type": "drive_cycle",
+          "filename": "10-29-18_20.16 551_Mixed2_25degC_LGHG2.mat",
+          "paper_profile": "Mix2",
+          "profile": "Mixed2",
+          "sequence_order": 3,
+          "sequence_role": "drive_input",
+          "split_memberships": [
+            "full_train",
+            "partial_train"
+          ]
+        },
+        {
+          "evidence": "Between selected drives; Ah counter reset detected",
+          "file_type": "charge",
+          "filename": "10-29-18_22.29 551_Charge8.mat",
+          "paper_profile": "CC",
+          "profile": "Charge",
+          "sequence_order": 4,
+          "sequence_role": "intercycle_charge_input",
+          "split_memberships": [
+            "full_train",
+            "partial_train"
+          ]
+        },
+        {
+          "evidence": "Post Cap_1C full CC-CV recharge before UDDS; Ah counter reset detected",
+          "file_type": "charge",
+          "filename": "10-30-18_03.00 552_Charge9.mat",
+          "paper_profile": "CC",
+          "profile": "Charge",
+          "sequence_order": 5,
+          "sequence_role": "intercycle_charge_input",
+          "split_memberships": [
+            "full_train",
+            "partial_train"
+          ]
+        },
+        {
+          "evidence": "Section IV.B Table V",
+          "file_type": "drive_cycle",
+          "filename": "10-30-18_06.27 552_Mixed3_25degC_LGHG2.mat",
+          "paper_profile": "Mix3",
+          "profile": "Mixed3",
+          "sequence_order": 6,
+          "sequence_role": "drive_input",
+          "split_memberships": [
+            "full_train",
+            "partial_train"
+          ]
+        },
+        {
+          "evidence": "Between selected drives; bridges splits {'full_train', 'partial_train'} -> {'full_train'}",
+          "file_type": "charge",
+          "filename": "10-30-18_08.31 552_Charge10.mat",
+          "paper_profile": "CC",
+          "profile": "Charge",
+          "sequence_order": 7,
+          "sequence_role": "intercycle_charge_input",
+          "split_memberships": [
+            "full_train",
+            "partial_train"
+          ]
+        },
+        {
+          "evidence": "Section IV.B Table V",
+          "file_type": "drive_cycle",
+          "filename": "10-30-18_11.56 552_Mixed4_25degC_LGHG2.mat",
+          "paper_profile": "Mix4",
+          "profile": "Mixed4",
+          "sequence_order": 8,
+          "sequence_role": "drive_input",
+          "split_memberships": [
+            "full_train"
+          ]
+        },
+        {
+          "evidence": "Between selected drives",
+          "file_type": "charge",
+          "filename": "10-30-18_14.12 552_Charge11.mat",
+          "paper_profile": "CC",
+          "profile": "Charge",
+          "sequence_order": 9,
+          "sequence_role": "intercycle_charge_input",
+          "split_memberships": [
+            "full_train"
+          ]
+        },
+        {
+          "evidence": "Section IV.B Table V",
+          "file_type": "drive_cycle",
+          "filename": "10-30-18_17.36 552_Mixed5_25degC_LGHG2.mat",
+          "paper_profile": "Mix5",
+          "profile": "Mixed5",
+          "sequence_order": 10,
+          "sequence_role": "drive_input",
+          "split_memberships": [
+            "full_train"
+          ]
+        },
+        {
+          "evidence": "Between selected drives",
+          "file_type": "charge",
+          "filename": "10-30-18_19.38 552_Charge12.mat",
+          "paper_profile": "CC",
+          "profile": "Charge",
+          "sequence_order": 11,
+          "sequence_role": "intercycle_charge_input",
+          "split_memberships": [
+            "full_train"
+          ]
+        },
+        {
+          "evidence": "Section IV.B Table V",
+          "file_type": "drive_cycle",
+          "filename": "10-30-18_23.02 552_Mixed6_25degC_LGHG2.mat",
+          "paper_profile": "Mix6",
+          "profile": "Mixed6",
+          "sequence_order": 12,
+          "sequence_role": "drive_input",
+          "split_memberships": [
+            "full_train"
+          ]
+        },
+        {
+          "evidence": "Between selected drives",
+          "file_type": "charge",
+          "filename": "10-31-18_01.13 552_Charge13.mat",
+          "paper_profile": "CC",
+          "profile": "Charge",
+          "sequence_order": 13,
+          "sequence_role": "intercycle_charge_input",
+          "split_memberships": [
+            "full_train"
+          ]
+        },
+        {
+          "evidence": "Section IV.B Table V",
+          "file_type": "drive_cycle",
+          "filename": "10-31-18_04.38 552_Mixed7_25degC_LGHG2.mat",
+          "paper_profile": "Mix7",
+          "profile": "Mixed7",
+          "sequence_order": 14,
+          "sequence_role": "drive_input",
+          "split_memberships": [
+            "full_train"
+          ]
+        },
+        {
+          "evidence": "Between selected drives",
+          "file_type": "charge",
+          "filename": "10-31-18_06.41 552_Charge14.mat",
+          "paper_profile": "CC",
+          "profile": "Charge",
+          "sequence_order": 15,
+          "sequence_role": "intercycle_charge_input",
+          "split_memberships": [
+            "full_train"
+          ]
+        },
+        {
+          "evidence": "Section IV.B Table V",
+          "file_type": "drive_cycle",
+          "filename": "10-31-18_10.05 552_Mixed8_25degC_LGHG2.mat",
+          "paper_profile": "Mix8",
+          "profile": "Mixed8",
+          "sequence_order": 16,
+          "sequence_role": "drive_input",
+          "split_memberships": [
+            "full_train"
+          ]
+        },
+        {
+          "evidence": "Chronology: after Mixed8, before PausCycl",
+          "file_type": "charge",
+          "filename": "10-31-18_12.30 552_Charge15.mat",
+          "paper_profile": "CC",
+          "profile": "Charge",
+          "sequence_order": 17,
+          "sequence_role": "intercycle_charge_input",
+          "split_memberships": [
+            "full_train"
+          ]
+        }
+      ],
+      "trailing_candidates": []
+    },
+    "partial_train": {
+      "ambiguous_charges": [
+        "10-31-18_12.30 552_Charge15.mat"
+      ],
+      "capacity_test_related_charges": [
+        "10-28-18_11.04 551_Charge1.mat",
+        "10-28-18_14.16 551_Charge2.mat",
+        "10-30-18_03.00 552_Charge9.mat",
+        "10-31-18_17.41 552_Charge16.mat"
+      ],
+      "cross_split_charges": [
+        "10-29-18_11.15 551_Charge6.mat",
+        "10-30-18_08.31 552_Charge10.mat"
+      ],
+      "excluded_related_charges": [
+        "10-25-18_04.09 549_Charge.mat"
+      ],
+      "leading_anchors": [],
+      "ordered_model_sequence": [
+        {
+          "evidence": "Section IV.B Table V",
+          "file_type": "drive_cycle",
+          "filename": "10-29-18_14.41 551_Mixed1_25degC_LGHG2.mat",
+          "paper_profile": "Mix1",
+          "profile": "Mixed1",
+          "sequence_order": 1,
+          "sequence_role": "drive_input",
+          "split_memberships": [
+            "full_train",
+            "partial_train"
+          ]
+        },
+        {
+          "evidence": "Between selected drives",
+          "file_type": "charge",
+          "filename": "10-29-18_16.50 551_Charge7.mat",
+          "paper_profile": "CC",
+          "profile": "Charge",
+          "sequence_order": 2,
+          "sequence_role": "intercycle_charge_input",
+          "split_memberships": [
+            "full_train",
+            "partial_train"
+          ]
+        },
+        {
+          "evidence": "Section IV.B Table V",
+          "file_type": "drive_cycle",
+          "filename": "10-29-18_20.16 551_Mixed2_25degC_LGHG2.mat",
+          "paper_profile": "Mix2",
+          "profile": "Mixed2",
+          "sequence_order": 3,
+          "sequence_role": "drive_input",
+          "split_memberships": [
+            "full_train",
+            "partial_train"
+          ]
+        },
+        {
+          "evidence": "Between selected drives; Ah counter reset detected",
+          "file_type": "charge",
+          "filename": "10-29-18_22.29 551_Charge8.mat",
+          "paper_profile": "CC",
+          "profile": "Charge",
+          "sequence_order": 4,
+          "sequence_role": "intercycle_charge_input",
+          "split_memberships": [
+            "full_train",
+            "partial_train"
+          ]
+        },
+        {
+          "evidence": "Post Cap_1C full CC-CV recharge before UDDS; Ah counter reset detected",
+          "file_type": "charge",
+          "filename": "10-30-18_03.00 552_Charge9.mat",
+          "paper_profile": "CC",
+          "profile": "Charge",
+          "sequence_order": 5,
+          "sequence_role": "intercycle_charge_input",
+          "split_memberships": [
+            "full_train",
+            "partial_train"
+          ]
+        },
+        {
+          "evidence": "Section IV.B Table V",
+          "file_type": "drive_cycle",
+          "filename": "10-30-18_06.27 552_Mixed3_25degC_LGHG2.mat",
+          "paper_profile": "Mix3",
+          "profile": "Mixed3",
+          "sequence_order": 6,
+          "sequence_role": "drive_input",
+          "split_memberships": [
+            "full_train",
+            "partial_train"
+          ]
+        },
+        {
+          "evidence": "Between selected drives; bridges splits {'full_train', 'partial_train'} -> {'full_train'}",
+          "file_type": "charge",
+          "filename": "10-30-18_08.31 552_Charge10.mat",
+          "paper_profile": "CC",
+          "profile": "Charge",
+          "sequence_order": 7,
+          "sequence_role": "intercycle_charge_input",
+          "split_memberships": [
+            "full_train",
+            "partial_train"
+          ]
+        }
+      ],
+      "trailing_candidates": []
+    },
+    "test": {
+      "ambiguous_charges": [
+        "10-31-18_12.30 552_Charge15.mat"
+      ],
+      "capacity_test_related_charges": [
+        "10-28-18_11.04 551_Charge1.mat",
+        "10-28-18_14.16 551_Charge2.mat",
+        "10-30-18_03.00 552_Charge9.mat",
+        "10-31-18_17.41 552_Charge16.mat"
+      ],
+      "cross_split_charges": [
+        "10-29-18_11.15 551_Charge6.mat",
+        "10-30-18_08.31 552_Charge10.mat"
+      ],
+      "excluded_related_charges": [
+        "10-25-18_04.09 549_Charge.mat"
+      ],
+      "leading_anchors": [],
+      "ordered_model_sequence": [
+        {
+          "evidence": "Section IV.B Table V",
+          "file_type": "drive_cycle",
+          "filename": "10-28-18_17.44 551_UDDS_25degC_LGHG2.mat",
+          "paper_profile": "UDDS",
+          "profile": "UDDS",
+          "sequence_order": 1,
+          "sequence_role": "drive_input",
+          "split_memberships": [
+            "test"
+          ]
+        },
+        {
+          "evidence": "Between selected drives",
+          "file_type": "charge",
+          "filename": "10-28-18_22.11 551_Charge3.mat",
+          "paper_profile": "CC",
+          "profile": "Charge",
+          "sequence_order": 2,
+          "sequence_role": "intercycle_charge_input",
+          "split_memberships": [
+            "test"
+          ]
+        },
+        {
+          "evidence": "charge_ah_fraction=0.005 <= 0.05; manifest model_input conflicts with charge role",
+          "file_type": "charge",
+          "filename": "10-29-18_01.47 551_Charge4.mat",
+          "paper_profile": "CC",
+          "profile": "Charge",
+          "sequence_order": 3,
+          "sequence_role": "intercycle_charge_input",
+          "split_memberships": [
+            "test"
+          ]
+        },
+        {
+          "evidence": "Section IV.B Table V",
+          "file_type": "drive_cycle",
+          "filename": "10-29-18_03.53 551_LA92_25degC_LGHG2.mat",
+          "paper_profile": "LA92",
+          "profile": "LA92",
+          "sequence_order": 4,
+          "sequence_role": "drive_input",
+          "split_memberships": [
+            "test"
+          ]
+        },
+        {
+          "evidence": "Between selected drives",
+          "file_type": "charge",
+          "filename": "10-29-18_06.42 551_Charge5.mat",
+          "paper_profile": "CC",
+          "profile": "Charge",
+          "sequence_order": 5,
+          "sequence_role": "intercycle_charge_input",
+          "split_memberships": [
+            "test"
+          ]
+        },
+        {
+          "evidence": "Section IV.B Table V",
+          "file_type": "drive_cycle",
+          "filename": "10-29-18_10.08 551_US06_25degC_LGHG2.mat",
+          "paper_profile": "US06",
+          "profile": "US06",
+          "sequence_order": 6,
+          "sequence_role": "drive_input",
+          "split_memberships": [
+            "test"
+          ]
+        },
+        {
+          "evidence": "Between selected drives; bridges splits {'test'} -> {'full_train', 'partial_train'}",
+          "file_type": "charge",
+          "filename": "10-29-18_11.15 551_Charge6.mat",
+          "paper_profile": "CC",
+          "profile": "Charge",
+          "sequence_order": 7,
+          "sequence_role": "intercycle_charge_input",
+          "split_memberships": [
+            "test"
+          ]
+        }
+      ],
+      "trailing_candidates": []
+    }
+  },
+  "panasonic_18650pf": {
+    "full_train": {
+      "ambiguous_charges": [],
+      "capacity_test_related_charges": [
+        "04-27-17_08.52 3541_Charge1a.mat",
+        "07-22-17_22.09 4020_Charge1.mat"
+      ],
+      "cross_split_charges": [
+        "03-19-17_11.59 3406_Charge3.mat",
+        "03-19-17_17.53 3406_Charge4.mat",
+        "03-21-17_13.34 3416_Charge4.mat"
+      ],
+      "excluded_related_charges": [
+        "03-20-17_08.04 3415_Charge2.mat",
+        "03-09-17_15.13 3349_Charge1.mat",
+        "03-09-17_19.03 3349_Charge2.mat",
+        "03-09-17_21.57 3349_ChargeRp.mat",
+        "03-11-17_00.39 3349_Charge3.mat",
+        "03-28-17_15.29 3423_Charge1.mat",
+        "03-12-17_11.58 3390_Charge_2.mat",
+        "04-29-17_13.07 3541_Charge2a.mat",
+        "07-22-17_23.40 4020_Charge2.mat",
+        "07-23-17_02.36 4020_ChargeRp.mat",
+        "07-24-17_07.55 4020_Charge3.mat"
+      ],
+      "leading_anchors": [
+        "03-18-17_00.05 3406_Charge1.mat"
+      ],
+      "ordered_model_sequence": [
+        {
+          "evidence": "Section IV.B Table V",
+          "file_type": "drive_cycle",
+          "filename": "03-18-17_02.17 25degC_Cycle_1_Pan18650PF.mat",
+          "paper_profile": "Mix1",
+          "profile": "Cycle_1",
+          "sequence_order": 1,
+          "sequence_role": "drive_input",
+          "split_memberships": [
+            "full_train",
+            "partial_train"
+          ]
+        },
+        {
+          "evidence": "Section IV.B Table V",
+          "file_type": "drive_cycle",
+          "filename": "03-19-17_03.25 25degC_Cycle_2_Pan18650PF.mat",
+          "paper_profile": "Mix2",
+          "profile": "Cycle_2",
+          "sequence_order": 2,
+          "sequence_role": "drive_input",
+          "split_memberships": [
+            "full_train",
+            "partial_train"
+          ]
+        },
+        {
+          "evidence": "Between selected drives 03-19-17_03.25 25degC_Cycle_2_Pan18650PF -> 03-19-17_09.07 25degC_Cycle_3_Pan18650PF",
+          "file_type": "charge",
+          "filename": "03-19-17_06.31 3406_Charge2.mat",
+          "paper_profile": "CC",
+          "profile": "Charge",
+          "sequence_order": 3,
+          "sequence_role": "intercycle_charge_input",
+          "split_memberships": [
+            "full_train",
+            "partial_train"
+          ]
+        },
+        {
+          "evidence": "Section IV.B Table V",
+          "file_type": "drive_cycle",
+          "filename": "03-19-17_09.07 25degC_Cycle_3_Pan18650PF.mat",
+          "paper_profile": "Mix3",
+          "profile": "Cycle_3",
+          "sequence_order": 4,
+          "sequence_role": "drive_input",
+          "split_memberships": [
+            "full_train",
+            "partial_train"
+          ]
+        },
+        {
+          "evidence": "Between selected drives 03-19-17_09.07 25degC_Cycle_3_Pan18650PF -> 03-19-17_14.31 25degC_Cycle_4_Pan18650PF; bridges splits {'full_train', 'partial_train'} -> {'full_train'}",
+          "file_type": "charge",
+          "filename": "03-19-17_11.59 3406_Charge3.mat",
+          "paper_profile": "CC",
+          "profile": "Charge",
+          "sequence_order": 5,
+          "sequence_role": "intercycle_charge_input",
+          "split_memberships": [
+            "full_train",
+            "partial_train"
+          ]
+        },
+        {
+          "evidence": "Section IV.B Table V",
+          "file_type": "drive_cycle",
+          "filename": "03-19-17_14.31 25degC_Cycle_4_Pan18650PF.mat",
+          "paper_profile": "Mix4",
+          "profile": "Cycle_4",
+          "sequence_order": 6,
+          "sequence_role": "drive_input",
+          "split_memberships": [
+            "full_train"
+          ]
+        },
+        {
+          "evidence": "Between selected drives 03-19-17_14.31 25degC_Cycle_4_Pan18650PF -> 03-20-17_01.43 25degC_US06_Pan18650PF; bridges splits {'full_train'} -> {'test'}",
+          "file_type": "charge",
+          "filename": "03-19-17_17.53 3406_Charge4.mat",
+          "paper_profile": "CC",
+          "profile": "Charge",
+          "sequence_order": 7,
+          "sequence_role": "intercycle_charge_input",
+          "split_memberships": [
+            "full_train"
+          ]
+        },
+        {
+          "evidence": "Section IV.B Table V",
+          "file_type": "drive_cycle",
+          "filename": "03-21-17_16.27 25degC_NN_Pan18650PF.mat",
+          "paper_profile": "Mix5",
+          "profile": "NN",
+          "sequence_order": 8,
+          "sequence_role": "drive_input",
+          "split_memberships": [
+            "full_train"
+          ]
+        }
+      ],
+      "trailing_candidates": [
+        "03-21-17_19.43 3416_Charge5.mat"
+      ]
+    },
+    "partial_train": {
+      "ambiguous_charges": [],
+      "capacity_test_related_charges": [
+        "04-27-17_08.52 3541_Charge1a.mat",
+        "07-22-17_22.09 4020_Charge1.mat"
+      ],
+      "cross_split_charges": [
+        "03-19-17_11.59 3406_Charge3.mat",
+        "03-19-17_17.53 3406_Charge4.mat",
+        "03-21-17_13.34 3416_Charge4.mat"
+      ],
+      "excluded_related_charges": [
+        "03-20-17_08.04 3415_Charge2.mat",
+        "03-09-17_15.13 3349_Charge1.mat",
+        "03-09-17_19.03 3349_Charge2.mat",
+        "03-09-17_21.57 3349_ChargeRp.mat",
+        "03-11-17_00.39 3349_Charge3.mat",
+        "03-28-17_15.29 3423_Charge1.mat",
+        "03-12-17_11.58 3390_Charge_2.mat",
+        "04-29-17_13.07 3541_Charge2a.mat",
+        "07-22-17_23.40 4020_Charge2.mat",
+        "07-23-17_02.36 4020_ChargeRp.mat",
+        "07-24-17_07.55 4020_Charge3.mat"
+      ],
+      "leading_anchors": [
+        "03-18-17_00.05 3406_Charge1.mat"
+      ],
+      "ordered_model_sequence": [
+        {
+          "evidence": "Section IV.B Table V",
+          "file_type": "drive_cycle",
+          "filename": "03-18-17_02.17 25degC_Cycle_1_Pan18650PF.mat",
+          "paper_profile": "Mix1",
+          "profile": "Cycle_1",
+          "sequence_order": 1,
+          "sequence_role": "drive_input",
+          "split_memberships": [
+            "full_train",
+            "partial_train"
+          ]
+        },
+        {
+          "evidence": "Section IV.B Table V",
+          "file_type": "drive_cycle",
+          "filename": "03-19-17_03.25 25degC_Cycle_2_Pan18650PF.mat",
+          "paper_profile": "Mix2",
+          "profile": "Cycle_2",
+          "sequence_order": 2,
+          "sequence_role": "drive_input",
+          "split_memberships": [
+            "full_train",
+            "partial_train"
+          ]
+        },
+        {
+          "evidence": "Between selected drives 03-19-17_03.25 25degC_Cycle_2_Pan18650PF -> 03-19-17_09.07 25degC_Cycle_3_Pan18650PF",
+          "file_type": "charge",
+          "filename": "03-19-17_06.31 3406_Charge2.mat",
+          "paper_profile": "CC",
+          "profile": "Charge",
+          "sequence_order": 3,
+          "sequence_role": "intercycle_charge_input",
+          "split_memberships": [
+            "full_train",
+            "partial_train"
+          ]
+        },
+        {
+          "evidence": "Section IV.B Table V",
+          "file_type": "drive_cycle",
+          "filename": "03-19-17_09.07 25degC_Cycle_3_Pan18650PF.mat",
+          "paper_profile": "Mix3",
+          "profile": "Cycle_3",
+          "sequence_order": 4,
+          "sequence_role": "drive_input",
+          "split_memberships": [
+            "full_train",
+            "partial_train"
+          ]
+        },
+        {
+          "evidence": "Between selected drives 03-19-17_09.07 25degC_Cycle_3_Pan18650PF -> 03-19-17_14.31 25degC_Cycle_4_Pan18650PF; bridges splits {'full_train', 'partial_train'} -> {'full_train'}",
+          "file_type": "charge",
+          "filename": "03-19-17_11.59 3406_Charge3.mat",
+          "paper_profile": "CC",
+          "profile": "Charge",
+          "sequence_order": 5,
+          "sequence_role": "intercycle_charge_input",
+          "split_memberships": [
+            "full_train",
+            "partial_train"
+          ]
+        }
+      ],
+      "trailing_candidates": [
+        "03-21-17_19.43 3416_Charge5.mat"
+      ]
+    },
+    "test": {
+      "ambiguous_charges": [],
+      "capacity_test_related_charges": [
+        "04-27-17_08.52 3541_Charge1a.mat",
+        "07-22-17_22.09 4020_Charge1.mat"
+      ],
+      "cross_split_charges": [
+        "03-19-17_11.59 3406_Charge3.mat",
+        "03-19-17_17.53 3406_Charge4.mat",
+        "03-21-17_13.34 3416_Charge4.mat"
+      ],
+      "excluded_related_charges": [
+        "03-20-17_08.04 3415_Charge2.mat",
+        "03-09-17_15.13 3349_Charge1.mat",
+        "03-09-17_19.03 3349_Charge2.mat",
+        "03-09-17_21.57 3349_ChargeRp.mat",
+        "03-11-17_00.39 3349_Charge3.mat",
+        "03-28-17_15.29 3423_Charge1.mat",
+        "03-12-17_11.58 3390_Charge_2.mat",
+        "04-29-17_13.07 3541_Charge2a.mat",
+        "07-22-17_23.40 4020_Charge2.mat",
+        "07-23-17_02.36 4020_ChargeRp.mat",
+        "07-24-17_07.55 4020_Charge3.mat"
+      ],
+      "leading_anchors": [
+        "03-18-17_00.05 3406_Charge1.mat"
+      ],
+      "ordered_model_sequence": [
+        {
+          "evidence": "Section IV.B Table V",
+          "file_type": "drive_cycle",
+          "filename": "03-20-17_01.43 25degC_US06_Pan18650PF.mat",
+          "paper_profile": "US06",
+          "profile": "US06",
+          "sequence_order": 1,
+          "sequence_role": "drive_input",
+          "split_memberships": [
+            "test"
+          ]
+        },
+        {
+          "evidence": "Between selected drives 03-20-17_01.43 25degC_US06_Pan18650PF -> 03-21-17_00.29 25degC_UDDS_Pan18650PF",
+          "file_type": "charge",
+          "filename": "03-20-17_03.05 3415_Charge1.mat",
+          "paper_profile": "CC",
+          "profile": "Charge",
+          "sequence_order": 2,
+          "sequence_role": "intercycle_charge_input",
+          "split_memberships": [
+            "test"
+          ]
+        },
+        {
+          "evidence": "Between selected drives 03-20-17_01.43 25degC_US06_Pan18650PF -> 03-21-17_00.29 25degC_UDDS_Pan18650PF",
+          "file_type": "charge",
+          "filename": "03-20-17_21.35 3416_Charge2.mat",
+          "paper_profile": "CC",
+          "profile": "Charge",
+          "sequence_order": 3,
+          "sequence_role": "intercycle_charge_input",
+          "split_memberships": [
+            "test"
+          ]
+        },
+        {
+          "evidence": "Section IV.B Table V",
+          "file_type": "drive_cycle",
+          "filename": "03-21-17_00.29 25degC_UDDS_Pan18650PF.mat",
+          "paper_profile": "UDDS",
+          "profile": "UDDS",
+          "sequence_order": 4,
+          "sequence_role": "drive_input",
+          "split_memberships": [
+            "test"
+          ]
+        },
+        {
+          "evidence": "Between selected drives 03-21-17_00.29 25degC_UDDS_Pan18650PF -> 03-21-17_09.38 25degC_LA92_Pan18650PF",
+          "file_type": "charge",
+          "filename": "03-21-17_06.44 3416_Charge3.mat",
+          "paper_profile": "CC",
+          "profile": "Charge",
+          "sequence_order": 5,
+          "sequence_role": "intercycle_charge_input",
+          "split_memberships": [
+            "test"
+          ]
+        },
+        {
+          "evidence": "Section IV.B Table V",
+          "file_type": "drive_cycle",
+          "filename": "03-21-17_09.38 25degC_LA92_Pan18650PF.mat",
+          "paper_profile": "LA92",
+          "profile": "LA92",
+          "sequence_order": 6,
+          "sequence_role": "drive_input",
+          "split_memberships": [
+            "test"
+          ]
+        },
+        {
+          "evidence": "Between selected drives 03-21-17_09.38 25degC_LA92_Pan18650PF -> 03-21-17_16.27 25degC_NN_Pan18650PF; bridges splits {'test'} -> {'full_train'}",
+          "file_type": "charge",
+          "filename": "03-21-17_13.34 3416_Charge4.mat",
+          "paper_profile": "CC",
+          "profile": "Charge",
+          "sequence_order": 7,
+          "sequence_role": "intercycle_charge_input",
+          "split_memberships": [
+            "test"
+          ]
+        }
+      ],
+      "trailing_candidates": [
+        "03-21-17_19.43 3416_Charge5.mat"
+      ]
+    }
+  },
+  "samsung_30t": {
+    "full_train": {
+      "ambiguous_charges": [
+        "03-18-19_14.47 734_Charge2_25degC_IN21700_30T.mat"
+      ],
+      "capacity_test_related_charges": [
+        "03-18-19_13.03 734_Charge1_25degC_IN21700_30T.mat",
+        "03-20-19_17.52 740_Charge9_25degC_IN21700_30T.mat",
+        "03-20-19_19.37 740_Charge10_25degC_IN21700_30T.mat"
+      ],
+      "cross_split_charges": [
+        "03-19-19_01.36 734_Charge6_25degC_IN21700_30T.mat",
+        "03-20-19_22.00 740_Charge11_25degC_IN21700_30T.mat"
+      ],
+      "excluded_related_charges": [],
+      "leading_anchors": [],
+      "ordered_model_sequence": [
+        {
+          "evidence": "Section IV.B Table V",
+          "file_type": "drive_cycle",
+          "filename": "03-19-19_03.13 734_Mixed1_25degC_IN21700_30T.mat",
+          "paper_profile": "Mix1",
+          "profile": "Mixed1",
+          "sequence_order": 1,
+          "sequence_role": "drive_input",
+          "split_memberships": [
+            "full_train",
+            "partial_train"
+          ]
+        },
+        {
+          "evidence": "Chronology: after Mixed1, before Mixed2",
+          "file_type": "charge",
+          "filename": "03-19-19_04.07 734_Charge7_25degC_IN21700_30T.mat",
+          "paper_profile": "CC",
+          "profile": "Charge7",
+          "sequence_order": 2,
+          "sequence_role": "intercycle_charge_input",
+          "split_memberships": [
+            "full_train",
+            "partial_train"
+          ]
+        },
+        {
+          "evidence": "Section IV.B Table V",
+          "file_type": "drive_cycle",
+          "filename": "03-19-19_05.44 734_Mixed2_25degC_IN21700_30T.mat",
+          "paper_profile": "Mix2",
+          "profile": "Mixed2",
+          "sequence_order": 3,
+          "sequence_role": "drive_input",
+          "split_memberships": [
+            "full_train",
+            "partial_train"
+          ]
+        },
+        {
+          "evidence": "Ah counter reset detected",
+          "file_type": "charge",
+          "filename": "03-19-19_06.45 734_Charge8_25degC_IN21700_30T.mat",
+          "paper_profile": "CC",
+          "profile": "Charge8",
+          "sequence_order": 4,
+          "sequence_role": "intercycle_charge_input",
+          "split_memberships": [
+            "full_train",
+            "partial_train"
+          ]
+        },
+        {
+          "evidence": "Post inferred Cap_1C before Mixed3; Ah counter reset detected",
+          "file_type": "charge",
+          "filename": "03-20-19_19.37 740_Charge10_25degC_IN21700_30T.mat",
+          "paper_profile": "CC",
+          "profile": "Charge10",
+          "sequence_order": 5,
+          "sequence_role": "intercycle_charge_input",
+          "split_memberships": [
+            "full_train",
+            "partial_train"
+          ]
+        },
+        {
+          "evidence": "Section IV.B Table V",
+          "file_type": "drive_cycle",
+          "filename": "03-20-19_21.16 740_Mixed3_25degC_IN21700_30T.mat",
+          "paper_profile": "Mix3",
+          "profile": "Mixed3",
+          "sequence_order": 6,
+          "sequence_role": "drive_input",
+          "split_memberships": [
+            "full_train",
+            "partial_train"
+          ]
+        },
+        {
+          "evidence": "bridges splits {'full_train', 'partial_train'} -> {'full_train'}; Ah counter reset detected",
+          "file_type": "charge",
+          "filename": "03-20-19_22.00 740_Charge11_25degC_IN21700_30T.mat",
+          "paper_profile": "CC",
+          "profile": "Charge11",
+          "sequence_order": 7,
+          "sequence_role": "intercycle_charge_input",
+          "split_memberships": [
+            "full_train",
+            "partial_train"
+          ]
+        },
+        {
+          "evidence": "Section IV.B Table V",
+          "file_type": "drive_cycle",
+          "filename": "03-20-19_23.37 740_Mixed4_25degC_IN21700_30T.mat",
+          "paper_profile": "Mix4",
+          "profile": "Mixed4",
+          "sequence_order": 8,
+          "sequence_role": "drive_input",
+          "split_memberships": [
+            "full_train"
+          ]
+        },
+        {
+          "evidence": "Chronology: after Mixed4, before Mixed5",
+          "file_type": "charge",
+          "filename": "03-21-19_00.39 740_Charge12_25degC_IN21700_30T.mat",
+          "paper_profile": "CC",
+          "profile": "Charge12",
+          "sequence_order": 9,
+          "sequence_role": "intercycle_charge_input",
+          "split_memberships": [
+            "full_train"
+          ]
+        },
+        {
+          "evidence": "Section IV.B Table V",
+          "file_type": "drive_cycle",
+          "filename": "03-21-19_02.16 740_Mixed5_25degC_IN21700_30T.mat",
+          "paper_profile": "Mix5",
+          "profile": "Mixed5",
+          "sequence_order": 10,
+          "sequence_role": "drive_input",
+          "split_memberships": [
+            "full_train"
+          ]
+        },
+        {
+          "evidence": "Chronology: after Mixed5, before Mixed6",
+          "file_type": "charge",
+          "filename": "03-21-19_03.00 740_Charge13_25degC_IN21700_30T.mat",
+          "paper_profile": "CC",
+          "profile": "Charge13",
+          "sequence_order": 11,
+          "sequence_role": "intercycle_charge_input",
+          "split_memberships": [
+            "full_train"
+          ]
+        },
+        {
+          "evidence": "Section IV.B Table V",
+          "file_type": "drive_cycle",
+          "filename": "03-21-19_04.37 740_Mixed6_25degC_IN21700_30T.mat",
+          "paper_profile": "Mix6",
+          "profile": "Mixed6",
+          "sequence_order": 12,
+          "sequence_role": "drive_input",
+          "split_memberships": [
+            "full_train"
+          ]
+        },
+        {
+          "evidence": "Chronology: after Mixed6, before Mixed7",
+          "file_type": "charge",
+          "filename": "03-21-19_05.35 740_Charge14_25degC_IN21700_30T.mat",
+          "paper_profile": "CC",
+          "profile": "Charge14",
+          "sequence_order": 13,
+          "sequence_role": "intercycle_charge_input",
+          "split_memberships": [
+            "full_train"
+          ]
+        },
+        {
+          "evidence": "Section IV.B Table V",
+          "file_type": "drive_cycle",
+          "filename": "03-21-19_07.12 740_Mixed7_25degC_IN21700_30T.mat",
+          "paper_profile": "Mix7",
+          "profile": "Mixed7",
+          "sequence_order": 14,
+          "sequence_role": "drive_input",
+          "split_memberships": [
+            "full_train"
+          ]
+        },
+        {
+          "evidence": "Chronology: after Mixed7, before Mixed8",
+          "file_type": "charge",
+          "filename": "03-21-19_08.01 740_Charge15_25degC_IN21700_30T.mat",
+          "paper_profile": "CC",
+          "profile": "Charge15",
+          "sequence_order": 15,
+          "sequence_role": "intercycle_charge_input",
+          "split_memberships": [
+            "full_train"
+          ]
+        },
+        {
+          "evidence": "Section IV.B Table V",
+          "file_type": "drive_cycle",
+          "filename": "03-21-19_09.39 740_Mixed8_25degC_IN21700_30T.mat",
+          "paper_profile": "Mix8",
+          "profile": "Mixed8",
+          "sequence_order": 16,
+          "sequence_role": "drive_input",
+          "split_memberships": [
+            "full_train"
+          ]
+        }
+      ],
+      "trailing_candidates": [
+        "03-21-19_10.49 740_Charge16_25degC_IN21700_30T.mat"
+      ]
+    },
+    "partial_train": {
+      "ambiguous_charges": [
+        "03-18-19_14.47 734_Charge2_25degC_IN21700_30T.mat"
+      ],
+      "capacity_test_related_charges": [
+        "03-18-19_13.03 734_Charge1_25degC_IN21700_30T.mat",
+        "03-20-19_17.52 740_Charge9_25degC_IN21700_30T.mat",
+        "03-20-19_19.37 740_Charge10_25degC_IN21700_30T.mat"
+      ],
+      "cross_split_charges": [
+        "03-19-19_01.36 734_Charge6_25degC_IN21700_30T.mat",
+        "03-20-19_22.00 740_Charge11_25degC_IN21700_30T.mat"
+      ],
+      "excluded_related_charges": [],
+      "leading_anchors": [],
+      "ordered_model_sequence": [
+        {
+          "evidence": "Section IV.B Table V",
+          "file_type": "drive_cycle",
+          "filename": "03-19-19_03.13 734_Mixed1_25degC_IN21700_30T.mat",
+          "paper_profile": "Mix1",
+          "profile": "Mixed1",
+          "sequence_order": 1,
+          "sequence_role": "drive_input",
+          "split_memberships": [
+            "full_train",
+            "partial_train"
+          ]
+        },
+        {
+          "evidence": "Chronology: after Mixed1, before Mixed2",
+          "file_type": "charge",
+          "filename": "03-19-19_04.07 734_Charge7_25degC_IN21700_30T.mat",
+          "paper_profile": "CC",
+          "profile": "Charge7",
+          "sequence_order": 2,
+          "sequence_role": "intercycle_charge_input",
+          "split_memberships": [
+            "full_train",
+            "partial_train"
+          ]
+        },
+        {
+          "evidence": "Section IV.B Table V",
+          "file_type": "drive_cycle",
+          "filename": "03-19-19_05.44 734_Mixed2_25degC_IN21700_30T.mat",
+          "paper_profile": "Mix2",
+          "profile": "Mixed2",
+          "sequence_order": 3,
+          "sequence_role": "drive_input",
+          "split_memberships": [
+            "full_train",
+            "partial_train"
+          ]
+        },
+        {
+          "evidence": "Ah counter reset detected",
+          "file_type": "charge",
+          "filename": "03-19-19_06.45 734_Charge8_25degC_IN21700_30T.mat",
+          "paper_profile": "CC",
+          "profile": "Charge8",
+          "sequence_order": 4,
+          "sequence_role": "intercycle_charge_input",
+          "split_memberships": [
+            "full_train",
+            "partial_train"
+          ]
+        },
+        {
+          "evidence": "Post inferred Cap_1C before Mixed3; Ah counter reset detected",
+          "file_type": "charge",
+          "filename": "03-20-19_19.37 740_Charge10_25degC_IN21700_30T.mat",
+          "paper_profile": "CC",
+          "profile": "Charge10",
+          "sequence_order": 5,
+          "sequence_role": "intercycle_charge_input",
+          "split_memberships": [
+            "full_train",
+            "partial_train"
+          ]
+        },
+        {
+          "evidence": "Section IV.B Table V",
+          "file_type": "drive_cycle",
+          "filename": "03-20-19_21.16 740_Mixed3_25degC_IN21700_30T.mat",
+          "paper_profile": "Mix3",
+          "profile": "Mixed3",
+          "sequence_order": 6,
+          "sequence_role": "drive_input",
+          "split_memberships": [
+            "full_train",
+            "partial_train"
+          ]
+        },
+        {
+          "evidence": "bridges splits {'full_train', 'partial_train'} -> {'full_train'}; Ah counter reset detected",
+          "file_type": "charge",
+          "filename": "03-20-19_22.00 740_Charge11_25degC_IN21700_30T.mat",
+          "paper_profile": "CC",
+          "profile": "Charge11",
+          "sequence_order": 7,
+          "sequence_role": "intercycle_charge_input",
+          "split_memberships": [
+            "full_train",
+            "partial_train"
+          ]
+        }
+      ],
+      "trailing_candidates": [
+        "03-21-19_10.49 740_Charge16_25degC_IN21700_30T.mat"
+      ]
+    },
+    "test": {
+      "ambiguous_charges": [
+        "03-18-19_14.47 734_Charge2_25degC_IN21700_30T.mat"
+      ],
+      "capacity_test_related_charges": [
+        "03-18-19_13.03 734_Charge1_25degC_IN21700_30T.mat",
+        "03-20-19_17.52 740_Charge9_25degC_IN21700_30T.mat",
+        "03-20-19_19.37 740_Charge10_25degC_IN21700_30T.mat"
+      ],
+      "cross_split_charges": [
+        "03-19-19_01.36 734_Charge6_25degC_IN21700_30T.mat",
+        "03-20-19_22.00 740_Charge11_25degC_IN21700_30T.mat"
+      ],
+      "excluded_related_charges": [],
+      "leading_anchors": [],
+      "ordered_model_sequence": [
+        {
+          "evidence": "Section IV.B Table V",
+          "file_type": "drive_cycle",
+          "filename": "03-18-19_16.26 734_UDDS_25degC_IN21700_30T.mat",
+          "paper_profile": "UDDS",
+          "profile": "UDDS",
+          "sequence_order": 1,
+          "sequence_role": "drive_input",
+          "split_memberships": [
+            "test"
+          ]
+        },
+        {
+          "evidence": "Chronology: after UDDS, before HWFET",
+          "file_type": "charge",
+          "filename": "03-18-19_18.16 734_Charge3_25degC_IN21700_30T.mat",
+          "paper_profile": "CC",
+          "profile": "Charge3",
+          "sequence_order": 2,
+          "sequence_role": "intercycle_charge_input",
+          "split_memberships": [
+            "test"
+          ]
+        },
+        {
+          "evidence": "Chronology: after HWFET, before LA92",
+          "file_type": "charge",
+          "filename": "03-18-19_20.36 734_Charge4_25degC_IN21700_30T.mat",
+          "paper_profile": "CC",
+          "profile": "Charge4",
+          "sequence_order": 3,
+          "sequence_role": "intercycle_charge_input",
+          "split_memberships": [
+            "test"
+          ]
+        },
+        {
+          "evidence": "Section IV.B Table V",
+          "file_type": "drive_cycle",
+          "filename": "03-18-19_22.13 734_LA92_25degC_IN21700_30T.mat",
+          "paper_profile": "LA92",
+          "profile": "LA92",
+          "sequence_order": 4,
+          "sequence_role": "drive_input",
+          "split_memberships": [
+            "test"
+          ]
+        },
+        {
+          "evidence": "Chronology: after LA92, before US06",
+          "file_type": "charge",
+          "filename": "03-18-19_23.25 734_Charge5_25degC_IN21700_30T.mat",
+          "paper_profile": "CC",
+          "profile": "Charge5",
+          "sequence_order": 5,
+          "sequence_role": "intercycle_charge_input",
+          "split_memberships": [
+            "test"
+          ]
+        },
+        {
+          "evidence": "Section IV.B Table V",
+          "file_type": "drive_cycle",
+          "filename": "03-19-19_01.03 734_US06_25degC_IN21700_30T.mat",
+          "paper_profile": "US06",
+          "profile": "US06",
+          "sequence_order": 6,
+          "sequence_role": "drive_input",
+          "split_memberships": [
+            "test"
+          ]
+        },
+        {
+          "evidence": "bridges splits {'test'} -> {'full_train', 'partial_train'}",
+          "file_type": "charge",
+          "filename": "03-19-19_01.36 734_Charge6_25degC_IN21700_30T.mat",
+          "paper_profile": "CC",
+          "profile": "Charge6",
+          "sequence_order": 7,
+          "sequence_role": "intercycle_charge_input",
+          "split_memberships": [
+            "test"
+          ]
+        }
+      ],
+      "trailing_candidates": [
+        "03-21-19_10.49 740_Charge16_25degC_IN21700_30T.mat"
+      ]
+    }
+  }
+}
