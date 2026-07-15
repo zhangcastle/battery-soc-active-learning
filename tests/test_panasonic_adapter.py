@@ -133,7 +133,7 @@ def _manifest_row(mat_path: Path, tmp_path: Path, *,
         if ex:
             row["record_role"] = "excluded"
         elif ft == "charge" and selected:
-            row["record_role"] = "soc_anchor"
+            row["record_role"] = "model_input"
         else:
             row["record_role"] = "model_input"
     return row
@@ -829,7 +829,7 @@ class TestRequestedSplitSemantics:
         rec = adapter.load_split("full_train")[0]
         assert rec.metadata["paper_profile"] == "CC"
         assert rec.metadata["profile"] == "Charge"
-        assert rec.metadata["record_role"] == "soc_anchor"
+        assert rec.metadata["record_role"] == "model_input"
 
 
 class TestRecordRoleMetadata:
@@ -838,14 +838,14 @@ class TestRecordRoleMetadata:
         rec = _make_adapter(tmp_path, [_manifest_row(mat, tmp_path)]).load_split("full_train")[0]
         assert rec.metadata["record_role"] == "model_input"
 
-    def test_charge_record_role_soc_anchor(self, tmp_path):
+    def test_charge_record_role_model_input(self, tmp_path):
         mat = _write_mat(tmp_path, "charge2.mat")
         row = _manifest_row(
             mat, tmp_path,
             profile="Charge", paper_profile="CC", file_type="charge",
         )
         rec = _make_adapter(tmp_path, [row]).load_split("full_train")[0]
-        assert rec.metadata["record_role"] == "soc_anchor"
+        assert rec.metadata["record_role"] == "model_input"
 
     def test_excluded_record_role(self, tmp_path):
         mat = _write_mat(tmp_path, "excl2.mat")
@@ -966,7 +966,7 @@ class TestIntegrationPanasonic:
             if rec.metadata["file_type"] == "drive_cycle":
                 assert rec.metadata["record_role"] == "model_input"
             elif rec.metadata["file_type"] == "charge":
-                assert rec.metadata["record_role"] == "soc_anchor"
+                assert rec.metadata["record_role"] == "model_input"
 
     def test_excluded_records_have_excluded_role(self, adapter):
         for rec in adapter.load_split("exclude"):
@@ -975,7 +975,10 @@ class TestIntegrationPanasonic:
     def test_model_input_drive_cycles_have_soc_metadata(self, adapter):
         records = adapter.load_split("full_train") + adapter.load_split("test")
         for rec in records:
-            if rec.metadata["record_role"] == "model_input":
+            if (
+                rec.metadata["record_role"] == "model_input"
+                and rec.metadata["file_type"] == "drive_cycle"
+            ):
                 assert rec.metadata["soc_init"] is not None
                 assert rec.metadata["soc_anchor_source"]
                 assert rec.metadata["soc_anchor_source"] != "not_applicable"

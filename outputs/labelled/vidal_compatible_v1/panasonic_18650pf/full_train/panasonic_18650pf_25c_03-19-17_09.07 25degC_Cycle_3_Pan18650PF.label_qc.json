@@ -1,0 +1,30 @@
+{
+  "ah_direction_consistent": true,
+  "ah_end": -2.53031,
+  "ah_max": -4e-05,
+  "ah_min": -2.53031,
+  "ah_reset_detected": false,
+  "ah_start": -4e-05,
+  "current_integrated_ah_end": -2.5312061261978824,
+  "cycler_ah_delta_end": -2.5302700000000002,
+  "denominator_ah": 2.53031,
+  "duplicate_timestamp_count": 1,
+  "failures": [],
+  "max_abs_ah_reference_difference": 0.00109629979051995,
+  "mean_abs_ah_reference_difference": 0.000632093578818911,
+  "n_rows": 102441,
+  "negative_time_step_count": 0,
+  "notes": [
+    "soc_formula_mode=drive_discharge"
+  ],
+  "soc_end": 0.0,
+  "soc_max": 0.9999841916603105,
+  "soc_min": 0.0,
+  "soc_out_of_bounds_count": 0,
+  "soc_start": 0.9999841916603105,
+  "status": "WARN",
+  "warnings": [
+    "1 duplicate timestamp(s) (dt == 0).",
+    "Drive-cycle SOC has 16418 rising step(s) (>5% of steps)."
+  ]
+}

@@ -86,7 +86,7 @@ def _manifest_row(mat_path: Path, tmp_path: Path, **kwargs) -> dict:
         if exclude:
             row["record_role"] = "excluded"
         elif ft == "charge" and selected:
-            row["record_role"] = "soc_anchor"
+            row["record_role"] = "model_input"
         else:
             row["record_role"] = "model_input"
     return row
@@ -111,17 +111,16 @@ class TestSamsungManifestLoad:
         entries = load_manifest(_MANIFEST)
         assert len(entries) == 34
         roles = {e.record_role for e in entries}
-        assert roles == {"model_input", "soc_anchor", "excluded"}
+        assert roles == {"model_input", "excluded"}
 
     def test_record_role_counts(self):
         entries = load_manifest(_MANIFEST)
         model_input = sum(1 for e in entries if e.record_role == "model_input")
         soc_anchor = sum(1 for e in entries if e.record_role == "soc_anchor")
         excluded = sum(1 for e in entries if e.record_role == "excluded")
-        assert model_input == 11
-        assert soc_anchor == 14
+        assert model_input == 25
         assert excluded == 9
-        assert model_input + soc_anchor + excluded == len(entries)
+        assert model_input + excluded == len(entries)
 
 
 class TestSamsungBasicLoad:
@@ -201,14 +200,14 @@ class TestSamsungRecordRole:
         assert rec.metadata["record_role"] == "model_input"
         assert rec.metadata["file_type"] == "drive_cycle"
 
-    def test_soc_anchor_role(self, tmp_path):
+    def test_charge_record_role_model_input(self, tmp_path):
         mat = _write_mat(tmp_path, "chg.mat")
         row = _manifest_row(
             mat, tmp_path, profile="Charge7", paper_profile="CC",
             file_type="charge", soc_init="", soc_anchor_source="preceding_full_charge",
         )
         rec = _adapter(tmp_path, [row]).load_split("full_train")[0]
-        assert rec.metadata["record_role"] == "soc_anchor"
+        assert rec.metadata["record_role"] == "model_input"
 
     def test_excluded_role(self, tmp_path):
         mat = _write_mat(tmp_path, "exc.mat")
@@ -477,16 +476,17 @@ class TestSamsungIntegration:
         for split in ("full_train", "partial_train", "test", "exclude"):
             for rec in adapter.load_split(split):
                 if rec.metadata["record_role"] == "model_input":
-                    assert rec.metadata["file_type"] == "drive_cycle"
-                elif rec.metadata["record_role"] == "soc_anchor":
-                    assert rec.metadata["file_type"] == "charge"
+                    assert rec.metadata["file_type"] in ("drive_cycle", "charge")
                 elif rec.metadata["record_role"] == "excluded":
                     assert "exclude" in rec.metadata["manifest_splits"]
 
     def test_model_input_soc_metadata(self, adapter):
         records = adapter.load_split("full_train") + adapter.load_split("test")
         for rec in records:
-            if rec.metadata["record_role"] == "model_input":
+            if (
+                rec.metadata["record_role"] == "model_input"
+                and rec.metadata["file_type"] == "drive_cycle"
+            ):
                 assert rec.metadata["soc_init"] is not None
                 assert 0.0 <= rec.metadata["soc_init"] <= 1.0
                 assert rec.metadata["soc_anchor_source"]

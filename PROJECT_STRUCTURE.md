@@ -70,10 +70,17 @@ battery-soc-transfer-benchmark/
 
 **训练输入筛选契约（文档约定，尚未实现过滤器）：**
 
-只有 ``record.metadata["record_role"] == "model_input"`` 的
-:class:`~battery_benchmark.data.sequence_record.SequenceRecord` 可进入后续 SOC
-模型时序输入流程。``soc_anchor`` 记录用于满充证据与 SOC 初始化追踪；
+Vidal-compatible 协议下，``record.metadata["record_role"] == "model_input"`` 的
+selected drive-cycle **与** selected CC charge 记录均可进入标签与模型管线。
+``file_type`` 决定 SOC 公式（``drive_discharge`` vs ``charge``）。
 ``excluded`` 记录不参与模型输入。
+
+**Vidal-compatible SOC reconstruction（``labels/`` 模块）：**
+
+- ``SOCCalculator.calculate_vidal()`` — open-reference per-record Ah 归一化
+- ``label_source = "vidal_compatible_cycler_ah"``（非官方 Vidal 源码复刻）
+- 带版本导出：``outputs/labelled/vidal_compatible_v1/``（Parquet + JSON manifest）
+- ``calculate_cmu()`` — 占位，未实现
 
 **Samsung 特有说明：**
 - SOC metadata 直接来自 manifest 的 ``soc_init`` / ``soc_anchor_source``（与 LG 相同，无 Panasonic 式推导）

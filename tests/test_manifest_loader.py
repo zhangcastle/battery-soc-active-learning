@@ -52,7 +52,7 @@ def _base_row(**overrides) -> dict:
         if exclude:
             row["record_role"] = "excluded"
         elif ft == "charge" and selected:
-            row["record_role"] = "soc_anchor"
+            row["record_role"] = "model_input"
         else:
             row["record_role"] = "model_input"
     return row
@@ -570,8 +570,16 @@ class TestRecordRoleValidation:
         with pytest.raises(InvalidManifestRowError, match="record_role"):
             load_manifest(_write_csv(tmp_path, [_base_row(record_role="training_data")]))
 
-    def test_model_input_with_charge_fails(self, tmp_path):
-        row = _base_row(file_type="charge", record_role="model_input")
+    def test_model_input_with_charge_succeeds(self, tmp_path):
+        row = _base_row(file_type="charge", profile="Charge", paper_profile="CC",
+                        record_role="model_input")
+        entry = load_manifest(_write_csv(tmp_path, [row]))[0]
+        assert entry.record_role == "model_input"
+        assert entry.file_type == "charge"
+
+    def test_model_input_with_characterization_fails(self, tmp_path):
+        row = _base_row(file_type="characterization", record_role="model_input",
+                        paper_profile="")
         with pytest.raises(InvalidManifestRowError, match="model_input"):
             load_manifest(_write_csv(tmp_path, [row]))
 

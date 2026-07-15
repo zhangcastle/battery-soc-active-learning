@@ -152,14 +152,14 @@ def validate_soc_metadata(
     soc_init: float | None,
     soc_anchor_source: str,
 ) -> None:
-    """Validate SOC initialization metadata for selected model-input drive-cycles.
+    """Validate SOC initialization metadata for model-input drive-cycles.
 
-    Records with ``record_role == "model_input"`` must carry a finite
-    ``soc_init`` and a non-empty ``soc_anchor_source`` that is not
-    ``"not_applicable"``.  ``soc_anchor`` and ``excluded`` records are not
-    subject to drive-cycle SOC requirements.
+    Only ``model_input`` records with ``file_type == "drive_cycle"`` must
+    carry finite ``soc_init`` and a non-empty ``soc_anchor_source`` that is
+    not ``"not_applicable"``.  ``model_input`` charge records and
+    ``soc_anchor`` / ``excluded`` records are not subject to these rules.
     """
-    if entry.record_role != "model_input":
+    if entry.record_role != "model_input" or entry.file_type != "drive_cycle":
         return
 
     missing: list[str] = []

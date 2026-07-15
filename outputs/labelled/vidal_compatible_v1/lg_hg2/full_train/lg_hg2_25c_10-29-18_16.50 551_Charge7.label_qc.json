@@ -1,0 +1,29 @@
+{
+  "ah_direction_consistent": true,
+  "ah_end": 2.61553,
+  "ah_max": 2.61553,
+  "ah_min": 0.0,
+  "ah_reset_detected": false,
+  "ah_start": 0.0,
+  "current_integrated_ah_end": 2.590774607629975,
+  "cycler_ah_delta_end": 2.61553,
+  "denominator_ah": 2.61553,
+  "duplicate_timestamp_count": 3,
+  "failures": [],
+  "max_abs_ah_reference_difference": 0.02573407365635072,
+  "mean_abs_ah_reference_difference": 0.01771777629857869,
+  "n_rows": 210,
+  "negative_time_step_count": 0,
+  "notes": [
+    "soc_formula_mode=charge"
+  ],
+  "soc_end": 1.0,
+  "soc_max": 1.0,
+  "soc_min": 0.0,
+  "soc_out_of_bounds_count": 0,
+  "soc_start": 0.0,
+  "status": "WARN",
+  "warnings": [
+    "3 duplicate timestamp(s) (dt == 0)."
+  ]
+}

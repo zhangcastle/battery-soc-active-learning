@@ -264,11 +264,11 @@ def _validate_record_role_consistency(
     is_selected = bool(full_train or partial_train or test_)
 
     if record_role == "model_input":
-        if file_type != "drive_cycle":
+        if file_type not in ("drive_cycle", "charge"):
             raise InvalidManifestRowError(
                 row_idx,
-                f"record_role='model_input' requires file_type='drive_cycle', "
-                f"got file_type={file_type!r}.",
+                f"record_role='model_input' requires file_type in "
+                f"{{'drive_cycle', 'charge'}}, got file_type={file_type!r}.",
             )
         if not is_selected:
             raise InvalidManifestRowError(

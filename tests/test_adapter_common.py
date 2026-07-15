@@ -134,6 +134,14 @@ class TestValidateSocMetadata:
             "preceding_full_charge",
         )
 
+    def test_model_input_charge_skips_soc_metadata_requirements(self):
+        validate_soc_metadata(
+            _entry(record_role="model_input", file_type="charge"),
+            "full_train",
+            None,
+            "",
+        )
+
     def test_soc_anchor_allows_none_soc_init(self):
         validate_soc_metadata(
             _entry(record_role="soc_anchor", file_type="charge"),

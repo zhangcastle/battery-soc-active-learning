@@ -1,0 +1,31 @@
+{
+  "ah_direction_consistent": true,
+  "ah_end": 0.0,
+  "ah_max": 2.93677,
+  "ah_min": 0.0,
+  "ah_reset_detected": true,
+  "ah_start": 0.0,
+  "current_integrated_ah_end": 2.9130390818204877,
+  "cycler_ah_delta_end": 0.0,
+  "denominator_ah": 2.93677,
+  "duplicate_timestamp_count": 3,
+  "failures": [],
+  "max_abs_ah_reference_difference": 2.9130390818204877,
+  "mean_abs_ah_reference_difference": 0.04776276491393666,
+  "n_rows": 107,
+  "negative_time_step_count": 0,
+  "notes": [
+    "soc_formula_mode=charge"
+  ],
+  "soc_end": 0.0,
+  "soc_max": 1.0,
+  "soc_min": 0.0,
+  "soc_out_of_bounds_count": 0,
+  "soc_start": 0.0,
+  "status": "WARN",
+  "warnings": [
+    "3 duplicate timestamp(s) (dt == 0).",
+    "Adapter detected Ah counter reset.",
+    "Large cycler vs current-integration difference: max_abs=2.9130 Ah."
+  ]
+}
