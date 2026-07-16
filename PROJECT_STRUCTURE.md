@@ -180,6 +180,7 @@ selected drive-cycle **与** selected CC charge 记录均可进入标签与模�
 |------|------|
 | `runner.py` | `ExperimentRunner`：读 config → 建数据集 → 建模型 → 迁移 → 训练 → 评估 → 保存，一条龙 |
 | `vidal_case1.py` | Vidal Case 1 独立训练、mask-aware 评估、Drive 输出与图表 | ✅ |
+| `vidal_case2.py` | Vidal Case 2：加载正式 Case 1 source 权重，target full_train fine-tune，target test 评估 | ✅ |
 | `result_schema.py` | 实验结果的标准数据结构 |
 | `comparison.py` | 多实验对比汇总 |
 
@@ -205,7 +206,8 @@ configs/
 ├── experiments/          完整实验配置（数据集 + 模型 + 迁移方法）
 │   ├── smoke_test.yaml       合成数据快速验证（无需真实数据）
 │   ├── vidal_case1.yaml      Panasonic → Panasonic（同域 baseline）
-│   ├── vidal_case2.yaml      Panasonic → LG HG2（跨化学体系）
+│   ├── vidal_case2.yaml      Vidal Case 2 formal defaults（source/target 由 CLI 指定）
+│   ├── vidal_case2_smoke.yaml Vidal Case 2 smoke defaults（2 epochs）
 │   ├── vidal_case3.yaml      Panasonic → Samsung 48G（❌ 数据缺失）
 │   ├── vidal_case4.yaml      Panasonic → Samsung 30T
 │   ├── unified_lstm_finetune.yaml   统一 benchmark：fine-tuning
@@ -256,6 +258,7 @@ configs/
 | `validate_dataset.py` | 检查 processed 数据格式是否合规 |
 | `aggregate_results.py` | 汇总多个实验的 metrics.json 到对比表 |
 | `run_vidal_reproduction.py` | 批量跑 vidal_case1 ~ case4 |
+| `run_vidal_case2.py` | Vidal Case 2 source→target transfer CLI（单方向或六方向 all-pairs） |
 | `run_cmu_transfer.py` | CMU eVTOL 迁移实验 |
 | `register_external_repo.py` | clone 外部仓库并记录到 registry |
 | `audit_external_repo.py` | 记录外部仓库的 commit hash 和 license |

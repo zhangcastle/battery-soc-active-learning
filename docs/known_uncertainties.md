@@ -294,3 +294,14 @@ Only `SyntheticDataset` is fully functional for the current smoke test.
   zero to reproduce the reported 571 trainable parameters.
 - Samsung 48G is missing, so the current reproduction covers three batteries.
 - SOC v2 is a cycler-derived benchmark reference label, not independent truth.
+
+# Vidal Case 2
+
+- Case 2 requires formal Case 1 source checkpoints. Smoke runs may use
+  synthetic formal-shaped checkpoints for code validation only and must not be
+  interpreted as paper results.
+- Only model weights transfer. Source optimizer, scheduler, normalizer, and
+  training history are intentionally not restored.
+- Target preprocessing still uses the Case 1 reconstruction assumptions:
+  record-level 1 Hz interpolation, target-train-only min-max scaling, and
+  `seq_len=50`.

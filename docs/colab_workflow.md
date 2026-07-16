@@ -62,3 +62,11 @@ missing, run `notebooks/00_colab_setup.ipynb` first so the repository is cloned.
 Case 1 resamples each v2 record independently to 1 Hz before train-only
 normalisation and windowing. Smoke outputs are isolated under
 `outputs/vidal_case1/_smoke/`; formal runs are never launched automatically.
+
+# Vidal Case 2
+
+Use `notebooks/11_vidal_case2_finetuning.ipynb`. It validates SOC v2 inputs,
+lists available formal Case 1 checkpoints, then runs only the default
+`lg_hg2 -> samsung_30t` smoke pair unless you explicitly launch a formal
+command. Case 2 reads source knowledge only from a Case 1 checkpoint and caches
+only the target `full_train` and `test` splits under `/content`.

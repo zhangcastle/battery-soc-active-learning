@@ -1,0 +1,16 @@
+run_mode: smoke
+random_seed: 42
+seq_len: 50
+stride: 50
+epochs: 2
+batch_size: 32
+learning_rate: 0.01
+scheduler_step_size: 100
+scheduler_gamma: 0.5
+shuffle: true
+num_workers: 0
+max_train_windows: 32
+allowed_statuses: [PASS, WARNING]
+development_only: true
+verify_hashes: false
+resample_hz: 1.0

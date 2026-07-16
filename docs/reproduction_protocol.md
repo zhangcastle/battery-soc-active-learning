@@ -38,3 +38,18 @@ stopping.
 
 SOC v2 is a benchmark reference label derived from cycler current/Ah and
 protocol constraints. It is not independently measured SOC ground truth.
+
+# Vidal Case 2 implementation status
+
+Case 2 transfers only the source Case 1 `model_state_dict` into a fresh
+VidalLSTM for a different target battery. The target optimizer, scheduler, and
+train-only min-max scaler are re-created from scratch, and all paper trainable
+parameters remain unlocked during target `full_train` fine-tuning. The frozen
+PyTorch secondary LSTM bias remains zero and excluded from the optimizer to
+preserve the 571 trainable-parameter count.
+
+The current reproduction supports the six directed pairs among Panasonic
+18650PF, LG HG2, and Samsung 30T. Samsung 48G directions are not implemented
+because the public drive-cycle dataset remains unavailable. Formal Case 2 uses
+515 target epochs and compares each result only with the matching target
+battery's Case 1 formal baseline.

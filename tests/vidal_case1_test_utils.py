@@ -5,6 +5,9 @@ from pathlib import Path
 
 import numpy as np
 import pandas as pd
+import torch
+
+from battery_benchmark.models.vidal_lstm import VidalLSTM
 
 
 def make_v2_split(root: Path, dataset: str, split: str, specs=None, timestamp_step: float = 1.0) -> Path:
@@ -37,3 +40,49 @@ def make_v2_split(root: Path, dataset: str, split: str, specs=None, timestamp_st
         split_root / "concatenated_sequence.parquet", index=False
     )
     return split_root
+
+
+def make_case1_checkpoint(path: Path, dataset: str, *, formal: bool = True) -> Path:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    model = VidalLSTM()
+    with torch.no_grad():
+        for i, parameter in enumerate(model.parameters()):
+            if parameter.requires_grad:
+                parameter.fill_(0.01 * (i + 1))
+    config = {
+        "dataset": dataset,
+        "run_mode": "formal" if formal else "smoke",
+        "development_only": not formal,
+        "epochs": 515 if formal else 2,
+    }
+    torch.save({
+        "epoch": 514 if formal else 1,
+        "best_metric": 0.1,
+        "model_state_dict": model.state_dict(),
+        "optimizer_state_dict": {"state": {}, "param_groups": []},
+        "scheduler_state_dict": {"last_epoch": 514 if formal else 1},
+        "normalizer_state_dict": {"type": "minmax", "feature_range": (0.0, 1.0), "min": [0, 0, 0], "max": [1, 1, 1]},
+        "config": config,
+        "git_commit": "abc123",
+        "dataset_inventory_hash": "inventory",
+    }, path)
+    return path
+
+
+def make_case1_run(root: Path, dataset: str, *, formal: bool = True) -> Path:
+    run = root / dataset / "seed_42" / "run_001"
+    (run / "checkpoints").mkdir(parents=True, exist_ok=True)
+    make_case1_checkpoint(run / "checkpoints" / "epoch_515.pt", dataset, formal=formal)
+    (run / "metrics.json").write_text(
+        '{"mae_percent": 2.0, "rmse_percent": 3.0, "max_error_percent": 8.0}',
+        encoding="utf-8",
+    )
+    (run / "run_metadata.json").write_text(
+        pd.Series({
+            "dataset": dataset,
+            "run_mode": "formal" if formal else "smoke",
+            "development_only": not formal,
+        }).to_json(),
+        encoding="utf-8",
+    )
+    return run
