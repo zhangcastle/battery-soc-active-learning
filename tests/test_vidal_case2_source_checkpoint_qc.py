@@ -27,6 +27,16 @@ def test_rejects_non_515_checkpoint(tmp_path):
         load_case1_weights_for_transfer(VidalLSTM(), ckpt, "lg_hg2", require_formal=True)
 
 
+def test_rejects_incomplete_epoch_even_when_config_is_formal_515(tmp_path):
+    ckpt = make_case1_checkpoint(tmp_path / "source.pt", "lg_hg2", formal=True)
+    payload = torch.load(ckpt, weights_only=False)
+    assert int(payload["epoch"]) == 514
+    payload["epoch"] = 100
+    torch.save(payload, ckpt)
+    with pytest.raises(ValueError, match="epoch-515|zero-based epoch 514"):
+        load_case1_weights_for_transfer(VidalLSTM(), ckpt, "lg_hg2", require_formal=True)
+
+
 def test_rejects_missing_model_state_dict(tmp_path):
     ckpt = tmp_path / "bad.pt"
     torch.save({"config": {"dataset": "lg_hg2", "run_mode": "formal", "development_only": False, "epochs": 515}}, ckpt)

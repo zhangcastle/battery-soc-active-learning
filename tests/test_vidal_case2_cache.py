@@ -40,6 +40,8 @@ def test_case2_cache_only_needs_target_full_train_and_test(tmp_path):
     assert metadata["weights_loaded_from_source"] is True
     assert metadata["target_scaler_refit"] is True
     assert metadata["optimizer_parameter_count"] == 571
+    assert metadata["actual_train_window_count"] == 2
+    assert metadata["initial_mse_window_count"] == metadata["actual_train_window_count"]
     assert metadata["initial_target_mse_before_training"] >= 0
     assert metadata["final_target_train_mse"] >= 0
     prediction = pd.read_csv(run / "predictions" / "test_predictions.csv")

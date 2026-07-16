@@ -138,6 +138,14 @@ def load_case1_weights_for_transfer(
     if require_formal:
         if run_mode != "formal" or development_only is not False or int(epochs) != 515:
             raise ValueError("Source checkpoint must be a formal Case 1 515-epoch run")
+        if "epoch" not in checkpoint:
+            raise ValueError("Source checkpoint must include completed epoch metadata")
+        actual_epoch = int(checkpoint["epoch"])
+        if actual_epoch != 514:
+            raise ValueError(
+                "Source checkpoint must be the completed epoch-515 checkpoint "
+                f"(zero-based epoch 514), got {actual_epoch}"
+            )
 
     source_state = checkpoint["model_state_dict"]
     model.load_state_dict(source_state, strict=True)
@@ -168,7 +176,18 @@ def _optimizer_parameter_count(optimizer: torch.optim.Optimizer) -> int:
 @torch.no_grad()
 def compute_window_mse(model: VidalLSTM, windows, cfg: Case2Config, device: torch.device) -> float:
     dataset = Case1WindowDataset(windows)
-    loader = DataLoader(dataset, batch_size=cfg.batch_size, shuffle=False, num_workers=cfg.num_workers)
+    return compute_dataset_mse(model, dataset, cfg.batch_size, cfg.num_workers, device)
+
+
+@torch.no_grad()
+def compute_dataset_mse(
+    model: VidalLSTM,
+    dataset,
+    batch_size: int,
+    num_workers: int,
+    device: torch.device,
+) -> float:
+    loader = DataLoader(dataset, batch_size=batch_size, shuffle=False, num_workers=num_workers)
     model.eval()
     total = 0.0
     valid = 0
@@ -385,9 +404,11 @@ def run_case2(
     })
     train_windows = build_case1_windows(transform_records(train_records, scaler), cfg.seq_len, cfg.stride, False)
     test_windows = build_case1_windows(transform_records(test_records, scaler), cfg.seq_len, cfg.stride, True)
-    train_dataset = Case1WindowDataset(train_windows)
+    full_train_dataset = Case1WindowDataset(train_windows)
+    train_dataset = full_train_dataset
     if cfg.max_train_windows is not None:
         train_dataset = Subset(train_dataset, range(min(cfg.max_train_windows, len(train_dataset))))
+    actual_train_window_count = len(train_dataset)
 
     torch.manual_seed(cfg.random_seed)
     np.random.seed(cfg.random_seed)
@@ -402,7 +423,13 @@ def run_case2(
         device=device,
     )
     model.to(device)
-    initial_target_mse = compute_window_mse(model, train_windows, cfg, device)
+    initial_target_mse = compute_dataset_mse(
+        model,
+        train_dataset,
+        cfg.batch_size,
+        cfg.num_workers,
+        device,
+    )
     run_dir = resolve_case2_run_dir(output_root, cfg, repo_root)
     for name in ("checkpoints", "figures", "predictions", "logs"):
         (run_dir / name).mkdir(parents=True, exist_ok=False)
@@ -479,6 +506,7 @@ def run_case2(
         "target_train_records": len(target_train.records),
         "target_test_records": len(target_test.records),
         "train_windows": len(train_windows.X),
+        "actual_train_window_count": actual_train_window_count,
         "test_windows": len(test_windows.X),
         "test_valid_samples": int(test_windows.valid_mask.sum()),
         "dropped_train_remainder": train_windows.dropped_samples,
@@ -492,6 +520,7 @@ def run_case2(
         "scheduler_reinitialized": True,
         "target_scaler_refit": True,
         "initial_target_mse_before_training": initial_target_mse,
+        "initial_mse_window_count": actual_train_window_count,
         "final_target_train_mse": float(history.iloc[-1]["train_mse"]),
         "scheduler_last_epoch": scheduler.last_epoch,
         "sampling_protocol": _sampling_protocol(cfg.resample_hz),
