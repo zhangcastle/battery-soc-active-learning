@@ -70,3 +70,9 @@ lists available formal Case 1 checkpoints, then runs only the default
 `lg_hg2 -> samsung_30t` smoke pair unless you explicitly launch a formal
 command. Case 2 reads source knowledge only from a Case 1 checkpoint and caches
 only the target `full_train` and `test` splits under `/content`.
+
+The default Case 2 smoke uses `configs/experiments/vidal_case2_smoke.yaml`
+with 2 epochs and 32 target windows. For a development-only full-window check,
+run the optional cell that uses `configs/experiments/vidal_case2_diagnostic.yaml`
+for 5 epochs. Do not edit tracked YAML files inside Colab; formal runs require
+a clean tree and will be rejected if temporary notebook cells modify configs.

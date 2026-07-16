@@ -208,6 +208,7 @@ configs/
 │   ├── vidal_case1.yaml      Panasonic → Panasonic（同域 baseline）
 │   ├── vidal_case2.yaml      Vidal Case 2 formal defaults（source/target 由 CLI 指定）
 │   ├── vidal_case2_smoke.yaml Vidal Case 2 smoke defaults（2 epochs）
+│   ├── vidal_case2_diagnostic.yaml Vidal Case 2 5-epoch full-window development diagnostic
 │   ├── vidal_case3.yaml      Panasonic → Samsung 48G（❌ 数据缺失）
 │   ├── vidal_case4.yaml      Panasonic → Samsung 30T
 │   ├── unified_lstm_finetune.yaml   统一 benchmark：fine-tuning
