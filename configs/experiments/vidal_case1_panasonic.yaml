@@ -13,3 +13,4 @@ max_train_windows: null
 allowed_statuses: [PASS, WARNING]
 development_only: false
 verify_hashes: true
+resample_hz: 1.0

@@ -282,7 +282,12 @@ Only `SyntheticDataset` is fully functional for the current smoke test.
 # Vidal Case 1
 
 - The paper does not disclose a reproducible fixed sequence length; 50 samples
-  is a reconstruction assumption and must be recorded in every run.
+  is a reconstruction assumption and must be recorded in every run. Under the
+  main 1 Hz Case 1 protocol, each window spans 50 seconds.
+- Public drive records are near 10 Hz while charge records are sparser; Case 1
+  currently interpolates each record independently to 1 Hz. This is a
+  reconstruction assumption, and no native-sampling sensitivity experiment is
+  claimed yet.
 - The exact normalisation formula and shuffle behaviour are not disclosed;
   per-battery train-only min-max scaling and configurable shuffle are used.
 - PyTorch differs from MATLAB R2018b. The second PyTorch LSTM bias is fixed at

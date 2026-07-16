@@ -23,6 +23,9 @@ from torch.utils.data import DataLoader, Subset
 from battery_benchmark.data.vidal_case1_windows import (
     FEATURES, Case1WindowDataset, Case1Windows, build_case1_windows,
 )
+from battery_benchmark.data.vidal_case1_resampling import (
+    resample_vidal_records, sampling_inventory,
+)
 from battery_benchmark.data.vidal_sequence_v2_dataset import (
     VidalSequenceV2Dataset, VidalV2Record, validate_case1_roots,
 )
@@ -62,6 +65,7 @@ class Case1Config:
     allowed_statuses: tuple[str, ...] = ("PASS", "WARNING")
     development_only: bool = True
     verify_hashes: bool = False
+    resample_hz: float | None = 1.0
 
     def validate(self) -> None:
         if self.dataset not in DATASETS:
@@ -75,6 +79,8 @@ class Case1Config:
                 raise ValueError("Formal runs require 515 epochs, all windows, development_only=false")
         elif not self.development_only:
             raise ValueError("Smoke runs must be development_only")
+        if self.resample_hz is not None and self.resample_hz <= 0:
+            raise ValueError("resample_hz must be positive or null")
 
 
 def masked_mse(pred: torch.Tensor, target: torch.Tensor, mask: torch.Tensor) -> torch.Tensor:
@@ -126,6 +132,24 @@ def cache_case1_inputs(source_root: Path, cache_root: Path, dataset: str) -> Pat
         if sum(p.stat().st_size for p in source_files) != sum(p.stat().st_size for p in target_files):
             raise RuntimeError(f"Cache size mismatch for {dataset}/{split}")
     return cache_root
+
+
+def _sampling_protocol(resample_hz: float | None) -> str:
+    if resample_hz is None:
+        return "native_public_sampling"
+    if abs(resample_hz - 1.0) < 1e-12:
+        return "paper_aligned_1hz_reconstructed"
+    return f"record_level_{resample_hz:g}hz_reconstructed"
+
+
+def _merge_sampling_inventory(dataset_inventory: pd.DataFrame, sampling: pd.DataFrame) -> pd.DataFrame:
+    keys = ["dataset", "protocol_split", "sequence_order", "source_filename"]
+    columns = [
+        "original_n_samples", "duplicate_timestamp_count", "deduplicated_n_samples",
+        "resampled_n_samples", "original_duration_s", "resampled_duration_s",
+        "median_dt_s_before", "target_hz", "resampled",
+    ]
+    return dataset_inventory.merge(sampling[keys + columns], on=keys, how="left")
 
 
 def _run_id(repo_root: Path) -> str:
@@ -277,16 +301,27 @@ def plot_training_loss(history: pd.DataFrame, dataset: str, path: Path) -> None:
 def run_case1(cfg: Case1Config, input_root: Path, output_root: Path, repo_root: Path,
               device_name: str = "auto", resume_path: Path | None = None) -> dict[str, Any]:
     cfg.validate()
-    if cfg.run_mode == "formal" and is_dirty(repo_root):
-        raise RuntimeError("Formal run requires a clean Git working tree")
-    checks = validate_case1_roots(input_root)
+    git_commit = get_full_commit_hash(repo_root)
+    git_dirty = is_dirty(repo_root)
+    if cfg.run_mode == "formal":
+        if git_commit == "unknown":
+            raise RuntimeError("Formal run requires a known Git commit")
+        if git_dirty:
+            raise RuntimeError("Formal run requires a clean Git working tree")
+    checks = validate_case1_roots(input_root, datasets=[cfg.dataset], splits=["full_train", "test"])
     if (checks["status"] != "PASS").any():
         raise FileNotFoundError("Vidal v2 input preflight failed")
     train = VidalSequenceV2Dataset(input_root, cfg.dataset, "full_train", cfg.allowed_statuses, cfg.verify_hashes)
     test = VidalSequenceV2Dataset(input_root, cfg.dataset, "test", cfg.allowed_statuses, cfg.verify_hashes)
-    scaler, scaler_meta = fit_train_normalizer(train.records, cfg.dataset, repo_root)
-    train_windows = build_case1_windows(transform_records(train.records, scaler), cfg.seq_len, cfg.stride, False)
-    test_windows = build_case1_windows(transform_records(test.records, scaler), cfg.seq_len, cfg.stride, True)
+    train_records = resample_vidal_records(train.records, cfg.resample_hz)
+    test_records = resample_vidal_records(test.records, cfg.resample_hz)
+    scaler, scaler_meta = fit_train_normalizer(train_records, cfg.dataset, repo_root)
+    scaler_meta.update({
+        "sampling_protocol": _sampling_protocol(cfg.resample_hz),
+        "resample_hz": cfg.resample_hz,
+    })
+    train_windows = build_case1_windows(transform_records(train_records, scaler), cfg.seq_len, cfg.stride, False)
+    test_windows = build_case1_windows(transform_records(test_records, scaler), cfg.seq_len, cfg.stride, True)
     train_dataset = Case1WindowDataset(train_windows)
     if cfg.max_train_windows is not None:
         train_dataset = Subset(train_dataset, range(min(cfg.max_train_windows, len(train_dataset))))
@@ -301,15 +336,24 @@ def run_case1(cfg: Case1Config, input_root: Path, output_root: Path, repo_root: 
     run_dir = resume_path.resolve().parents[1] if resume_path else resolve_run_dir(output_root, cfg, repo_root)
     for name in ("checkpoints", "figures", "predictions", "logs"):
         (run_dir / name).mkdir(parents=True, exist_ok=bool(resume_path))
-    inventory = pd.concat([train.inventory, test.inventory], ignore_index=True)
+    sampling = pd.concat([
+        sampling_inventory(train_records, cfg.dataset, "full_train"),
+        sampling_inventory(test_records, cfg.dataset, "test"),
+    ], ignore_index=True)
+    inventory = _merge_sampling_inventory(
+        pd.concat([train.inventory, test.inventory], ignore_index=True),
+        sampling,
+    )
     inventory_hash = hash_dataframe(inventory)
     history, _, _ = train_model(model, loader, cfg, device, run_dir, scaler, {
-        "git_commit": get_full_commit_hash(repo_root), "git_dirty": is_dirty(repo_root),
+        "git_commit": git_commit, "git_dirty": git_dirty,
         "dataset_inventory_hash": inventory_hash,
+        "sampling_protocol": _sampling_protocol(cfg.resample_hz), "resample_hz": cfg.resample_hz,
     }, resume_path=resume_path)
-    metrics, predictions = evaluate_model(model, test_windows, test.records, cfg, device)
+    metrics, predictions = evaluate_model(model, test_windows, test_records, cfg, device)
     profile = metrics_by_profile(predictions)
     inventory.to_csv(run_dir / "dataset_inventory.csv", index=False)
+    sampling.to_csv(run_dir / "sampling_inventory.csv", index=False)
     history.to_csv(run_dir / "training_history.csv", index=False)
     predictions.to_csv(run_dir / "predictions" / "test_predictions.csv", index=False)
     profile.to_csv(run_dir / "metrics_by_profile.csv", index=False)
@@ -318,7 +362,7 @@ def run_case1(cfg: Case1Config, input_root: Path, output_root: Path, repo_root: 
     (run_dir / "resolved_config.yaml").write_text(yaml.safe_dump(asdict(cfg), sort_keys=False), encoding="utf-8")
     metadata = {
         "dataset": cfg.dataset, "run_mode": cfg.run_mode, "development_only": cfg.development_only,
-        "git_commit": get_full_commit_hash(repo_root), "git_dirty": is_dirty(repo_root),
+        "git_commit": git_commit, "git_dirty": git_dirty,
         "device": str(device), "created_at": utc_now(), "input_root": str(input_root),
         "inventory_hash": inventory_hash, "train_records": len(train.records), "test_records": len(test.records),
         "train_windows": len(train_windows.X), "test_windows": len(test_windows.X),
@@ -328,6 +372,13 @@ def run_case1(cfg: Case1Config, input_root: Path, output_root: Path, repo_root: 
         "frozen_parameters": sum(p.numel() for p in model.parameters() if not p.requires_grad),
         "sequence_construction_status": "reconstruction_assumption",
         "shuffle_status": "reconstruction_assumption",
+        "sampling_protocol": _sampling_protocol(cfg.resample_hz),
+        "resample_hz": cfg.resample_hz,
+        "train_original_samples": int(sampling.loc[sampling["protocol_split"] == "full_train", "original_n_samples"].sum()),
+        "train_resampled_samples": int(sampling.loc[sampling["protocol_split"] == "full_train", "resampled_n_samples"].sum()),
+        "test_original_samples": int(sampling.loc[sampling["protocol_split"] == "test", "original_n_samples"].sum()),
+        "test_resampled_samples": int(sampling.loc[sampling["protocol_split"] == "test", "resampled_n_samples"].sum()),
+        "duplicate_timestamp_count": int(sampling["duplicate_timestamp_count"].sum()),
     }
     (run_dir / "run_metadata.json").write_text(json.dumps(metadata, indent=2), encoding="utf-8")
     plot_prediction_and_error(predictions, cfg.dataset,

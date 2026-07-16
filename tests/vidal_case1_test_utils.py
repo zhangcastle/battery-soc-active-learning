@@ -7,15 +7,16 @@ import numpy as np
 import pandas as pd
 
 
-def make_v2_split(root: Path, dataset: str, split: str, specs=None) -> Path:
+def make_v2_split(root: Path, dataset: str, split: str, specs=None, timestamp_step: float = 1.0) -> Path:
     specs = specs or [(2, 8, "PASS", "drive_cycle", "Mix2"), (1, 7, "WARNING", "charge", "Charge1")]
     split_root = root / dataset / split
     records = split_root / "records"; records.mkdir(parents=True)
     rows = []
     for order, n, status, file_type, profile in specs:
         name = f"{order:02d}__record_{order}.parquet"
+        time = np.arange(n, dtype=float) * timestamp_step
         frame = pd.DataFrame({
-            "time_s": np.arange(n, dtype=float), "timestamp": np.arange(n, dtype=float),
+            "time_s": time, "timestamp": time,
             "voltage_v": np.linspace(4.2, 3.2, n), "current_a": np.full(n, -1.0),
             "temperature_c": np.full(n, 25.0), "soc_sequence_v2": np.linspace(1, 0.2, n),
         })

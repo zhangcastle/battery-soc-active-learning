@@ -57,5 +57,8 @@ result = runner.run()
 Use `notebooks/10_vidal_case1_baseline.ipynb`. It mounts Drive, validates all
 nine v2 split directories, performs a non-destructive write/read/delete test,
 optionally caches `full_train` and `test` under `/content`, and invokes
-`scripts/run_vidal_case1.py`. Smoke outputs are isolated under
+`scripts/run_vidal_case1.py`. If `/content/battery-soc-transfer-benchmark` is
+missing, run `notebooks/00_colab_setup.ipynb` first so the repository is cloned.
+Case 1 resamples each v2 record independently to 1 Hz before train-only
+normalisation and windowing. Smoke outputs are isolated under
 `outputs/vidal_case1/_smoke/`; formal runs are never launched automatically.

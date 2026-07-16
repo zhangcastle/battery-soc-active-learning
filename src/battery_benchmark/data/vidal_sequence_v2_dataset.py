@@ -5,7 +5,7 @@ from __future__ import annotations
 import hashlib
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Iterable
+from typing import Iterable, Sequence
 
 import numpy as np
 import pandas as pd
@@ -178,12 +178,23 @@ class VidalSequenceV2Dataset:
         return pd.DataFrame(rows).sort_values("sequence_order").reset_index(drop=True)
 
 
-def validate_case1_roots(root: str | Path) -> pd.DataFrame:
-    """Return a PASS/FAIL table for all required Vidal v2 inputs."""
+def validate_case1_roots(
+    root: str | Path,
+    datasets: Sequence[str] | None = None,
+    splits: Sequence[str] | None = None,
+) -> pd.DataFrame:
+    """Return a PASS/FAIL table for requested Vidal v2 inputs.
+
+    The default remains the full three-dataset, three-split preflight used by
+    the Colab notebook. Case 1 runs may pass the current dataset plus
+    ``full_train``/``test`` so local caches do not need unrelated splits.
+    """
     root = Path(root)
     rows = []
-    for dataset in ("panasonic_18650pf", "lg_hg2", "samsung_30t"):
-        for split in ("full_train", "partial_train", "test"):
+    datasets = tuple(datasets or ("panasonic_18650pf", "lg_hg2", "samsung_30t"))
+    splits = tuple(splits or ("full_train", "partial_train", "test"))
+    for dataset in datasets:
+        for split in splits:
             split_root = root / dataset / split
             checks = {
                 "index": (split_root / "sequence_index.csv").is_file(),

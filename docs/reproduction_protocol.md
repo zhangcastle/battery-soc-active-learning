@@ -27,10 +27,14 @@ split. It does not use transfer learning or `partial_train`. Samsung 48G is not
 included because the corresponding public drive-cycle dataset is unavailable.
 
 The LSTM architecture and 571 trainable-parameter count match Vidal et al.
-(2019). Fixed non-overlapping windows (`seq_len=50`), train-only min-max
-normalisation, and shuffle are documented reconstruction assumptions because
-the paper does not fully specify them. Formal settings are 515 epochs, batch
-size 512, Adam at 0.01, and StepLR(100, 0.5), without early stopping.
+(2019). The main Case 1 protocol uses record-level
+`paper_aligned_1hz_reconstructed` sampling because the paper reports 1 Hz while
+the public drive and charge files have inconsistent native rates. Fixed
+non-overlapping windows (`seq_len=50`, therefore 50 seconds after resampling),
+train-only min-max normalisation, and shuffle are documented reconstruction
+assumptions because the paper does not fully specify them. Formal settings are
+515 epochs, batch size 512, Adam at 0.01, and StepLR(100, 0.5), without early
+stopping.
 
 SOC v2 is a benchmark reference label derived from cycler current/Ah and
 protocol constraints. It is not independently measured SOC ground truth.
