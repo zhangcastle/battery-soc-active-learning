@@ -90,14 +90,19 @@ def masked_mse(pred: torch.Tensor, target: torch.Tensor, mask: torch.Tensor) -> 
     return torch.mean((pred[valid] - target[valid]) ** 2)
 
 
-def fit_train_normalizer(records: list[VidalV2Record], dataset: str, repo_root: Path) -> tuple[MinMaxNormalizer, dict[str, Any]]:
+def fit_train_normalizer(
+    records: list[VidalV2Record],
+    dataset: str,
+    repo_root: Path,
+    fit_split: str = "full_train",
+) -> tuple[MinMaxNormalizer, dict[str, Any]]:
     values = np.concatenate([r.data[list(FEATURES)].to_numpy(dtype=np.float32) for r in records])
     normalizer = MinMaxNormalizer().fit(values)
     state = normalizer.state_dict()
     metadata = {
         "dataset": dataset, "feature_names": list(FEATURES),
         "feature_min": state["min"], "feature_max": state["max"],
-        "feature_range": list(state["feature_range"]), "fit_split": "full_train",
+        "feature_range": list(state["feature_range"]), "fit_split": fit_split,
         "n_fit_samples": len(values), "git_commit": get_full_commit_hash(repo_root),
         "git_dirty": is_dirty(repo_root), "timestamp": utc_now(),
         "normalization_status": "reconstruction_assumption",
@@ -116,10 +121,15 @@ def transform_records(records: list[VidalV2Record], normalizer: MinMaxNormalizer
     return transformed
 
 
-def cache_case1_inputs(source_root: Path, cache_root: Path, dataset: str) -> Path:
-    """Copy full_train and test to local cache and verify counts/sizes."""
+def cache_case1_inputs(
+    source_root: Path,
+    cache_root: Path,
+    dataset: str,
+    splits: tuple[str, ...] = ("full_train", "test"),
+) -> Path:
+    """Copy requested Vidal sequence splits to local cache and verify counts/sizes."""
     target_dataset = cache_root / dataset
-    for split in ("full_train", "test"):
+    for split in splits:
         source = source_root / dataset / split
         target = target_dataset / split
         if target.exists():

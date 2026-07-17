@@ -66,6 +66,10 @@ class Case2Config:
     resample_hz: float | None = 1.0
     source_checkpoint: Path | None = None
     target_case1_metrics_path: Path | None = None
+    target_case2_metrics_path: Path | None = None
+    target_train_split: str = "full_train"
+    case_number: int = 2
+    output_case_name: str = "vidal_case2"
 
     @property
     def dataset(self) -> str:
@@ -77,7 +81,15 @@ class Case2Config:
             if dataset not in PAIR_DATASETS:
                 raise ValueError(f"Unsupported {name}: {dataset}")
         if self.source_dataset == self.target_dataset:
-            raise ValueError("Case 2 requires source_dataset != target_dataset")
+            raise ValueError(f"Case {self.case_number} requires source_dataset != target_dataset")
+        if self.case_number not in {2, 3}:
+            raise ValueError("Only Vidal Case 2 and Case 3 transfer runs are supported here")
+        if self.target_train_split not in {"full_train", "partial_train"}:
+            raise ValueError("target_train_split must be full_train or partial_train")
+        if self.case_number == 2 and self.target_train_split != "full_train":
+            raise ValueError("Case 2 target_train_split must be full_train")
+        if self.case_number == 3 and self.target_train_split != "partial_train":
+            raise ValueError("Case 3 target_train_split must be partial_train")
         if self.run_mode not in {"smoke", "formal"}:
             raise ValueError("run_mode must be smoke or formal")
         if self.stride != self.seq_len:
@@ -85,12 +97,12 @@ class Case2Config:
         if self.resample_hz is not None and self.resample_hz <= 0:
             raise ValueError("resample_hz must be positive or null")
         if self.source_checkpoint is None:
-            raise ValueError("Case 2 requires a source Case 1 checkpoint")
+            raise ValueError(f"Case {self.case_number} requires a source Case 1 checkpoint")
         if self.run_mode == "formal":
             if self.development_only or self.epochs != 515 or self.max_train_windows is not None:
-                raise ValueError("Formal Case 2 requires 515 epochs, all windows, development_only=false")
+                raise ValueError(f"Formal Case {self.case_number} requires 515 epochs, all windows, development_only=false")
         elif not self.development_only:
-            raise ValueError("Smoke Case 2 must be development_only")
+            raise ValueError(f"Smoke Case {self.case_number} must be development_only")
 
 
 def all_case2_pairs() -> list[tuple[str, str]]:
@@ -258,7 +270,7 @@ def train_target_model(
 
 def _serializable_config(cfg: Case2Config) -> dict[str, Any]:
     data = asdict(cfg)
-    for key in ("source_checkpoint", "target_case1_metrics_path"):
+    for key in ("source_checkpoint", "target_case1_metrics_path", "target_case2_metrics_path"):
         if data[key] is not None:
             data[key] = str(data[key])
     return data
@@ -319,29 +331,111 @@ def load_target_case1_baseline(
     return {"run_path": str(run), "metrics_path": str(path), "metrics": metrics, "metadata": metadata}
 
 
-def compare_to_case1(case2_metrics: dict[str, float], baseline: dict[str, Any] | None) -> dict[str, Any]:
+def compare_to_case1(
+    transfer_metrics: dict[str, float], baseline: dict[str, Any] | None, case_number: int = 2
+) -> dict[str, Any]:
     if baseline is None:
         return {"baseline_available": False}
     case1 = baseline["metrics"]
-    rmse_delta = case2_metrics["rmse_percent"] - case1["rmse_percent"]
-    return {
+    rmse_delta = transfer_metrics["rmse_percent"] - case1["rmse_percent"]
+    prefix = f"case{case_number}"
+    result = {
         "baseline_available": True,
         "target_case1_run_path": baseline["run_path"],
         "case1_target_rmse_percent": case1["rmse_percent"],
-        "case2_rmse_percent": case2_metrics["rmse_percent"],
+        f"{prefix}_rmse_percent": transfer_metrics["rmse_percent"],
         "rmse_delta_percent_points": rmse_delta,
         "rmse_relative_change_percent": rmse_delta / case1["rmse_percent"] * 100,
         "case1_target_mae_percent": case1["mae_percent"],
-        "case2_mae_percent": case2_metrics["mae_percent"],
-        "mae_delta_percent_points": case2_metrics["mae_percent"] - case1["mae_percent"],
+        f"{prefix}_mae_percent": transfer_metrics["mae_percent"],
+        "mae_delta_percent_points": transfer_metrics["mae_percent"] - case1["mae_percent"],
         "case1_target_max_percent": case1["max_error_percent"],
-        "case2_max_percent": case2_metrics["max_error_percent"],
-        "max_delta_percent_points": case2_metrics["max_error_percent"] - case1["max_error_percent"],
+        f"{prefix}_max_percent": transfer_metrics["max_error_percent"],
+        "max_delta_percent_points": transfer_metrics["max_error_percent"] - case1["max_error_percent"],
+    }
+    if case_number == 2:
+        result.update({
+            "case2_rmse_percent": transfer_metrics["rmse_percent"],
+            "case2_mae_percent": transfer_metrics["mae_percent"],
+            "case2_max_percent": transfer_metrics["max_error_percent"],
+        })
+    return result
+
+
+def load_target_case2_baseline(
+    case2_output_root: Path | None,
+    source_dataset: str,
+    target_dataset: str,
+    *,
+    seed: int = 42,
+    metrics_path: Path | None = None,
+    require_formal: bool = True,
+) -> dict[str, Any] | None:
+    if metrics_path is not None:
+        path = Path(metrics_path)
+        run = path.parent
+    elif case2_output_root is not None:
+        root = Path(case2_output_root) / f"source_{source_dataset}__target_{target_dataset}" / f"seed_{seed}"
+        if not root.is_dir():
+            return None
+        candidates = []
+        for metadata_path in root.glob("*/run_metadata.json"):
+            metadata = json.loads(metadata_path.read_text(encoding="utf-8"))
+            run = metadata_path.parent
+            if (
+                metadata.get("case", 2) == 2
+                and metadata.get("run_mode") == "formal"
+                and metadata.get("development_only") is False
+                and metadata.get("source_dataset") == source_dataset
+                and metadata.get("target_dataset") == target_dataset
+                and (run / "metrics.json").is_file()
+            ):
+                candidates.append(run)
+        if not candidates:
+            return None
+        run = sorted(candidates, key=lambda p: p.stat().st_mtime)[-1]
+        path = run / "metrics.json"
+    else:
+        return None
+    metadata_path = run / "run_metadata.json"
+    if not path.is_file() or not metadata_path.is_file():
+        raise FileNotFoundError(f"Missing Case 2 baseline artifacts under {run}")
+    metadata = json.loads(metadata_path.read_text(encoding="utf-8"))
+    if metadata.get("source_dataset") != source_dataset or metadata.get("target_dataset") != target_dataset:
+        raise ValueError("Case 2 baseline pair mismatch")
+    if require_formal and (metadata.get("run_mode") != "formal" or metadata.get("development_only") is not False):
+        raise ValueError("Case 2 baseline must be formal")
+    metrics = json.loads(path.read_text(encoding="utf-8"))
+    return {"run_path": str(run), "metrics_path": str(path), "metrics": metrics, "metadata": metadata}
+
+
+def compare_to_case2(case3_metrics: dict[str, float], baseline: dict[str, Any] | None) -> dict[str, Any]:
+    if baseline is None:
+        return {"case2_baseline_available": False}
+    case2 = baseline["metrics"]
+    rmse_delta = case3_metrics["rmse_percent"] - case2["rmse_percent"]
+    return {
+        "case2_baseline_available": True,
+        "target_case2_run_path": baseline["run_path"],
+        "case2_rmse_percent": case2["rmse_percent"],
+        "case3_rmse_percent": case3_metrics["rmse_percent"],
+        "case3_vs_case2_rmse_delta_percent_points": rmse_delta,
+        "case3_vs_case2_rmse_relative_change_percent": rmse_delta / case2["rmse_percent"] * 100,
+        "case2_mae_percent": case2["mae_percent"],
+        "case3_mae_percent": case3_metrics["mae_percent"],
+        "case2_max_percent": case2["max_error_percent"],
+        "case3_max_percent": case3_metrics["max_error_percent"],
     }
 
 
-def plot_case1_vs_case2(comparison: dict[str, Any], source: str, target: str, path: Path) -> None:
+def plot_case1_vs_case2(
+    comparison: dict[str, Any], source: str, target: str, path: Path, case_number: int = 2
+) -> None:
     if not comparison.get("baseline_available"):
+        return
+    prefix = f"case{case_number}"
+    required = [f"{prefix}_rmse_percent", f"{prefix}_mae_percent", f"{prefix}_max_percent"]
+    if any(key not in comparison for key in required):
         return
     labels = ["RMSE", "MAE", "MAX"]
     case1 = [
@@ -349,19 +443,15 @@ def plot_case1_vs_case2(comparison: dict[str, Any], source: str, target: str, pa
         comparison["case1_target_mae_percent"],
         comparison["case1_target_max_percent"],
     ]
-    case2 = [
-        comparison["case2_rmse_percent"],
-        comparison["case2_mae_percent"],
-        comparison["case2_max_percent"],
-    ]
+    transfer = [comparison[key] for key in required]
     x = np.arange(len(labels))
     width = 0.34
     fig, ax = plt.subplots(figsize=(7, 4))
     ax.bar(x - width / 2, case1, width, label=f"{target} Case 1")
-    ax.bar(x + width / 2, case2, width, label=f"{source} -> {target} Case 2")
+    ax.bar(x + width / 2, transfer, width, label=f"{source} -> {target} Case {case_number}")
     ax.set_xticks(x, labels)
     ax.set_ylabel("SOC error (%)")
-    ax.set_title("Case 1 baseline vs Case 2 transfer")
+    ax.set_title(f"Case 1 baseline vs Case {case_number} transfer")
     ax.legend()
     fig.tight_layout()
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -377,25 +467,36 @@ def run_case2(
     device_name: str = "auto",
     case1_output_root: Path | None = None,
     target_case1_run: Path | None = None,
+    case2_output_root: Path | None = None,
 ) -> dict[str, Any]:
     cfg.validate()
     git_commit = get_full_commit_hash(repo_root)
     git_dirty = is_dirty(repo_root)
     if cfg.run_mode == "formal":
         if git_commit == "unknown":
-            raise RuntimeError("Formal Case 2 requires a known Git commit")
+            raise RuntimeError(f"Formal Case {cfg.case_number} requires a known Git commit")
         if git_dirty:
-            raise RuntimeError("Formal Case 2 requires a clean Git working tree")
+            raise RuntimeError(f"Formal Case {cfg.case_number} requires a clean Git working tree")
 
-    checks = validate_case1_roots(input_root, datasets=[cfg.target_dataset], splits=["full_train", "test"])
+    required_splits = [cfg.target_train_split, "test"]
+    if cfg.target_train_split != "full_train":
+        required_splits.append("full_train")
+    checks = validate_case1_roots(input_root, datasets=[cfg.target_dataset], splits=required_splits)
     if (checks["status"] != "PASS").any():
         raise FileNotFoundError("Vidal v2 target input preflight failed")
 
-    target_train = VidalSequenceV2Dataset(input_root, cfg.target_dataset, "full_train", cfg.allowed_statuses, cfg.verify_hashes)
+    target_train = VidalSequenceV2Dataset(
+        input_root, cfg.target_dataset, cfg.target_train_split, cfg.allowed_statuses, cfg.verify_hashes
+    )
+    target_full_train = VidalSequenceV2Dataset(
+        input_root, cfg.target_dataset, "full_train", cfg.allowed_statuses, cfg.verify_hashes
+    )
     target_test = VidalSequenceV2Dataset(input_root, cfg.target_dataset, "test", cfg.allowed_statuses, cfg.verify_hashes)
     train_records = resample_vidal_records(target_train.records, cfg.resample_hz)
     test_records = resample_vidal_records(target_test.records, cfg.resample_hz)
-    scaler, scaler_meta = fit_train_normalizer(train_records, cfg.target_dataset, repo_root)
+    scaler, scaler_meta = fit_train_normalizer(
+        train_records, cfg.target_dataset, repo_root, fit_split=cfg.target_train_split
+    )
     scaler_meta.update({
         "sampling_protocol": _sampling_protocol(cfg.resample_hz),
         "resample_hz": cfg.resample_hz,
@@ -434,7 +535,7 @@ def run_case2(
     for name in ("checkpoints", "figures", "predictions", "logs"):
         (run_dir / name).mkdir(parents=True, exist_ok=False)
     sampling = pd.concat([
-        sampling_inventory(train_records, cfg.target_dataset, "full_train"),
+        sampling_inventory(train_records, cfg.target_dataset, cfg.target_train_split),
         sampling_inventory(test_records, cfg.target_dataset, "test"),
     ], ignore_index=True)
     inventory = _merge_sampling_inventory(
@@ -479,7 +580,17 @@ def run_case2(
         metrics_path=cfg.target_case1_metrics_path,
         require_formal=cfg.run_mode == "formal",
     )
-    comparison = compare_to_case1(metrics, baseline)
+    comparison = compare_to_case1(metrics, baseline, case_number=cfg.case_number)
+    if cfg.case_number == 3:
+        case2_baseline = load_target_case2_baseline(
+            case2_output_root,
+            cfg.source_dataset,
+            cfg.target_dataset,
+            seed=cfg.random_seed,
+            metrics_path=cfg.target_case2_metrics_path,
+            require_formal=cfg.run_mode == "formal",
+        )
+        comparison.update(compare_to_case2(metrics, case2_baseline))
 
     inventory.to_csv(run_dir / "dataset_inventory.csv", index=False)
     sampling.to_csv(run_dir / "sampling_inventory.csv", index=False)
@@ -491,7 +602,12 @@ def run_case2(
     (run_dir / "scaler.json").write_text(json.dumps(scaler_meta, indent=2), encoding="utf-8")
     (run_dir / "resolved_config.yaml").write_text(yaml.safe_dump(_serializable_config(cfg), sort_keys=False), encoding="utf-8")
 
+    target_train_record_ids = [str(x) for x in target_train.inventory["source_filename"].tolist()]
+    full_train_record_ids = [str(x) for x in target_full_train.inventory["source_filename"].tolist()]
+    excluded_full_train_record_ids = [x for x in full_train_record_ids if x not in set(target_train_record_ids)]
+
     metadata = {
+        "case": cfg.case_number,
         "source_dataset": cfg.source_dataset,
         "target_dataset": cfg.target_dataset,
         "dataset": cfg.target_dataset,
@@ -503,6 +619,10 @@ def run_case2(
         "created_at": utc_now(),
         "input_root": str(input_root),
         "inventory_hash": inventory_hash,
+        "target_train_split": cfg.target_train_split,
+        "target_train_record_ids": target_train_record_ids,
+        "target_train_window_count": len(train_windows.X),
+        "excluded_full_train_record_ids": excluded_full_train_record_ids,
         "target_train_records": len(target_train.records),
         "target_test_records": len(target_test.records),
         "train_windows": len(train_windows.X),
@@ -513,6 +633,9 @@ def run_case2(
         "trainable_parameters": model.count_trainable_parameters(),
         "optimizer_parameter_count": _optimizer_parameter_count(optimizer),
         "frozen_parameters": sum(p.numel() for p in model.parameters() if not p.requires_grad),
+        "source_checkpoint_path": source_meta["source_checkpoint_path"],
+        "source_checkpoint_sha256": source_meta["source_checkpoint_sha256"],
+        "source_checkpoint_epoch": source_meta["source_checkpoint_epoch"],
         "source_checkpoint": source_meta,
         "weights_loaded_from_source": True,
         "all_trainable_layers_unlocked": True,
@@ -530,15 +653,21 @@ def run_case2(
     (run_dir / "run_metadata.json").write_text(json.dumps(metadata, indent=2), encoding="utf-8")
 
     pair = f"{cfg.source_dataset}_to_{cfg.target_dataset}"
+    case_suffix = f"case{cfg.case_number}"
+    case_label = f"Vidal Case {cfg.case_number}"
     plot_prediction_and_error(
-        predictions, pair, run_dir / "figures" / f"{pair}_case2_test_soc_prediction_and_error.png",
-        case_label="Vidal Case 2",
+        predictions, pair, run_dir / "figures" / f"{pair}_{case_suffix}_test_soc_prediction_and_error.png",
+        case_label=case_label,
     )
     plot_training_loss(
-        history, pair, run_dir / "figures" / f"{pair}_case2_training_loss.png",
-        case_label="Vidal Case 2",
+        history, pair, run_dir / "figures" / f"{pair}_{case_suffix}_training_loss.png",
+        case_label=case_label,
     )
-    plot_case1_vs_case2(comparison, cfg.source_dataset, cfg.target_dataset, run_dir / "figures" / f"{pair}_case1_vs_case2.png")
+    plot_case1_vs_case2(
+        comparison, cfg.source_dataset, cfg.target_dataset,
+        run_dir / "figures" / f"{pair}_case1_vs_{case_suffix}.png",
+        case_number=cfg.case_number,
+    )
 
     return {
         "run_dir": str(run_dir),
@@ -566,6 +695,8 @@ def write_case2_summary(results: list[dict[str, Any]], output_root: Path) -> Pat
             "source_dataset": meta["source_dataset"],
             "target_dataset": meta["target_dataset"],
             "case1_target_rmse_percent": comp.get("case1_target_rmse_percent"),
+            "case_number": meta.get("case", 2),
+            "target_train_split": meta.get("target_train_split", "full_train"),
             "case2_rmse_percent": result["metrics"]["rmse_percent"],
             "rmse_delta_percent_points": comp.get("rmse_delta_percent_points"),
             "rmse_relative_change_percent": comp.get("rmse_relative_change_percent"),
