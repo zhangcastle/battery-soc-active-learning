@@ -530,8 +530,14 @@ def run_case2(
     (run_dir / "run_metadata.json").write_text(json.dumps(metadata, indent=2), encoding="utf-8")
 
     pair = f"{cfg.source_dataset}_to_{cfg.target_dataset}"
-    plot_prediction_and_error(predictions, pair, run_dir / "figures" / f"{pair}_case2_test_soc_prediction_and_error.png")
-    plot_training_loss(history, pair, run_dir / "figures" / f"{pair}_case2_training_loss.png")
+    plot_prediction_and_error(
+        predictions, pair, run_dir / "figures" / f"{pair}_case2_test_soc_prediction_and_error.png",
+        case_label="Vidal Case 2",
+    )
+    plot_training_loss(
+        history, pair, run_dir / "figures" / f"{pair}_case2_training_loss.png",
+        case_label="Vidal Case 2",
+    )
     plot_case1_vs_case2(comparison, cfg.source_dataset, cfg.target_dataset, run_dir / "figures" / f"{pair}_case1_vs_case2.png")
 
     return {

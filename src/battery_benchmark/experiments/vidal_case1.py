@@ -269,14 +269,16 @@ def metrics_by_profile(predictions: pd.DataFrame) -> pd.DataFrame:
     return pd.DataFrame(rows)
 
 
-def plot_prediction_and_error(predictions: pd.DataFrame, dataset: str, path: Path) -> None:
+def plot_prediction_and_error(
+    predictions: pd.DataFrame, dataset: str, path: Path, case_label: str = "Vidal Case 1"
+) -> None:
     fig, axes = plt.subplots(2, 1, figsize=(12, 6), sharex=True,
                              gridspec_kw={"height_ratios": [2, 1]})
     x = np.arange(len(predictions))
     axes[0].plot(x, predictions["soc_reference"], label="Reference SOC", lw=1.1)
     axes[0].plot(x, predictions["soc_predicted"], label="Predicted SOC", lw=1.0)
     axes[0].set_ylabel("SOC"); axes[0].set_ylim(-0.02, 1.02); axes[0].legend(loc="best")
-    axes[0].set_title(f"{dataset} Vidal Case 1 test prediction")
+    axes[0].set_title(f"{dataset} {case_label} test prediction")
     axes[1].plot(x, predictions["signed_error"], lw=0.8, color="tab:red")
     axes[1].axhline(0, color="black", lw=0.7); axes[1].set_ylabel("Predicted - reference")
     axes[1].set_xlabel("Test sample order")
@@ -289,9 +291,11 @@ def plot_prediction_and_error(predictions: pd.DataFrame, dataset: str, path: Pat
     fig.savefig(path, dpi=220, bbox_inches="tight"); plt.close(fig)
 
 
-def plot_training_loss(history: pd.DataFrame, dataset: str, path: Path) -> None:
+def plot_training_loss(
+    history: pd.DataFrame, dataset: str, path: Path, case_label: str = "Vidal Case 1"
+) -> None:
     fig, ax = plt.subplots(figsize=(8, 4)); ax.plot(history["epoch"], history["train_mse"], lw=1.2)
-    ax.set(title=f"{dataset} Vidal Case 1 training loss", xlabel="Epoch", ylabel="Training MSE")
+    ax.set(title=f"{dataset} {case_label} training loss", xlabel="Epoch", ylabel="Training MSE")
     for epoch in (100, 200, 300, 400, 500):
         if epoch <= int(history["epoch"].max()): ax.axvline(epoch, color="0.75", ls="--", lw=0.7)
     fig.tight_layout(); path.parent.mkdir(parents=True, exist_ok=True)
