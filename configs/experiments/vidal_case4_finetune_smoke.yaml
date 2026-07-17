@@ -18,3 +18,4 @@ allowed_statuses:
 development_only: true
 verify_hashes: false
 resample_hz: 1.0
+case_number: 4

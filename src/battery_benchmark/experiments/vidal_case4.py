@@ -84,8 +84,11 @@ class Case4PretrainConfig:
     resample_hz: float | None = 1.0
     sampling_balance: str = "natural"
     scaler_fit_scope: str = "multi_source_partial_train"
+    case_number: int = 4
 
     def validate(self) -> None:
+        if self.case_number != 4:
+            raise ValueError("Case 4 Stage A case_number must be 4")
         if tuple(self.source_datasets) != CASE4_SOURCE_DATASETS:
             raise ValueError("Case 4 reconstruction requires Panasonic, LG HG2, and Samsung 30T sources")
         if self.source_train_split != "partial_train":
@@ -119,12 +122,15 @@ class Case4FinetuneConfig:
     resample_hz: float | None = 1.0
     source_checkpoint: Path | None = None
     target_case1_metrics_path: Path | None = None
+    case_number: int = 4
 
     @property
     def dataset(self) -> str:
         return self.target_dataset
 
     def validate(self) -> None:
+        if self.case_number != 4:
+            raise ValueError("Case 4 Stage B case_number must be 4")
         if self.target_dataset not in DATASETS:
             raise ValueError(f"Unsupported Case 4 target_dataset: {self.target_dataset}")
         if self.target_train_split != "full_train":
