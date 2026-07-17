@@ -24,6 +24,8 @@ def main() -> int:
     parser.add_argument("--output-root", type=Path, required=True)
     parser.add_argument("--source-checkpoint", type=Path, required=True)
     parser.add_argument("--case1-output-root", type=Path)
+    parser.add_argument("--case2-output-root", type=Path)
+    parser.add_argument("--case3-output-root", type=Path)
     parser.add_argument("--target-case1-run", type=Path)
     parser.add_argument("--run-mode", choices=("smoke", "formal"), required=True)
     parser.add_argument("--device", default="auto")
