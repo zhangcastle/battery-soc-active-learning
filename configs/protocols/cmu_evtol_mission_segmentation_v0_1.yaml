@@ -1,0 +1,141 @@
+protocol_name: cmu_evtol_mission_segmentation
+protocol_version: "0.1"
+segmentation_schema_version: cmu_evtol_mission_v0_1
+status: draft
+production_enabled: false
+emit_mission_records: false
+emit_phase_labels: false
+emit_rpt_labels: false
+
+dataset:
+  article_id: "14226830"
+  dataset_version: "3"
+  raw_loader_schema_version: cmu_evtol_kilthub_v3_raw_v0.1
+  exploratory_gap_threshold_s: 120.0
+
+references:
+  raw_ingestion_protocol: docs/protocols/cmu_evtol_raw_ingestion_v0_1.md
+  cell_protocol_manifest: data/manifests/cmu_evtol_vtc6_cell_protocols.csv
+  asset_inventory: data/manifests/cmu_evtol_vtc6_asset_inventory_v3.csv
+  raw_qc: data/manifests/cmu_evtol_vtc6_raw_qc_v3_120s.csv
+  evidence_audit: data/manifests/cmu_evtol_mission_phase_evidence_v0_1.csv
+  evidence_audit_sha256: 3245f58d90f3f0bea0761652c22e93fd2128d3de84be97238f2899e2ec0e0613
+
+metadata:
+  generation_git_revision: 7fd9fbe380dac390dabe6404960d690fb228e8dc
+  power_formula: electrical_power_W = Ecell_V * I_mA / 1000
+  candidate_threshold_source: descriptive_phase_evidence_audit_only
+  production_enablement_requirement: new_reviewed_protocol_version_and_validated_implementation
+  changing_production_enabled_alone_is_sufficient: false
+
+evidence_cells:
+  baseline: [VAH01, VAH17, VAH27]
+  condition: [VAH02, VAH12, VAH05]
+  supported: [VAH01, VAH17, VAH27, VAH02, VAH12, VAH05]
+  deferred_unvalidated:
+    [VAH06, VAH07, VAH09, VAH10, VAH11, VAH13, VAH15, VAH16,
+     VAH20, VAH22, VAH23, VAH24, VAH25, VAH26, VAH28, VAH30]
+
+input_schema:
+  - cell_id
+  - source_file
+  - source_row
+  - time_s
+  - Ecell_V
+  - I_mA
+  - cycleNumber
+  - Ns
+  - continuous_block_id
+  - continuous_block_boundary_reason
+
+permitted_evidence:
+  - canonical_continuous_block_id
+  - source_row_order
+  - time_s
+  - Ns_transitions
+  - signed_current_and_power
+  - real_segment_duration
+  - completeness_checks
+  - cell_condition_metadata
+
+cycle_number_policy:
+  preserve_as_raw_observation: true
+  allowed_as_mission_primary_key: false
+  allowed_as_mission_boundary: false
+  allowed_as_split_key: false
+  considered_globally_unique: false
+
+candidate_structure:
+  ordered_segments: [high_discharge_run, lower_discharge_run, high_discharge_run]
+  ns_4_5_6_role: auxiliary_transition_evidence_only
+  ns_alone_can_determine_phase: false
+
+classification_rules:
+  accept_all_required:
+    - all_three_segments_in_same_continuous_block
+    - source_rows_strictly_increasing
+    - timestamps_strictly_increasing
+    - all_segment_durations_finite_and_positive
+    - all_segments_discharge_dominated
+    - ordered_high_lower_high_power_shape
+    - power_and_duration_consistent_with_cell_condition_evidence
+    - no_canonical_discontinuity_inside_candidate
+    - does_not_match_rpt_like_low_rate_evidence
+  reject_any:
+    - crosses_continuous_block
+    - any_segment_missing
+    - any_segment_zero_duration
+    - timestamp_nonfinite_duplicate_or_reversed
+    - segment_order_incorrect
+    - severe_charge_or_rest_mixing
+    - spans_explicit_gap_boundary
+    - clearly_matches_long_low_rate_diagnostic_evidence
+  uncertain_any:
+    - interrupted_or_partial_waveform
+    - near_block_or_file_boundary
+    - ns_4_5_6_without_matching_normal_power_and_duration
+    - condition_cell_without_sufficient_evidence
+    - early_end_of_life_cutoff
+    - mission_vs_diagnostic_not_reliably_distinguishable
+  rejected_and_uncertain_qc_counts_must_be_retained: true
+  silent_drop_allowed: false
+  rpt_like_action: exclude_from_ordinary_mission_candidates_without_emitting_rpt_label
+
+proposed_mission_id:
+  template: "cmu_v3_mission_v0_1:{cell_id}:b{continuous_block_id}:s{start_row}:e{end_row}"
+  contains_cycle_number: false
+  emitted_in_v0_1: false
+
+proposed_output_schema:
+  - segmentation_schema_version
+  - cell_id
+  - mission_id
+  - continuous_block_id
+  - mission_source_row_start
+  - mission_source_row_end
+  - mission_time_start_s
+  - mission_time_end_s
+  - completeness_status
+  - exclusion_reason
+  - protocol_condition
+  - takeoff_source_row_start
+  - takeoff_source_row_end
+  - cruise_source_row_start
+  - cruise_source_row_end
+  - landing_source_row_start
+  - landing_source_row_end
+  - takeoff_duration_s
+  - cruise_duration_s
+  - landing_duration_s
+  - takeoff_power_median_W
+  - cruise_power_median_W
+  - landing_power_median_W
+  - qc_flags
+
+deferred:
+  production_segmentation_implementation: not_implemented
+  complete_rpt_identification: not_defined
+  capacity_lookup: not_defined
+  soc_reference: not_defined
+  dataset_splits: not_defined
+  sequence_windows: not_defined

@@ -204,6 +204,8 @@ selected drive-cycle **与** selected CC charge 记录均可进入标签与模�
 
 ```
 configs/
+├── protocols/
+│   └── cmu_evtol_mission_segmentation_v0_1.yaml  CMU mission segmentation 禁用状态草案
 ├── experiments/          完整实验配置（数据集 + 模型 + 迁移方法）
 │   ├── smoke_test.yaml       合成数据快速验证（无需真实数据）
 │   ├── vidal_case1.yaml      Panasonic → Panasonic（同域 baseline）
@@ -312,6 +314,7 @@ notebooks/
 | `test_checkpoint_resume.py` | 断点保存与恢复 |
 | `test_cmu_evtol_raw.py` | CMU Version 3 schema、provenance、continuous-block 与真实资产 integration |
 | `test_cmu_evtol_phase_evidence.py` | CMU 功率符号、block-safe Ns runs、真实时间持续时长与证据审计 integration |
+| `test_cmu_evtol_mission_segmentation_protocol_v0_1.py` | CMU mission segmentation v0.1 草案状态、规则、cell coverage 与 evidence provenance |
 
 运行：`.venv/bin/pytest tests/ -v`
 
@@ -340,6 +343,7 @@ notebooks/
 | `colab_workflow.md` | Google Colab 使用流程 |
 | `protocols/cmu_evtol_raw_ingestion_v0_1.md` | CMU Version 3 raw ingestion 与 continuous-block QC 规则 |
 | `protocols/cmu_evtol_transfer_benchmark_v0_1.md` | CMU eVTOL transfer benchmark v0.1 cell-level 协议 |
+| `protocols/cmu_evtol_mission_segmentation_v0_1.md` | CMU mission segmentation v0.1 禁用状态协议草案（不生成 records/labels） |
 | `audits/cmu_evtol_mission_phase_evidence_v0_1.md` | 代表性 cells 的 mission/phase reconstruction 证据审计与 PARTIAL 结论 |
 
 ---
