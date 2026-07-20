@@ -6,6 +6,7 @@ production_enabled: false
 emit_mission_records: false
 emit_phase_labels: false
 emit_rpt_labels: false
+implementation_authorized: false
 
 dataset:
   article_id: "14226830"
@@ -70,8 +71,51 @@ candidate_structure:
   ns_4_5_6_role: auxiliary_transition_evidence_only
   ns_alone_can_determine_phase: false
 
-classification_rules:
-  accept_all_required:
+candidate_enumeration:
+  scope: one_continuous_block_at_a_time
+  run_unit: contiguous_same_Ns_rows_within_one_continuous_block
+  order: ascending_source_row
+  anchor: run_with_high_discharge_power_evidence
+  lookahead: next_two_adjacent_runs_must_form_lower_then_high
+  crossing_continuous_block_allowed: false
+  missing_followup_action: emit_uncertain_qc_candidate
+  ns_4_role: auxiliary_anchor_evidence_only
+  ns_4_alone_can_accept: false
+  overlap_policy: disallow_shared_runs
+  overlap_resolution: earliest_anchor_source_row_wins
+  overlap_loser_action: emit_uncertain_with_overlaps_earlier_candidate
+
+classification:
+  primary_statuses: [out_of_scope, hard_reject, uncertain, accept]
+  precedence: [out_of_scope, hard_reject, uncertain, accept]
+  exactly_one_primary_status_per_candidate: true
+  primary_reason_selection: first_triggered_reason_in_listed_reason_code_order_of_winning_status
+  retain_all_triggered_reason_codes: true
+  duplicate_reason_codes_allowed: false
+  reason_codes:
+    out_of_scope:
+      - deferred_cell_without_phase_evidence_validation
+      - unsupported_schema_or_dataset_version
+      - unknown_cell_condition
+    hard_reject:
+      - crosses_continuous_block
+      - timestamp_nonfinite_duplicate_or_reversed
+      - segment_duration_zero_or_negative
+      - severe_charge_or_rest_contamination
+      - clearly_matches_long_low_rate_diagnostic_evidence
+      - segment_order_definitively_incorrect
+      - spans_explicit_gap_boundary
+    uncertain:
+      - missing_required_segment
+      - interrupted_or_partial_waveform
+      - early_end_of_life_cutoff
+      - near_block_or_file_boundary_without_crossing
+      - power_or_duration_near_but_not_within_screening_range
+      - mission_vs_diagnostic_not_reliably_distinguishable
+      - overlaps_earlier_candidate
+    accept:
+      - all_accept_requirements_met
+  accept_requirements:
     - all_three_segments_in_same_continuous_block
     - source_rows_strictly_increasing
     - timestamps_strictly_increasing
@@ -81,25 +125,24 @@ classification_rules:
     - power_and_duration_consistent_with_cell_condition_evidence
     - no_canonical_discontinuity_inside_candidate
     - does_not_match_rpt_like_low_rate_evidence
-  reject_any:
-    - crosses_continuous_block
-    - any_segment_missing
-    - any_segment_zero_duration
-    - timestamp_nonfinite_duplicate_or_reversed
-    - segment_order_incorrect
-    - severe_charge_or_rest_mixing
-    - spans_explicit_gap_boundary
-    - clearly_matches_long_low_rate_diagnostic_evidence
-  uncertain_any:
-    - interrupted_or_partial_waveform
-    - near_block_or_file_boundary
-    - ns_4_5_6_without_matching_normal_power_and_duration
-    - condition_cell_without_sufficient_evidence
-    - early_end_of_life_cutoff
-    - mission_vs_diagnostic_not_reliably_distinguishable
-  rejected_and_uncertain_qc_counts_must_be_retained: true
   silent_drop_allowed: false
   rpt_like_action: exclude_from_ordinary_mission_candidates_without_emitting_rpt_label
+
+diagnostic_screening_thresholds:
+  status: v0_1_diagnostic_candidate_screening_only
+  source: data/manifests/cmu_evtol_mission_phase_evidence_v0_1.csv
+  high_discharge_power_W: [35.0, 70.0]
+  lower_discharge_power_W: [5.0, 30.0]
+  first_high_duration_s: [45.0, 120.0]
+  lower_duration_s: [200.0, 1500.0]
+  last_high_duration_s: [60.0, 150.0]
+  minimum_discharge_fraction: 0.9
+  rpt_like_discharge_power_W: [0.5, 4.0]
+  rpt_like_minimum_duration_s: 3600.0
+  rpt_like_minimum_voltage_drop_V: 0.8
+  rpt_like_maximum_end_voltage_V: 2.7
+  condition_specific_final_acceptance_tolerance: not_frozen
+  maximum_next_implementation_scope: diagnostic_classifier_only
 
 proposed_mission_id:
   template: "cmu_v3_mission_v0_1:{cell_id}:b{continuous_block_id}:s{start_row}:e{end_row}"
@@ -115,6 +158,9 @@ proposed_output_schema:
   - mission_source_row_end
   - mission_time_start_s
   - mission_time_end_s
+  - primary_status
+  - primary_reason
+  - all_reason_codes
   - completeness_status
   - exclusion_reason
   - protocol_condition
@@ -139,3 +185,4 @@ deferred:
   soc_reference: not_defined
   dataset_splits: not_defined
   sequence_windows: not_defined
+  condition_specific_final_acceptance_tolerances: not_frozen
