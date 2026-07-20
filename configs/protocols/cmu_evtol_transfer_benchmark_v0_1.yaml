@@ -49,12 +49,15 @@ condition_stress_tests:
     - other_or_uncertain
 
 target_label_budgets:
-  unit: percent_of_eligible_complete_missions
+  unit: percent_of_eligible_complete_missions_per_adaptation_cell
   values_percent: [1, 5, 10]
   selection: chronological_prefix_per_adaptation_cell
   cell_order: lexical_cell_id
   rounding: ceil
+  rounding_scope: per_adaptation_cell
+  merge_scope: fold_after_per_cell_selection
   nested_subsets_required: true
+  same_budget_manifest_for_all_models: true
   same_manifest_for_transfer_and_scratch: true
   record_realized_mission_count: true
   record_realized_sample_count: true

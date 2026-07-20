@@ -57,15 +57,17 @@ The explicit cell lists are stored in the protocol YAML. Mission identifiers are
 
 ## Target-label budgets
 
-Supervised target budgets are 1%, 5%, and 10% of eligible adaptation missions.
+Supervised target budgets are 1%, 5%, and 10% of eligible adaptation missions, calculated independently within each adaptation cell.
 
 - Budgets are constructed from complete missions, never rows, samples, or windows.
-- Eligible missions are ordered chronologically within each adaptation cell.
-- Selection uses chronological prefixes with deterministic cell ordering.
-- Mission counts use ceiling rounding so every non-empty adaptation population yields at least one mission at the 1% budget.
+- For each adaptation cell, the denominator is that cell's own eligible complete-mission count.
+- Eligible missions are ordered chronologically within each adaptation cell and selected as a chronological prefix.
+- The percentage and ceiling operation are applied independently to each adaptation cell, so every non-empty cell contributes at least one mission at the 1% budget.
+- The per-cell selections are merged only after selection to form one fold-specific budget manifest.
 - Budget subsets must be nested: 1% is a subset of 5%, which is a subset of 10%.
 - The realized mission count, sample count, and physical duration must later be reported for every budget.
-- The exact same budget manifest must be used by transfer and same-budget scratch runs.
+- Every model evaluated at a target-label budget must use the exact same fold-specific budget manifest.
+- Transfer and same-budget scratch runs must reuse that same manifest without resampling or replacement.
 
 No mission IDs are assigned in v0.1.
 
