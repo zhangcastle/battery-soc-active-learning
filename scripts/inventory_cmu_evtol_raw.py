@@ -41,7 +41,11 @@ def main() -> None:
     inventory = build_asset_inventory(args.raw_root)
     output = write_asset_inventory(inventory, args.output)
     present = int(inventory["main_file_present"].sum())
-    print(f"Wrote {len(inventory)} expected cells to {output} ({present} main files present)")
+    impedance_present = int(inventory["impedance_file_present"].sum())
+    print(
+        f"Wrote {len(inventory)} expected cells to {output} "
+        f"({present} main files, {impedance_present} impedance files present)"
+    )
 
 
 if __name__ == "__main__":

@@ -95,6 +95,48 @@ ASSET_INVENTORY_COLUMNS = (
     "sha256",
     "row_count",
     "observed_columns",
+    "impedance_file_size_bytes",
+    "impedance_sha256",
+    "impedance_row_count",
+    "impedance_observed_columns",
+)
+
+IMPEDANCE_COLUMNS = (
+    "20%_1_second",
+    "20%_30_second",
+    "60%_1_second",
+    "60%_30_second",
+    "cycle numbers",
+)
+
+RAW_QC_SUMMARY_COLUMNS = (
+    "dataset_name",
+    "article_id",
+    "dataset_version",
+    "loader_schema_version",
+    "generated_at_utc",
+    "git_revision",
+    "git_dirty",
+    "cell_id",
+    "main_file",
+    "main_sha256",
+    "impedance_file",
+    "impedance_file_present",
+    "impedance_sha256",
+    "row_count",
+    "gap_threshold_s",
+    "gap_threshold_source",
+    "block_count",
+    "time_duplicate_count",
+    "time_reversal_count",
+    "current_time_non_finite_count",
+    "previous_time_non_finite_count",
+    "gap_exceeded_count",
+    "min_positive_delta_s",
+    "median_positive_delta_s",
+    "p95_positive_delta_s",
+    "p99_positive_delta_s",
+    "max_positive_delta_s",
 )
 
 CONTINUOUS_BLOCK_RULES = (
@@ -186,6 +228,29 @@ def validate_raw_header(path: str | Path) -> list[str]:
     return columns
 
 
+def validate_impedance_header(path: str | Path) -> list[str]:
+    """Strictly validate the Version 3 impedance summary header."""
+    path = Path(path)
+    columns = _read_header(path)
+    duplicates = _duplicate_names(columns)
+    if duplicates:
+        raise CMURawSchemaError(
+            f"Duplicate impedance CSV column(s) in {path.name}: {duplicates}"
+        )
+    missing = sorted(set(IMPEDANCE_COLUMNS) - set(columns))
+    unexpected = sorted(set(columns) - set(IMPEDANCE_COLUMNS))
+    if missing or unexpected:
+        raise CMURawSchemaError(
+            f"Impedance CSV schema mismatch for {path.name}: "
+            f"missing={missing}, unexpected={unexpected}"
+        )
+    if tuple(columns) != IMPEDANCE_COLUMNS:
+        raise CMURawSchemaError(
+            f"Impedance CSV column order mismatch for {path.name}: observed={columns}"
+        )
+    return columns
+
+
 def cell_id_from_main_file(path: str | Path) -> str:
     """Validate a ``VAH##.csv`` main filename and return its registered cell ID."""
     path = Path(path)
@@ -235,8 +300,19 @@ def build_asset_inventory(
         if main_present:
             file_size_bytes = main_path.stat().st_size
             digest = sha256_file(main_path)
-            observed_columns = _read_header(main_path)
+            observed_columns = validate_raw_header(main_path)
             row_count = _count_data_rows(main_path)
+
+        impedance_present = impedance_path.is_file()
+        impedance_size: int | None = None
+        impedance_digest: str | None = None
+        impedance_row_count: int | None = None
+        impedance_columns: list[str] | None = None
+        if impedance_present:
+            impedance_size = impedance_path.stat().st_size
+            impedance_digest = sha256_file(impedance_path)
+            impedance_columns = validate_impedance_header(impedance_path)
+            impedance_row_count = _count_data_rows(impedance_path)
 
         records.append(
             {
@@ -247,11 +323,19 @@ def build_asset_inventory(
                 "main_file": main_name,
                 "main_file_present": main_present,
                 "impedance_file": impedance_name,
-                "impedance_file_present": impedance_path.is_file(),
+                "impedance_file_present": impedance_present,
                 "file_size_bytes": file_size_bytes,
                 "sha256": digest,
                 "row_count": row_count,
                 "observed_columns": json.dumps(observed_columns, separators=(",", ":")),
+                "impedance_file_size_bytes": impedance_size,
+                "impedance_sha256": impedance_digest,
+                "impedance_row_count": impedance_row_count,
+                "impedance_observed_columns": (
+                    json.dumps(impedance_columns, separators=(",", ":"))
+                    if impedance_columns is not None
+                    else None
+                ),
             }
         )
 
@@ -274,6 +358,28 @@ def _software_version() -> str:
         return version("battery-benchmark")
     except PackageNotFoundError:
         return "unknown"
+
+
+def positive_delta_statistics(time_values: Sequence[float]) -> dict[str, float]:
+    """Summarise finite, strictly positive adjacent time differences only."""
+    values = np.asarray(time_values, dtype=np.float64)
+    deltas = np.diff(values)
+    positive = deltas[np.isfinite(deltas) & (deltas > 0)]
+    if not len(positive):
+        return {
+            "min_positive_delta_s": math.nan,
+            "median_positive_delta_s": math.nan,
+            "p95_positive_delta_s": math.nan,
+            "p99_positive_delta_s": math.nan,
+            "max_positive_delta_s": math.nan,
+        }
+    return {
+        "min_positive_delta_s": float(np.min(positive)),
+        "median_positive_delta_s": float(np.median(positive)),
+        "p95_positive_delta_s": float(np.percentile(positive, 95)),
+        "p99_positive_delta_s": float(np.percentile(positive, 99)),
+        "max_positive_delta_s": float(np.max(positive)),
+    }
 
 
 def _normalise_source_boundaries(
@@ -367,7 +473,7 @@ def load_cmu_v3_main_file(
     threshold_source = "explicit_argument"
     if gap_threshold_s is None:
         gap_threshold_s = DEFAULT_GAP_THRESHOLD_S
-        threshold_source = "loader_default"
+        threshold_source = "exploratory_loader_default"
     if not math.isfinite(gap_threshold_s) or gap_threshold_s <= 0:
         raise ValueError("gap_threshold_s must be a finite positive number")
 
@@ -415,6 +521,10 @@ def load_cmu_v3_main_file(
     if repo_root is None:
         repo_root = Path(__file__).resolve().parents[3]
     repo_root = Path(repo_root)
+    impedance_path = path.with_name(f"{cell_id}_impedance.csv")
+    impedance_present = impedance_path.is_file()
+    if impedance_present:
+        validate_impedance_header(impedance_path)
     metadata: dict[str, object] = {
         "dataset_name": DATASET_NAME,
         "article_id": ARTICLE_ID,
@@ -422,11 +532,19 @@ def load_cmu_v3_main_file(
         "cell_id": cell_id,
         "source_file": path.name,
         "source_sha256": sha256_file(path),
+        "impedance_file": impedance_path.name,
+        "impedance_file_present": impedance_present,
+        "impedance_sha256": sha256_file(impedance_path) if impedance_present else None,
         "loader_schema_version": LOADER_SCHEMA_VERSION,
         "gap_threshold_s": float(gap_threshold_s),
         "gap_threshold_unit": "s",
         "gap_threshold_source": threshold_source,
         "continuous_block_rules": list(CONTINUOUS_BLOCK_RULES),
+        "source_concat_boundary_detection": "caller_supplied_only",
+        "source_concat_boundary_limitation": (
+            "Concatenation boundaries with no visible time discontinuity cannot be "
+            "recovered automatically from a merged CSV."
+        ),
         "input_row_count": len(frame),
         "output_row_count": len(canonical),
         "block_count": int(block_ids.max()) + 1,
@@ -442,3 +560,84 @@ def load_cmu_v3_main_file(
         "git_dirty": is_dirty(repo_root),
     }
     return CMURawIngestionResult(data=canonical, metadata=metadata, qc=qc)
+
+
+def build_raw_qc_summary(
+    raw_root: str | Path,
+    *,
+    gap_threshold_s: float | None = None,
+    cell_ids: Iterable[str] = CMU_V3_CELL_IDS,
+    repo_root: str | Path | None = None,
+) -> pd.DataFrame:
+    """Run canonical ingestion sequentially and return one QC row per cell.
+
+    Only one cell's canonical frame is retained at a time. Any cell failure is
+    re-raised with its cell ID and source path; failures are never skipped.
+    """
+    raw_root = Path(raw_root)
+    generated_at = datetime.now(timezone.utc).isoformat()
+    records: list[dict[str, object]] = []
+
+    for cell_id in cell_ids:
+        if cell_id not in CMU_V3_CELL_IDS:
+            raise CMUInvalidCellIDError(f"Unknown CMU Version 3 cell ID: {cell_id}")
+        main_path = raw_root / f"{cell_id}.csv"
+        try:
+            result = load_cmu_v3_main_file(
+                main_path,
+                gap_threshold_s=gap_threshold_s,
+                repo_root=repo_root,
+            )
+        except Exception as exc:
+            raise CMURawIngestionError(
+                f"Raw QC failed for cell {cell_id} at {main_path}: {exc}"
+            ) from exc
+
+        metadata = result.metadata
+        counts = metadata["boundary_reason_counts"]
+        delta_stats = positive_delta_statistics(result.data["time_s"].to_numpy())
+        records.append(
+            {
+                "dataset_name": DATASET_NAME,
+                "article_id": ARTICLE_ID,
+                "dataset_version": DATASET_VERSION,
+                "loader_schema_version": metadata["loader_schema_version"],
+                "generated_at_utc": generated_at,
+                "git_revision": metadata["git_revision"],
+                "git_dirty": metadata["git_dirty"],
+                "cell_id": cell_id,
+                "main_file": main_path.name,
+                "main_sha256": metadata["source_sha256"],
+                "impedance_file": metadata["impedance_file"],
+                "impedance_file_present": metadata["impedance_file_present"],
+                "impedance_sha256": metadata["impedance_sha256"],
+                "row_count": metadata["input_row_count"],
+                "gap_threshold_s": metadata["gap_threshold_s"],
+                "gap_threshold_source": metadata["gap_threshold_source"],
+                "block_count": metadata["block_count"],
+                "time_duplicate_count": counts["time_duplicate"],
+                "time_reversal_count": counts["time_reversal"],
+                "current_time_non_finite_count": counts[
+                    "current_time_non_finite"
+                ],
+                "previous_time_non_finite_count": counts[
+                    "previous_time_non_finite"
+                ],
+                "gap_exceeded_count": counts["gap_exceeded"],
+                **delta_stats,
+            }
+        )
+        del result
+
+    return pd.DataFrame(records, columns=RAW_QC_SUMMARY_COLUMNS)
+
+
+def write_raw_qc_summary(summary: pd.DataFrame, output_path: str | Path) -> Path:
+    """Write a validated per-cell raw QC summary CSV."""
+    missing = sorted(set(RAW_QC_SUMMARY_COLUMNS) - set(summary.columns))
+    if missing:
+        raise ValueError(f"Raw QC summary missing column(s): {missing}")
+    output_path = Path(output_path)
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    summary.loc[:, RAW_QC_SUMMARY_COLUMNS].to_csv(output_path, index=False)
+    return output_path

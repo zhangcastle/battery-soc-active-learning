@@ -5,6 +5,7 @@ import json
 from pathlib import Path
 
 import numpy as np
+import pandas as pd
 import pytest
 
 from battery_benchmark.data.cmu_evtol_raw import (
@@ -16,9 +17,13 @@ from battery_benchmark.data.cmu_evtol_raw import (
     CMURawSchemaError,
     CMU_V3_CELL_IDS,
     DATASET_VERSION,
+    IMPEDANCE_COLUMNS,
     RAW_COLUMNS,
+    RAW_QC_SUMMARY_COLUMNS,
     build_asset_inventory,
+    build_raw_qc_summary,
     load_cmu_v3_main_file,
+    positive_delta_statistics,
 )
 
 
@@ -57,6 +62,19 @@ def _load(path: Path, threshold: float = 10.0, boundaries=None):
     )
 
 
+def _write_impedance(
+    root: Path,
+    cell_id: str = "VAH01",
+    header: tuple[str, ...] = IMPEDANCE_COLUMNS,
+) -> Path:
+    path = root / f"{cell_id}_impedance.csv"
+    with path.open("w", newline="", encoding="utf-8") as handle:
+        writer = csv.writer(handle)
+        writer.writerow(header)
+        writer.writerow([0.02, 0.04, 0.02, 0.03, 1])
+    return path
+
+
 def test_strictly_increasing_time_produces_one_block_and_provenance(tmp_path: Path) -> None:
     path = _write_main(tmp_path, rows=[_row(0.0), _row(1.0), _row(2.0)])
     result = _load(path)
@@ -71,6 +89,15 @@ def test_strictly_increasing_time_produces_one_block_and_provenance(tmp_path: Pa
     assert result.metadata["output_row_count"] == 3
     assert result.metadata["block_count"] == 1
     assert result.metadata["filtered_row_count"] == 0
+
+
+def test_default_gap_threshold_is_explicitly_exploratory(tmp_path: Path) -> None:
+    result = load_cmu_v3_main_file(
+        _write_main(tmp_path, rows=[_row(0.0), _row(1.0)]),
+        repo_root=tmp_path,
+    )
+    assert result.metadata["gap_threshold_s"] == 120.0
+    assert result.metadata["gap_threshold_source"] == "exploratory_loader_default"
 
 
 @pytest.mark.parametrize(
@@ -177,6 +204,67 @@ def test_asset_inventory_allows_vah26_without_impedance(tmp_path: Path) -> None:
     assert len(row["sha256"]) == 64
     assert row["row_count"] == 2
     assert json.loads(row["observed_columns"]) == list(RAW_COLUMNS)
+    assert pd.isna(row["impedance_file_size_bytes"])
+    assert pd.isna(row["impedance_sha256"])
+    assert pd.isna(row["impedance_row_count"])
+    assert pd.isna(row["impedance_observed_columns"])
+
+
+def test_asset_inventory_validates_main_header_strictly(tmp_path: Path) -> None:
+    malformed = tuple(column for column in RAW_COLUMNS if column != "Ns")
+    _write_main(tmp_path, header=malformed, rows=[_row(0.0)[:-1]])
+    with pytest.raises(CMURawSchemaError, match="Raw CSV schema mismatch.*VAH01.csv"):
+        build_asset_inventory(tmp_path, cell_ids=["VAH01"])
+
+
+def test_asset_inventory_records_impedance_provenance(tmp_path: Path) -> None:
+    _write_main(tmp_path)
+    impedance = _write_impedance(tmp_path)
+    row = build_asset_inventory(tmp_path, cell_ids=["VAH01"]).iloc[0]
+
+    assert row["impedance_file_present"]
+    assert row["impedance_file_size_bytes"] == impedance.stat().st_size
+    assert len(row["impedance_sha256"]) == 64
+    assert row["impedance_row_count"] == 1
+    assert json.loads(row["impedance_observed_columns"]) == list(IMPEDANCE_COLUMNS)
+
+
+def test_malformed_impedance_header_cannot_enter_inventory(tmp_path: Path) -> None:
+    _write_main(tmp_path)
+    _write_impedance(tmp_path, header=IMPEDANCE_COLUMNS[:-1])
+    with pytest.raises(CMURawSchemaError, match="Impedance CSV schema mismatch"):
+        build_asset_inventory(tmp_path, cell_ids=["VAH01"])
+
+
+def test_positive_delta_statistics_ignore_non_finite_and_non_positive() -> None:
+    stats = positive_delta_statistics([0.0, 1.0, 1.0, np.nan, 5.0, 8.0, 6.0, 10.0])
+    assert stats["min_positive_delta_s"] == 1.0
+    assert stats["median_positive_delta_s"] == 3.0
+    assert stats["p95_positive_delta_s"] == pytest.approx(3.9)
+    assert stats["p99_positive_delta_s"] == pytest.approx(3.98)
+    assert stats["max_positive_delta_s"] == 4.0
+
+
+def test_raw_qc_summary_matches_loader_block_metadata(tmp_path: Path) -> None:
+    path = _write_main(
+        tmp_path,
+        rows=[_row(0.0), _row(1.0), _row(1.0), _row(20.0)],
+    )
+    loaded = _load(path, threshold=10.0)
+    summary = build_raw_qc_summary(
+        tmp_path,
+        gap_threshold_s=10.0,
+        cell_ids=["VAH01"],
+        repo_root=tmp_path,
+    )
+    row = summary.iloc[0]
+
+    assert tuple(summary.columns) == RAW_QC_SUMMARY_COLUMNS
+    assert row["block_count"] == loaded.metadata["block_count"] == 3
+    assert row["time_duplicate_count"] == 1
+    assert row["gap_exceeded_count"] == 1
+    assert row["main_sha256"] == loaded.metadata["source_sha256"]
+    assert row["gap_threshold_source"] == "explicit_argument"
 
 
 @pytest.mark.integration
@@ -193,3 +281,11 @@ def test_real_v3_asset_inventory_when_raw_package_is_available() -> None:
     assert (inventory["file_size_bytes"] > 0).all()
     assert (inventory["row_count"] > 0).all()
     assert inventory["sha256"].str.fullmatch(r"[0-9a-f]{64}").all()
+    impedance = inventory.loc[inventory["impedance_file_present"]]
+    assert len(impedance) == 21
+    assert (impedance["impedance_file_size_bytes"] > 0).all()
+    assert (impedance["impedance_row_count"] > 0).all()
+    assert impedance["impedance_sha256"].str.fullmatch(r"[0-9a-f]{64}").all()
+    assert impedance["impedance_observed_columns"].map(json.loads).map(
+        lambda columns: tuple(columns) == IMPEDANCE_COLUMNS
+    ).all()

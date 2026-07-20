@@ -18,8 +18,11 @@ SOH, splits, resampling, model windows, or training inputs.
   have no impedance file in Version 3.
 
 The asset inventory records dataset name, article ID, dataset version, cell ID,
-file presence, size, SHA-256, data-row count, and observed columns. Missing files
-remain explicit inventory rows.
+file presence, size, SHA-256, data-row count, and observed columns for both main
+and impedance files. Existing main and impedance files undergo strict header
+validation. Missing files remain explicit inventory rows. VAH26 impedance
+provenance fields are empty—not zero-length placeholders—because no impedance
+asset exists for that cell.
 
 ## Canonical raw schema
 
@@ -74,17 +77,39 @@ Boundary rows are retained as the first rows of their new blocks. Multiple
 reasons may be recorded on one row, separated by `|`. Changes or reversals in
 `cycleNumber`, and changes in `Ns`, never create blocks by themselves.
 
+The loader can only mark a source concatenation boundary when the caller retains
+and supplies that information, or when the merge creates another visible time
+discontinuity. A boundary that is time-continuous and has been erased by a prior
+CSV concatenation cannot be recovered automatically. The QC summary therefore
+must not be interpreted as detecting every historical source-file boundary.
+
 ## Gap threshold
 
 `gap_threshold_s` is an explicit loader parameter and is recorded in metadata.
-The engineering default is 120 s, selected for raw QC because Version 3 asset
-reconnaissance observed 10 s and 30 s nominal cadences. It is four times the
-slower observed cadence.
+The exploratory loader default is 120 s, selected for raw QC because Version 3
+asset reconnaissance observed 10 s and 30 s nominal cadences. It is four times
+the slower observed cadence. Metadata identifies this case with
+`gap_threshold_source=exploratory_loader_default`; an explicitly supplied value
+is recorded as `explicit_argument`.
 
 This default is **not** a frozen benchmark research constant. Formal downstream
 protocols must review sampling statistics and explicitly pass the selected
 threshold. If a future asset version does not support the 10/30 s observation,
 the caller must provide a threshold explicitly.
+
+## Per-cell raw QC summary
+
+The QC entrypoint processes the 22 cells sequentially and retains only one
+canonical cell frame at a time. It reuses canonical ingestion and its block
+detector; it does not independently reconstruct boundaries. A failure identifies
+the cell and source path and aborts the scan rather than silently skipping data.
+
+For each cell, the summary records main and impedance SHA-256 provenance, row and
+block counts, all time-boundary counts, the threshold and its source, generation
+time, loader version, and Git revision/dirty state. Delta statistics use only
+finite, strictly positive adjacent `time_s` differences. Duplicate, reversed,
+and non-finite differences are excluded from those descriptive percentiles but
+remain represented in their explicit QC counters.
 
 ## Metadata and QC
 
