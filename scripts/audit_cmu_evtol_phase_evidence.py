@@ -30,6 +30,10 @@ from battery_benchmark.data.cmu_evtol_raw import (  # noqa: E402
     LOADER_SCHEMA_VERSION,
     load_cmu_v3_main_file,
 )
+from battery_benchmark.data.cmu_evtol_pipeline_v0 import (  # noqa: E402
+    add_power_columns,
+    contiguous_ns_runs,
+)
 
 AUDIT_CELLS = ("VAH01", "VAH17", "VAH27", "VAH02", "VAH12", "VAH05")
 GAP_CONTEXT_CELLS = ("VAH09", "VAH10", "VAH27", "VAH30")
@@ -111,85 +115,6 @@ EVIDENCE_COLUMNS = (
     "duplicate_representative_source_rows",
     "assessment",
 )
-
-
-def add_power_columns(data: pd.DataFrame) -> pd.DataFrame:
-    """Return a copy with explicitly signed electrical/discharge power."""
-    result = data.copy()
-    result["electrical_power_W"] = result["Ecell_V"] * result["I_mA"] / 1000.0
-    result["discharge_power_W"] = np.maximum(-result["electrical_power_W"], 0.0)
-    return result
-
-
-def contiguous_ns_runs(data: pd.DataFrame) -> pd.DataFrame:
-    """Describe contiguous Ns runs without crossing canonical block IDs."""
-    required = {
-        "cell_id",
-        "continuous_block_id",
-        "source_row",
-        "time_s",
-        "Ecell_V",
-        "I_mA",
-        "cycleNumber",
-        "Ns",
-    }
-    missing = sorted(required - set(data.columns))
-    if missing:
-        raise ValueError(f"Ns run evidence missing canonical column(s): {missing}")
-    frame = add_power_columns(data)
-    starts = frame["continuous_block_id"].ne(frame["continuous_block_id"].shift())
-    starts |= frame["Ns"].ne(frame["Ns"].shift())
-    run_key = starts.cumsum()
-    records: list[dict[str, object]] = []
-    for _, group in frame.groupby(run_key, sort=False):
-        start_time = float(group["time_s"].iloc[0])
-        end_time = float(group["time_s"].iloc[-1])
-        duration = (
-            end_time - start_time
-            if np.isfinite(start_time) and np.isfinite(end_time)
-            else np.nan
-        )
-        current = group["I_mA"]
-        records.append(
-            {
-                "cell_id": group["cell_id"].iloc[0],
-                "continuous_block_id": int(group["continuous_block_id"].iloc[0]),
-                "ns_value": group["Ns"].iloc[0],
-                "source_row_start": int(group["source_row"].iloc[0]),
-                "source_row_end": int(group["source_row"].iloc[-1]),
-                "time_start_s": start_time,
-                "time_end_s": end_time,
-                "duration_s": duration,
-                "row_count": len(group),
-                "charge_fraction": float((current > 0).mean()),
-                "discharge_fraction": float((current < 0).mean()),
-                "zero_current_fraction": float((current == 0).mean()),
-                "electrical_power_median_W": float(
-                    group["electrical_power_W"].median()
-                ),
-                "electrical_power_p10_W": float(
-                    group["electrical_power_W"].quantile(0.10)
-                ),
-                "electrical_power_p90_W": float(
-                    group["electrical_power_W"].quantile(0.90)
-                ),
-                "discharge_power_median_W": float(
-                    group["discharge_power_W"].median()
-                ),
-                "start_voltage_V": float(group["Ecell_V"].iloc[0]),
-                "end_voltage_V": float(group["Ecell_V"].iloc[-1]),
-                "cycle_number_start": group["cycleNumber"].iloc[0],
-                "cycle_number_end": group["cycleNumber"].iloc[-1],
-            }
-        )
-    runs = pd.DataFrame(records)
-    runs["previous_ns"] = np.nan
-    runs["next_ns"] = np.nan
-    for _, indices in runs.groupby("continuous_block_id", sort=False).groups.items():
-        ordered = list(indices)
-        runs.loc[ordered, "previous_ns"] = runs.loc[ordered, "ns_value"].shift().to_numpy()
-        runs.loc[ordered, "next_ns"] = runs.loc[ordered, "ns_value"].shift(-1).to_numpy()
-    return runs
 
 
 def _common_values(values: Iterable[object], limit: int = 3) -> str:

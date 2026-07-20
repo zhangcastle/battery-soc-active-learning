@@ -51,6 +51,7 @@ battery-soc-transfer-benchmark/
 | `samsung_48g.py` | Samsung INR21700-48G 适配器 | ❌ 数据集未获取 |
 | `cmu_evtol.py` | CMU eVTOL 适配器 | ⏳ 待实现 |
 | `cmu_evtol_raw.py` | CMU KiltHub Version 3 资产清单、canonical raw ingestion、continuous-block QC | ✅ |
+| `cmu_evtol_pipeline_v0.py` | CMU baseline cells 的 development-only diagnostic candidate 与 row-record 管线 | 🔶 v0 |
 | `splits.py` | 数据集划分逻辑（按 cycle / cell / profile / temperature） | ✅ |
 | `cycle_dataset.py` | 将 numpy 数组封装为 PyTorch Dataset | ✅ |
 | `datamodule.py` | 组合 source + target DataLoader | ✅ |
@@ -86,6 +87,7 @@ selected drive-cycle **与** selected CC charge 记录均可进入标签与模�
 - ``label_source = "vidal_compatible_cycler_ah"``（v1，非 sequence-aware）
 - SOC labels are benchmark reference labels derived from cycler current/Ah measurements and protocol constraints, not independent ground truth.
 - ``calculate_cmu()`` — 占位，未实现
+- ``labels/cmu_soc.py`` — CMU development candidate 的固定 3.0 Ah 梯形积分 SOC v0（非 ground truth）
 
 **Samsung 特有说明：**
 - SOC metadata 直接来自 manifest 的 ``soc_init`` / ``soc_anchor_source``（与 LG 相同，无 Panasonic 式推导）
@@ -267,6 +269,7 @@ configs/
 | `inventory_cmu_evtol_raw.py` | CMU Version 3 主时序/impedance 资产清单与 provenance |
 | `qc_cmu_evtol_raw.py` | CMU Version 3 顺序式 per-cell continuous-block QC 汇总 |
 | `audit_cmu_evtol_phase_evidence.py` | CMU 代表性 cells 的 mission/phase reconstruction 描述性证据审计（不生成正式标签） |
+| `build_cmu_evtol_pipeline_v0.py` | CMU baseline raw → diagnostic candidates → constant-capacity SOC development 管线 |
 | `register_external_repo.py` | clone 外部仓库并记录到 registry |
 | `audit_external_repo.py` | 记录外部仓库的 commit hash 和 license |
 | `inspect_panasonic_25c_split.py` | 只读检查 Panasonic 25°C 文件，生成 manifest CSV 和 QC 报告 |
@@ -315,6 +318,8 @@ notebooks/
 | `test_cmu_evtol_raw.py` | CMU Version 3 schema、provenance、continuous-block 与真实资产 integration |
 | `test_cmu_evtol_phase_evidence.py` | CMU 功率符号、block-safe Ns runs、真实时间持续时长与证据审计 integration |
 | `test_cmu_evtol_mission_segmentation_protocol_v0_1.py` | CMU mission segmentation v0.1 草案状态、规则、cell coverage 与 evidence provenance |
+| `test_cmu_evtol_pipeline_v0.py` | CMU diagnostic candidate enumeration、development 输出与真实 baseline integration |
+| `test_cmu_soc.py` | CMU candidate 独立梯形积分、单位、时间与越界 QC |
 
 运行：`.venv/bin/pytest tests/ -v`
 
