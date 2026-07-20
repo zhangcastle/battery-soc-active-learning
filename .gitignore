@@ -41,6 +41,8 @@ docs/*
 !docs/reproduction_protocol.md
 !docs/known_uncertainties.md
 !docs/colab_workflow.md
+!docs/protocols/
+!docs/protocols/cmu_evtol_transfer_benchmark_v0_1.md
 
 # Data — NEVER commit raw or processed battery data
 data/raw/
