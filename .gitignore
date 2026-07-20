@@ -43,6 +43,8 @@ docs/*
 !docs/colab_workflow.md
 !docs/protocols/
 !docs/protocols/cmu_evtol_transfer_benchmark_v0_1.md
+!docs/audits/
+!docs/audits/cmu_evtol_mission_phase_evidence_v0_1.md
 
 # Data — NEVER commit raw or processed battery data
 data/raw/

@@ -1,6 +1,6 @@
 # Project Structure
 
-> Last updated: 2026-07-15
+> Last updated: 2026-07-20
 > Keep this file in sync whenever directories or files are added, removed, or renamed.
 
 ---
@@ -50,6 +50,7 @@ battery-soc-transfer-benchmark/
 | `samsung_30t.py` | Samsung INR21700-30T 适配器（`Samsung30TAdapter`） | 🔶 第一版（读取 + 映射 + QC） |
 | `samsung_48g.py` | Samsung INR21700-48G 适配器 | ❌ 数据集未获取 |
 | `cmu_evtol.py` | CMU eVTOL 适配器 | ⏳ 待实现 |
+| `cmu_evtol_raw.py` | CMU KiltHub Version 3 资产清单、canonical raw ingestion、continuous-block QC | ✅ |
 | `splits.py` | 数据集划分逻辑（按 cycle / cell / profile / temperature） | ✅ |
 | `cycle_dataset.py` | 将 numpy 数组封装为 PyTorch Dataset | ✅ |
 | `datamodule.py` | 组合 source + target DataLoader | ✅ |
@@ -261,6 +262,9 @@ configs/
 | `run_vidal_reproduction.py` | 批量跑 vidal_case1 ~ case4 |
 | `run_vidal_case2.py` | Vidal Case 2 source→target transfer CLI（单方向或六方向 all-pairs） |
 | `run_cmu_transfer.py` | CMU eVTOL 迁移实验 |
+| `inventory_cmu_evtol_raw.py` | CMU Version 3 主时序/impedance 资产清单与 provenance |
+| `qc_cmu_evtol_raw.py` | CMU Version 3 顺序式 per-cell continuous-block QC 汇总 |
+| `audit_cmu_evtol_phase_evidence.py` | CMU 代表性 cells 的 mission/phase reconstruction 描述性证据审计（不生成正式标签） |
 | `register_external_repo.py` | clone 外部仓库并记录到 registry |
 | `audit_external_repo.py` | 记录外部仓库的 commit hash 和 license |
 | `inspect_panasonic_25c_split.py` | 只读检查 Panasonic 25°C 文件，生成 manifest CSV 和 QC 报告 |
@@ -306,6 +310,8 @@ notebooks/
 | `test_metrics.py` | MAE / RMSE / MAX 计算 |
 | `test_coulomb_counting.py` | 库仑积分 SOC 计算 |
 | `test_checkpoint_resume.py` | 断点保存与恢复 |
+| `test_cmu_evtol_raw.py` | CMU Version 3 schema、provenance、continuous-block 与真实资产 integration |
+| `test_cmu_evtol_phase_evidence.py` | CMU 功率符号、block-safe Ns runs、真实时间持续时长与证据审计 integration |
 
 运行：`.venv/bin/pytest tests/ -v`
 
@@ -332,6 +338,9 @@ notebooks/
 | `known_uncertainties.md` | 已知不确定项（Samsung 30T 命名已确认；48G 缺失） |
 | `cmu_evtol_protocol.md` | CMU eVTOL 代理标签评估协议 |
 | `colab_workflow.md` | Google Colab 使用流程 |
+| `protocols/cmu_evtol_raw_ingestion_v0_1.md` | CMU Version 3 raw ingestion 与 continuous-block QC 规则 |
+| `protocols/cmu_evtol_transfer_benchmark_v0_1.md` | CMU eVTOL transfer benchmark v0.1 cell-level 协议 |
+| `audits/cmu_evtol_mission_phase_evidence_v0_1.md` | 代表性 cells 的 mission/phase reconstruction 证据审计与 PARTIAL 结论 |
 
 ---
 
@@ -344,13 +353,19 @@ data/
 │   ├── LG_HG2/               ✅ 已获取，-20~40degC
 │   ├── Samsung_30T/          ✅ 已获取，-20~40degC（论文称"T30"，同一数据集）
 │   ├── Samsung_48G/          ❌ 未获取，仅有 README 占位
+│   ├── cmu_evtol_vtc6/
+│   │   └── figshare_14226830/ CMU KiltHub eVTOL Battery Dataset Version 3（本地 raw，不提交）
 │   └── LG 18650HG2 .../      参考用（含 MATLAB 脚本和已处理版本）
 ├── interim/                  中间处理产物
 ├── processed/                标准化 DataFrame，模型直接读取
 └── manifests/                索引文件（可提交 Git）
     ├── panasonic_vidal2019_25c_manifest.csv      Panasonic 25°C 文件划分清单（61行，含 QC 元数据）
     ├── lg_hg2_vidal2019_25c_manifest.csv         LG HG2 25°C 文件划分清单（36行，含 HWFET FAIL 标记）
-    └── samsung_30t_vidal2019_25c_manifest.csv    Samsung 30T 25°C 文件划分清单（34行，含 SHA-256、信号指纹、身份状态）
+    ├── samsung_30t_vidal2019_25c_manifest.csv    Samsung 30T 25°C 文件划分清单（34行，含 SHA-256、信号指纹、身份状态）
+    ├── cmu_evtol_vtc6_cell_protocols.csv         CMU 22-cell protocol/condition registry
+    ├── cmu_evtol_vtc6_asset_inventory_v3.csv     CMU Version 3 主文件与 impedance provenance
+    ├── cmu_evtol_vtc6_raw_qc_v3_120s.csv         CMU 22-cell exploratory 120 s raw block QC
+    └── cmu_evtol_mission_phase_evidence_v0_1.csv CMU 代表性 cells 的描述性 phase/mission evidence
 ```
 
 ---
