@@ -25,9 +25,12 @@ from battery_benchmark.data.cmu_evtol_raw import (
     load_cmu_v3_main_file,
     positive_delta_statistics,
 )
+from scripts.qc_cmu_evtol_raw import DEFAULT_QC_OUTPUT, resolve_output_path
 
 
 REAL_RAW_ROOT = Path("data/raw/cmu_evtol_vtc6/figshare_14226830")
+ASSET_MANIFEST = Path("data/manifests/cmu_evtol_vtc6_asset_inventory_v3.csv")
+RAW_QC_MANIFEST = Path("data/manifests/cmu_evtol_vtc6_raw_qc_v3_120s.csv")
 
 
 def _row(
@@ -265,6 +268,56 @@ def test_raw_qc_summary_matches_loader_block_metadata(tmp_path: Path) -> None:
     assert row["gap_exceeded_count"] == 1
     assert row["main_sha256"] == loaded.metadata["source_sha256"]
     assert row["gap_threshold_source"] == "explicit_argument"
+
+
+def test_default_threshold_uses_default_120s_output() -> None:
+    assert resolve_output_path(None, None) == DEFAULT_QC_OUTPUT
+    assert resolve_output_path(120.0, None) == DEFAULT_QC_OUTPUT
+
+
+def test_non_default_threshold_requires_explicit_output() -> None:
+    with pytest.raises(ValueError, match="--output is required"):
+        resolve_output_path(60.0, None)
+
+
+def test_non_default_threshold_accepts_explicit_output(tmp_path: Path) -> None:
+    custom = tmp_path / "cmu_raw_qc_60s.csv"
+    assert resolve_output_path(60.0, custom) == custom
+
+
+def test_committed_asset_and_qc_manifests_are_consistent() -> None:
+    assets = pd.read_csv(ASSET_MANIFEST, dtype={"article_id": str})
+    qc = pd.read_csv(RAW_QC_MANIFEST, dtype={"article_id": str})
+
+    assert len(assets) == len(qc) == 22
+    assert assets["cell_id"].is_unique
+    assert qc["cell_id"].is_unique
+    assert set(assets["cell_id"]) == set(qc["cell_id"]) == set(CMU_V3_CELL_IDS)
+
+    merged = assets.merge(qc, on="cell_id", suffixes=("_asset", "_qc"), validate="one_to_one")
+    assert merged["sha256"].eq(merged["main_sha256"]).all()
+    assert merged["impedance_file_present_asset"].eq(
+        merged["impedance_file_present_qc"]
+    ).all()
+    assert merged["impedance_sha256_asset"].fillna("").eq(
+        merged["impedance_sha256_qc"].fillna("")
+    ).all()
+    assert merged["row_count_asset"].eq(merged["row_count_qc"]).all()
+
+    assert qc["gap_threshold_s"].eq(120.0).all()
+    assert qc["gap_threshold_source"].eq("exploratory_loader_default").all()
+    assert int(qc["row_count"].sum()) == 15_309_317
+    assert int(qc["block_count"].sum()) == 336
+    assert int(qc["time_duplicate_count"].sum()) == 310
+    assert int(qc["gap_exceeded_count"].sum()) == 4
+    assert int(qc["time_reversal_count"].sum()) == 0
+    assert int(qc["current_time_non_finite_count"].sum()) == 0
+    assert int(qc["previous_time_non_finite_count"].sum()) == 0
+
+    assert qc["git_revision"].nunique() == 1
+    assert qc["git_revision"].str.fullmatch(r"[0-9a-f]{40}").all()
+    assert qc["generated_at_utc"].nunique() == 1
+    assert qc["git_dirty"].eq(False).all()  # noqa: E712
 
 
 @pytest.mark.integration
