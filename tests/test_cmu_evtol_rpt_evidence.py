@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from pathlib import Path
 
 import pandas as pd
@@ -47,6 +48,8 @@ def test_complete_c5_with_interruptions_is_strong_and_id_ignores_cycle_number() 
     assert result["resistance_interruption_count"] == 2
     assert result["preceding_full_charge_evidence"] is False
     assert result["candidate_ends_at_file_tail"] is True
+    assert "exact_ns_structure_3_4_5_6_7" in json.loads(result["supporting_evidence"])
+    assert "file_tail_without_following_charge" in json.loads(result["conflicting_evidence"])
     candidate_id = result["diagnostic_rpt_candidate_id"]
     changed = data.copy(); changed["cycleNumber"] = 999
     changed_result, _ = audit_candidate(changed, contiguous_ns_runs(changed), *windows[0])

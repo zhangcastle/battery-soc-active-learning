@@ -19,5 +19,11 @@ development_pipeline_v0:
   screening_unit: anchor_window
   formal_benchmark_eligible: false
   label_is_ground_truth: false
+rpt_capacity_v1:
+  implementation_authorized: true
+  capacity_observations_authorized: true
+  capacity_lookup_authorized: false
+  dynamic_soc_authorized: false
+  cells: [VAH01, VAH17, VAH27]
 # Adapter status: placeholder — raises NotImplementedError until implemented.
 # See notebooks/05_prepare_cmu_evtol.ipynb and docs/cmu_evtol_protocol.md.

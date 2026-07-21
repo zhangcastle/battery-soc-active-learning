@@ -27,6 +27,9 @@ from battery_benchmark.data.cmu_evtol_pipeline_v0 import (  # noqa: E402
     enumerate_diagnostic_candidates,
     load_diagnostic_protocol,
 )
+from battery_benchmark.data.cmu_evtol_rpt import (  # noqa: E402
+    discover_broad_rpt_windows as _discover_broad_rpt_windows,
+)
 from battery_benchmark.data.cmu_evtol_raw import (  # noqa: E402
     LOADER_SCHEMA_VERSION,
     load_cmu_v3_main_file,
@@ -74,24 +77,13 @@ def _json(values: object) -> str:
 
 
 def discover_broad_rpt_windows(runs: pd.DataFrame) -> list[tuple[int, int]]:
-    """Merge long low-rate fragments separated by at most one short Ns run."""
-    mask = (
-        runs["duration_s"].ge(PRIORS["broad_fragment_min_duration_s"])
-        & runs["discharge_fraction"].ge(0.7)
-        & runs["discharge_power_median_W"].between(*PRIORS["broad_discharge_power_w"])
-    )
-    fragments = list(runs.index[mask])
-    if not fragments:
-        return []
-    groups: list[list[int]] = [[fragments[0]]]
-    for index in fragments[1:]:
-        previous = groups[-1][-1]
-        same_block = runs.at[index, "continuous_block_id"] == runs.at[previous, "continuous_block_id"]
-        if same_block and index - previous <= 2:
-            groups[-1].append(index)
-        else:
-            groups.append([index])
-    return [(group[0], group[-1]) for group in groups]
+    """Preserve the audited broad discovery through the production shared helper."""
+    return _discover_broad_rpt_windows(runs, {
+        "fragment_min_duration_s": PRIORS["broad_fragment_min_duration_s"],
+        "minimum_discharge_fraction": 0.7,
+        "discharge_power_W": PRIORS["broad_discharge_power_w"],
+        "maximum_intervening_runs": 1,
+    })
 
 
 def _discharged_ah(rows: pd.DataFrame) -> tuple[float, np.ndarray]:
@@ -141,6 +133,8 @@ def audit_candidate(
     preceding_rest = bool(not preceding_runs.empty and preceding_runs["zero_current_fraction"].max() >= 0.5)
     following_rest = bool(not following_runs.empty and following_runs["zero_current_fraction"].max() >= 0.5)
     following_charge = bool(not following_runs.empty and following_runs["charge_fraction"].max() >= 0.5)
+    trailing = data.loc[data["source_row"].gt(last.source_row_end), "I_mA"]
+    candidate_at_file_tail = bool(trailing.empty or trailing.abs().le(100).all())
     start_v, end_v = float(rows["Ecell_V"].iloc[0]), float(rows["Ecell_V"].iloc[-1])
     duration = float(rows["time_s"].iloc[-1] - rows["time_s"].iloc[0])
     near_c5 = float(current_a.between(*PRIORS["near_c5_current_a"]).mean())
@@ -162,6 +156,18 @@ def audit_candidate(
         status, primary = "non_rpt_candidate", conflicting[0]
     else:
         status, primary = "uncertain_rpt_evidence", conflicting[0]
+    context_checks = {
+        "preceding_full_charge_evidence": preceding_full_charge,
+        "preceding_rest_evidence": preceding_rest,
+        "exact_ns_structure_3_4_5_6_7": selected_runs["ns_value"].tolist() == [3, 4, 5, 6, 7],
+        "two_resistance_measurement_interruptions": len(interruptions) == 2,
+        "following_rest_evidence": following_rest,
+        "following_charge_evidence": following_charge,
+    }
+    for reason, passed in context_checks.items():
+        (supporting if passed else conflicting).append(reason)
+    if candidate_at_file_tail and not following_charge:
+        conflicting.append("file_tail_without_following_charge")
     candidate_id = (
         f"cmu_v3_diagnostic_rpt_candidate_v0:{first.cell_id}:"
         f"b{int(first.continuous_block_id)}:s{int(first.source_row_start)}:e{int(last.source_row_end)}"
@@ -207,7 +213,7 @@ def audit_candidate(
         "preceding_rest_evidence": preceding_rest,
         "following_rest_evidence": following_rest,
         "following_charge_evidence": following_charge,
-        "candidate_ends_at_file_tail": int(last.source_row_end) == int(data["source_row"].max()),
+        "candidate_ends_at_file_tail": candidate_at_file_tail,
         "boundary_reasons": _json(sorted(set(filter(None, rows["continuous_block_boundary_reason"])))),
     }
     return record, rows
@@ -320,6 +326,7 @@ def run_audit(raw_root: Path, output_root: Path, *, repo_root: Path = REPO_ROOT)
     (output_root / "rpt_evidence_summary.json").write_text(json.dumps(summaries, indent=2), encoding="utf-8")
     metadata = {
         "audit_status": AUDIT_STATUS,
+        "strong_rpt_evidence_semantics": "strong_waveform_evidence_not_production_acceptance",
         "article_id": "14226830",
         "dataset_version": "3",
         "raw_loader_schema_version": LOADER_SCHEMA_VERSION,

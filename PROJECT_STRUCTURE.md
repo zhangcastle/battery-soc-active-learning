@@ -52,6 +52,7 @@ battery-soc-transfer-benchmark/
 | `cmu_evtol.py` | CMU eVTOL 适配器 | ⏳ 待实现 |
 | `cmu_evtol_raw.py` | CMU KiltHub Version 3 资产清单、canonical raw ingestion、continuous-block QC | ✅ |
 | `cmu_evtol_pipeline_v0.py` | CMU baseline cells 的 development-only diagnostic candidate 与 row-record 管线 | 🔶 v0 |
+| `cmu_evtol_rpt.py` | CMU baseline cells 的 production RPT detection、独立容量积分与趋势 QC | ✅ |
 | `splits.py` | 数据集划分逻辑（按 cycle / cell / profile / temperature） | ✅ |
 | `cycle_dataset.py` | 将 numpy 数组封装为 PyTorch Dataset | ✅ |
 | `datamodule.py` | 组合 source + target DataLoader | ✅ |
@@ -270,6 +271,7 @@ configs/
 | `qc_cmu_evtol_raw.py` | CMU Version 3 顺序式 per-cell continuous-block QC 汇总 |
 | `audit_cmu_evtol_phase_evidence.py` | CMU 代表性 cells 的 mission/phase reconstruction 描述性证据审计（不生成正式标签） |
 | `audit_cmu_evtol_rpt_evidence.py` | CMU baseline cells 的 broad RPT 证据审计（不生成正式 capacity observations） |
+| `extract_cmu_evtol_rpt_capacity.py` | CMU baseline cells 的 RPT detection、独立容量积分与 QC 输出 |
 | `build_cmu_evtol_pipeline_v0.py` | CMU baseline raw → diagnostic candidates → constant-capacity SOC development 管线 |
 | `register_external_repo.py` | clone 外部仓库并记录到 registry |
 | `audit_external_repo.py` | 记录外部仓库的 commit hash 和 license |
@@ -322,6 +324,7 @@ notebooks/
 | `test_cmu_evtol_pipeline_v0.py` | CMU diagnostic candidate enumeration、development 输出与真实 baseline integration |
 | `test_cmu_soc.py` | CMU candidate 独立梯形积分、单位、时间与越界 QC |
 | `test_cmu_evtol_rpt_evidence.py` | CMU broad RPT discovery、内阻测量扰动与真实 baseline integration |
+| `test_cmu_evtol_rpt.py` | CMU production RPT detection、容量积分、趋势 QC 与真实 baseline regression |
 
 运行：`.venv/bin/pytest tests/ -v`
 
