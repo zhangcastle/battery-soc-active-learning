@@ -1,4 +1,4 @@
-.PHONY: install install-dev test lint smoke clean help
+.PHONY: install install-dev test test-cmu test-vidal lint smoke clean help
 
 PYTHON := python
 PIP    := pip
@@ -8,6 +8,8 @@ help:
 	@echo "  install      Install package in editable mode"
 	@echo "  install-dev  Install with dev extras"
 	@echo "  test         Run all tests with pytest"
+	@echo "  test-cmu     Run CMU dataset tests"
+	@echo "  test-vidal   Run Vidal 2019 reproduction tests"
 	@echo "  lint         Run ruff linter"
 	@echo "  smoke        Run the synthetic smoke test"
 	@echo "  clean        Remove build artifacts and caches"
@@ -20,6 +22,12 @@ install-dev:
 
 test:
 	$(PYTHON) -m pytest tests/ -v --tb=short
+
+test-cmu:
+	$(PYTHON) -m pytest tests/datasets/cmu_evtol/ -v --tb=short
+
+test-vidal:
+	$(PYTHON) -m pytest tests/reproductions/vidal_2019/ -v --tb=short
 
 smoke:
 	$(PYTHON) scripts/train.py \

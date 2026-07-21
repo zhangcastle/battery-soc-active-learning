@@ -13,4 +13,4 @@ profiles:
 temperatures: [25]  # degrees Celsius
 raw_subdir: Panasonic_18650PF
 # Adapter status: placeholder — raises NotImplementedError until implemented.
-# See notebooks/02_prepare_panasonic.ipynb for preprocessing instructions.
+# See notebooks/reproductions/vidal_2019/02_prepare_panasonic.ipynb for preprocessing instructions.

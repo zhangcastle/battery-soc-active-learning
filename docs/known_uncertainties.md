@@ -37,8 +37,8 @@ global, or per-profile) are not yet confirmed.
 ### Samsung 30T — STRONGLY SUPPORTED (identity audit complete)
 
 **Status:** STRONGLY SUPPORTED. Data in `data/raw/Samsung_30T/`.
-Manifest: `data/manifests/samsung_30t_vidal2019_25c_manifest.csv`.
-Report: `docs/samsung_30t_vidal2019_25c_split_report.md`.
+Manifest: `data/manifests/vidal_2019/samsung_30t_vidal2019_25c_manifest.csv`.
+Report: `docs/reproductions/vidal_2019/splits/samsung_30t_25c.md`.
 
 The public dataset is **Samsung INR21700-30T** (3 Ah), collected at McMaster
 University by Dr. Phillip Kollmeyer, published on Mendeley December 2020
@@ -62,7 +62,7 @@ See §5 below for Samsung-specific unresolved items.
 No public McMaster Samsung 48G (INR21700-48G, ~4.8 Ah) dataset has been located.
 The McMaster Mendeley page (`wykht8y7tg/1`) does not appear to include a Samsung 48G.
 
-**Impact:** `configs/experiments/vidal_case3.yaml` (Panasonic → Samsung 48G) cannot
+**Impact:** `configs/reproductions/vidal_2019/vidal_case3.yaml` (Panasonic → Samsung 48G) cannot
 be run until this dataset is obtained.
 
 **Next steps:** Search IEEE DataPort and other repositories; contact Dr. Kollmeyer.
@@ -248,7 +248,7 @@ with dynamic capacity estimation and therefore:
 Physical-consistency metrics (boundary violations, monotonicity) should be
 reported separately from proxy accuracy metrics.
 
-See `docs/cmu_evtol_protocol.md` for the recommended evaluation protocol.
+See `docs/datasets/cmu_evtol/overview.md` for the recommended evaluation protocol.
 
 ---
 

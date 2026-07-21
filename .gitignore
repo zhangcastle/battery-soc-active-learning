@@ -36,15 +36,13 @@ coverage.xml
 .ipynb_checkpoints/
 *.ipynb_checkpoints
 
-# Docs — most audit artifacts stay local; protocol docs are versioned.
+# Docs — protocols and concise audit conclusions are versioned.
 docs/*
-!docs/reproduction_protocol.md
 !docs/known_uncertainties.md
-!docs/colab_workflow.md
-!docs/protocols/
-!docs/protocols/cmu_evtol_transfer_benchmark_v0_1.md
-!docs/audits/
-!docs/audits/cmu_evtol_mission_phase_evidence_v0_1.md
+!docs/datasets/
+!docs/datasets/**
+!docs/reproductions/
+!docs/reproductions/**
 
 # Data — NEVER commit raw or processed battery data
 data/raw/
@@ -52,14 +50,6 @@ data/interim/
 data/processed/
 # Manifests are small CSV/YAML index files; commit them if desired
 # data/manifests/
-
-# Outputs — do not commit experiment outputs
-outputs/checkpoints/
-outputs/logs/
-outputs/metrics/
-outputs/predictions/
-outputs/plots/
-outputs/experiment_snapshots/
 
 # OS
 .DS_Store

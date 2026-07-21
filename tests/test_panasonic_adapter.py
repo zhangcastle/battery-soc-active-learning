@@ -862,7 +862,7 @@ class TestRecordRoleMetadata:
 # Integration smoke test (requires real Panasonic data)
 # ===========================================================================
 
-_MANIFEST_PATH = _REPO_ROOT / "data/manifests/panasonic_vidal2019_25c_manifest.csv"
+_MANIFEST_PATH = _REPO_ROOT / "data/manifests/vidal_2019/panasonic_vidal2019_25c_manifest.csv"
 _RAW_EXISTS = (_REPO_ROOT / "data/raw/Panasonic_18650PF/25degC").exists()
 
 

@@ -61,5 +61,5 @@ label_availability:
   target_labels: false
 
 checkpoint_path: null   # null = no initial checkpoint; path to resume from
-output_path: outputs/smoke_test
+output_path: outputs/benchmarks/smoke_test
 resume: false

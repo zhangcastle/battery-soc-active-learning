@@ -16,7 +16,7 @@ from battery_benchmark.data.manifest_loader import SHA256MismatchError, load_man
 from battery_benchmark.data.sequence_record import SequenceRecord
 
 _REPO_ROOT = Path(__file__).parent.parent
-_MANIFEST = _REPO_ROOT / "data/manifests/lg_hg2_vidal2019_25c_manifest.csv"
+_MANIFEST = _REPO_ROOT / "data/manifests/vidal_2019/lg_hg2_vidal2019_25c_manifest.csv"
 _RAW_EXISTS = (_REPO_ROOT / "data/raw/LG_HG2/25degC").exists()
 
 

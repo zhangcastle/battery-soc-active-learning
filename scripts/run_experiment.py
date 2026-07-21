@@ -4,7 +4,7 @@
 Usage
 -----
 python scripts/run_experiment.py \\
-    --config configs/experiments/vidal_case1.yaml \\
+    --config configs/reproductions/vidal_2019/vidal_case1.yaml \\
     --paths  configs/paths/local.yaml
 """
 

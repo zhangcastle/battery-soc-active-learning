@@ -28,7 +28,7 @@ from battery_benchmark.data.splits import split_cycles, filter_by_split
 from battery_benchmark.data.cycle_dataset import CycleDataset
 from battery_benchmark.evaluation.evaluator import Evaluator
 from battery_benchmark.evaluation.metrics import compute_metrics
-from battery_benchmark.models.vidal_lstm import VidalLSTM
+from battery_benchmark.reproductions.vidal_2019.model import VidalLSTM
 from battery_benchmark.preprocessing.normalization import MinMaxNormalizer
 from battery_benchmark.preprocessing.sequence_builder import SequenceBuilder
 from battery_benchmark.training.reproducibility import set_seed

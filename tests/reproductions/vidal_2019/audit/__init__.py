@@ -1,0 +1,1 @@
+"""Vidal audit tests."""

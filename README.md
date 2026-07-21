@@ -3,8 +3,9 @@
 A clean, Colab-friendly scaffold for reproducing and comparing battery
 State-of-Charge (SOC) estimation methods under domain transfer.
 
-> **Status: Early scaffold.**  The synthetic smoke test passes.
-> Dataset adapters and paper reproductions are not yet complete.
+> **Status:** Vidal 2019 Case 1–4 reproduction pipelines and the CMU Version 3
+> ingestion/block/RPT pipeline are implemented; unified CMU transfer remains in
+> development.
 > See [Known Uncertainties](docs/known_uncertainties.md).
 
 ---
@@ -58,21 +59,24 @@ make test
 
 ```
 battery-soc-transfer-benchmark/
-├── notebooks/          Colab orchestration and analysis notebooks
-├── configs/            YAML configs for paths, datasets, models, experiments
-├── src/battery_benchmark/   All reusable Python code
-│   ├── data/           Dataset adapters, schema, splits
+├── notebooks/          Grouped by datasets, reproductions, and benchmarks
+├── configs/            Matching dataset/reproduction/benchmark namespaces
+├── src/battery_benchmark/
+│   ├── datasets/       Dataset-owned pipelines (for example CMU eVTOL)
+│   ├── reproductions/  Paper-owned implementations (Vidal 2019)
+│   ├── data/           Shared adapters, records, schema, splits
 │   ├── preprocessing/  Normalisation, sequence building
-│   ├── labels/         SOC computation, pseudo-labels
-│   ├── models/         Model definitions
+│   ├── labels/         Shared label primitives
+│   ├── models/         Reusable model definitions
 │   ├── transfer/       Transfer learning methods
 │   ├── training/       Trainer, checkpointing, callbacks
 │   ├── evaluation/     Metrics, evaluator, plots
 │   ├── experiments/    ExperimentRunner, result schema
 │   └── utils/          Config, paths, device, logging
-├── scripts/            CLI entry points
-├── tests/              pytest test suite
-└── docs/               Protocol and architecture documentation
+├── scripts/            Matching dataset/reproduction/benchmark CLIs
+├── tests/              Mirrors implementation ownership
+├── docs/               Protocols and audit conclusions by owner
+└── outputs/            Ignored generated artifacts in three namespaces
 ```
 
 ---
@@ -102,7 +106,7 @@ The benchmark supports all label availability scenarios:
 
 CMU eVTOL target SOC labels are unavailable during adaptation.
 Evaluation uses a coulomb-counted proxy reference.
-See [`docs/cmu_evtol_protocol.md`](docs/cmu_evtol_protocol.md).
+See [`docs/datasets/cmu_evtol/overview.md`](docs/datasets/cmu_evtol/overview.md).
 
 ---
 
@@ -111,21 +115,20 @@ See [`docs/cmu_evtol_protocol.md`](docs/cmu_evtol_protocol.md).
 | Component | Status |
 |-----------|--------|
 | Synthetic dataset | ✅ Complete |
-| VidalLSTM (scaffold) | ✅ Complete (not yet paper-faithful) |
+| VidalLSTM + Case 1–4 pipelines | ✅ Implemented |
 | Source-only transfer | ✅ Complete |
 | Fine-tuning transfer | ✅ Complete |
 | Scratch baseline | ✅ Complete |
 | Trainer + checkpointing | ✅ Complete |
 | Metrics (MAE/RMSE/MAX) | ✅ Complete |
 | Colab setup notebook | ✅ Complete |
-| Panasonic adapter | ⏳ Placeholder |
-| LG HG2 adapter | ⏳ Placeholder |
-| Samsung adapters | ⏳ Placeholder |
-| CMU eVTOL adapter | ⏳ Placeholder |
+| Panasonic / LG HG2 / Samsung 30T adapters | ✅ Implemented |
+| CMU Version 3 raw/block/RPT pipeline | ✅ Implemented |
+| CMU mission/SOC benchmark pipeline | ⚠️ Development-only |
 | MMD / CORAL / DANN | ⏳ Placeholder |
 | Pseudo-label / source-free | ⏳ Placeholder |
-| Vidal reproduction | ⚠️ Incomplete (uncertainties remain) |
-| CMU transfer | ⚠️ Incomplete (adapter needed) |
+| Vidal reproduction | ⚠️ Implemented reconstruction; documented assumptions remain |
+| CMU transfer | ⚠️ Protocol established; formal benchmark not complete |
 
 ---
 
@@ -144,7 +147,7 @@ Source → Target: synthetic_A → synthetic_B
 Transfer method: source_only
 Source test  MAE:       <value>
 Source test  RMSE:      <value>
-Outputs saved to:       outputs/smoke_test
+Outputs saved to:       outputs/benchmarks/smoke_test
 ```
 
 ---

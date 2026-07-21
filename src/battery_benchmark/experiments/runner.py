@@ -93,7 +93,7 @@ class ExperimentRunner:
         import battery_benchmark.data.lg_hg2     # noqa: F401
         import battery_benchmark.data.samsung_48g  # noqa: F401
         import battery_benchmark.data.samsung_30t  # noqa: F401
-        import battery_benchmark.data.cmu_evtol    # noqa: F401
+        import battery_benchmark.datasets.cmu_evtol.adapter    # noqa: F401
 
         dataset_cfg = cfg.get("dataset", {})
         source_cfg = dataset_cfg.get("source", {})
@@ -151,7 +151,7 @@ class ExperimentRunner:
             target_dm.setup()
 
         # --- 6. Model ---
-        import battery_benchmark.models.vidal_lstm  # noqa: F401
+        import battery_benchmark.reproductions.vidal_2019.model  # noqa: F401
         import battery_benchmark.models.lstm        # noqa: F401
         import battery_benchmark.models.gru         # noqa: F401
         import battery_benchmark.models.cnn_lstm    # noqa: F401

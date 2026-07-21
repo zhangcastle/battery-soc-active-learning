@@ -22,7 +22,7 @@ from battery_benchmark.data.schema import REQUIRED_METADATA_FIELDS
 from battery_benchmark.data.sequence_record import SequenceRecord
 
 _REPO_ROOT = Path(__file__).parent.parent
-_MANIFEST = _REPO_ROOT / "data/manifests/samsung_30t_vidal2019_25c_manifest.csv"
+_MANIFEST = _REPO_ROOT / "data/manifests/vidal_2019/samsung_30t_vidal2019_25c_manifest.csv"
 _RAW_EXISTS = (_REPO_ROOT / "data/raw/Samsung_30T/25degC").exists()
 
 
