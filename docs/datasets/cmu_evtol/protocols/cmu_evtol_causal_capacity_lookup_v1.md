@@ -14,3 +14,10 @@ whole-life backfilling, and target SOC are not used.
 `time_s` is retained for provenance but is not the cross-block ordering key
 because tester time can reset. The current mission identity is the stable
 development candidate ID; formal mission segmentation remains deferred.
+
+The independent validator uses `(cell_id, mission_cycle_id)` as the identity
+key. For every output row it rebuilds the eligible same-cell RPT set and
+selects the maximum `end_source_row` strictly below the mission start. It then
+checks the selected ID, all copied RPT provenance, the positive source-row lag,
+and nominal fallback validity. Capacity comparisons use zero relative tolerance
+and an absolute tolerance of `1e-12 Ah`.

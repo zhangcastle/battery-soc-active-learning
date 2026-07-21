@@ -11,7 +11,7 @@
   "formal_mission_labels": false,
   "generator": "scripts/datasets/cmu_evtol/build_causal_capacity_lookup.py",
   "lookup_protocol_path": "configs/datasets/cmu_evtol/protocols/cmu_evtol_causal_capacity_lookup_v1.yaml",
-  "lookup_protocol_sha256": "6c1aedd68bb1440ba166958451e322ccbc91de912c2b2fabaa57b86ab6227010",
+  "lookup_protocol_sha256": "737bbd3c997554173a65752c86bbf896c9db68992a49d7f04434064185901467",
   "mission_protocol_path": "configs/datasets/cmu_evtol/protocols/cmu_evtol_mission_segmentation_v0_1.yaml",
   "mission_protocol_sha256": "a3129dd0c6243917dde6853636fb4f298d99ee7b479947ffb575bfc1a26154fa",
   "rpt_observations_path": "outputs/cmu_evtol_rpt_capacity_v1/capacity_observations.csv",
@@ -31,13 +31,19 @@
       "sha256": "c9a2fcdb18a6265cd5b2e0ccba8afc7d5a4051e6bf56590340834df2304a137f"
     }
   },
-  "git_revision": "47b2022f3b5e4a6ae65c01c2f2383be538cde966",
+  "git_revision": "a1b5707d36fc1097801dea1e63d444fef1532dcd",
   "git_dirty": true,
-  "generated_at_utc": "2026-07-21T14:06:43.016886+00:00",
+  "generated_at_utc": "2026-07-21T14:22:10.366750+00:00",
   "nominal_capacity_ah": 3.0,
   "interpolation_used": false,
   "future_information_used": false,
   "cycle_number_used_for_ordering": false,
+  "capacity_validation_absolute_tolerance_ah": 1e-12,
+  "capacity_validation_relative_tolerance": 0.0,
+  "lookup_identity_key": [
+    "cell_id",
+    "mission_cycle_id"
+  ],
   "soc_recomputed": false,
   "dynamic_capacity_soc_generated": false
 }

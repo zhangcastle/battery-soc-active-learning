@@ -29,6 +29,15 @@ causality:
   cycle_number_role: ignored_for_ordering
   causal_lag_unit: source_rows
 
+validation:
+  identity_key: [cell_id, mission_cycle_id]
+  independently_reconstruct_latest_prior_rpt: true
+  capacity_absolute_tolerance_ah: 1.0e-12
+  capacity_relative_tolerance: 0.0
+  validate_rpt_provenance: true
+  validate_causal_lag: true
+  validate_nominal_fallback: true
+
 output:
   root: outputs/datasets/cmu_evtol/causal_capacity_lookup_v1
   generator: scripts/datasets/cmu_evtol/build_causal_capacity_lookup.py

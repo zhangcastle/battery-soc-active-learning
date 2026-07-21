@@ -23,6 +23,7 @@ if str(REPO_ROOT / "src") not in sys.path:
     sys.path.insert(0, str(REPO_ROOT / "src"))
 
 from battery_benchmark.datasets.cmu_evtol.capacity_lookup import (  # noqa: E402
+    CAPACITY_ABS_TOLERANCE_AH,
     LOOKUP_PROTOCOL_VERSION,
     build_causal_capacity_lookup,
     validate_lookup,
@@ -178,6 +179,9 @@ def build_outputs(
         "interpolation_used": False,
         "future_information_used": False,
         "cycle_number_used_for_ordering": False,
+        "capacity_validation_absolute_tolerance_ah": CAPACITY_ABS_TOLERANCE_AH,
+        "capacity_validation_relative_tolerance": 0.0,
+        "lookup_identity_key": ["cell_id", "mission_cycle_id"],
         "soc_recomputed": False,
         "dynamic_capacity_soc_generated": False,
     }

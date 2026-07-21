@@ -9,6 +9,11 @@
     "future_leakage_count": 0,
     "cross_cell_usage_count": 0,
     "ineligible_rpt_usage_count": 0,
+    "non_latest_rpt_assignment_count": 0,
+    "capacity_value_mismatch_count": 0,
+    "rpt_provenance_mismatch_count": 0,
+    "causal_lag_mismatch_count": 0,
+    "invalid_fallback_row_count": 0,
     "missing_mission_count": 0,
     "unexpected_mission_count": 0
   },

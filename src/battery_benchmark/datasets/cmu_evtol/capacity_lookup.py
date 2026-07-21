@@ -8,6 +8,7 @@ import pandas as pd
 
 LOOKUP_PROTOCOL_VERSION = "cmu_evtol_causal_capacity_lookup_v1"
 NOMINAL_CAPACITY_AH = 3.0
+CAPACITY_ABS_TOLERANCE_AH = 1e-12
 LOOKUP_COLUMNS = (
     "cell_id",
     "mission_cycle_id",
@@ -68,8 +69,8 @@ def build_causal_capacity_lookup(
     matched = missions.loc[
         missions["screening_status"].eq("diagnostic_screening_match")
     ].copy()
-    if matched["development_candidate_id"].duplicated().any():
-        raise ValueError("mission cycle IDs must be unique")
+    if matched.duplicated(["cell_id", "development_candidate_id"]).any():
+        raise ValueError("mission cycle IDs must be unique within each cell")
 
     eligible = observations.loc[
         observations["detector_status"].eq("accepted")
@@ -129,14 +130,28 @@ def validate_lookup(
     missions: pd.DataFrame,
     observations: pd.DataFrame,
 ) -> dict[str, int]:
-    """Return explicit leakage/isolation/coverage QC counts."""
+    """Independently reconstruct expected causal assignments and return QC counts."""
     matched = missions.loc[missions["screening_status"].eq("diagnostic_screening_match")]
     rpt_by_id = observations.set_index("rpt_id", drop=False)
+    eligible = observations.loc[
+        observations["detector_status"].eq("accepted")
+        & observations["accepted_for_capacity_lookup"].eq(True)  # noqa: E712
+    ]
     observed = lookup.loc[lookup["capacity_source"].eq("observed_rpt")]
     future = cross_cell = ineligible = unmatched = 0
+    non_latest = capacity_mismatch = provenance_mismatch = lag_mismatch = 0
     for row in observed.itertuples(index=False):
+        prior = eligible.loc[
+            eligible["cell_id"].eq(row.cell_id)
+            & eligible["end_source_row"].lt(row.mission_start_source_row)
+        ]
+        expected = prior.loc[prior["end_source_row"].idxmax()] if len(prior) else None
+        non_latest += int(expected is None or row.source_rpt_id != expected.rpt_id)
         if row.source_rpt_id not in rpt_by_id.index:
             unmatched += 1
+            capacity_mismatch += 1
+            provenance_mismatch += 1
+            lag_mismatch += 1
             continue
         rpt = rpt_by_id.loc[row.source_rpt_id]
         future += int(int(rpt.end_source_row) >= int(row.mission_start_source_row))
@@ -144,16 +159,67 @@ def validate_lookup(
         ineligible += int(
             rpt.detector_status != "accepted" or not bool(rpt.accepted_for_capacity_lookup)
         )
+        capacity_mismatch += int(not (
+            np.isclose(
+                row.capacity_ah, rpt.capacity_net_ah,
+                rtol=0.0, atol=CAPACITY_ABS_TOLERANCE_AH,
+            )
+            and np.isclose(
+                row.source_rpt_capacity_ah, rpt.capacity_net_ah,
+                rtol=0.0, atol=CAPACITY_ABS_TOLERANCE_AH,
+            )
+        ))
+        provenance_mismatch += int(not (
+            row.source_rpt_id == rpt.rpt_id
+            and int(row.source_rpt_continuous_block_id) == int(rpt.continuous_block_id)
+            and int(row.source_rpt_end_source_row) == int(rpt.end_source_row)
+            and float(row.source_rpt_end_time_s) == float(rpt.end_time_s)
+            and np.isclose(
+                row.source_rpt_capacity_ah, rpt.capacity_net_ah,
+                rtol=0.0, atol=CAPACITY_ABS_TOLERANCE_AH,
+            )
+        ))
+        expected_lag = int(row.mission_start_source_row) - int(rpt.end_source_row)
+        lag_mismatch += int(not (
+            row.causal_lag_unit == "source_rows"
+            and int(row.causal_lag) == expected_lag
+            and int(row.causal_lag) > 0
+        ))
+
+    invalid_fallback = 0
+    provenance_fields = (
+        "source_rpt_id", "source_rpt_capacity_ah", "source_rpt_continuous_block_id",
+        "source_rpt_end_source_row", "source_rpt_end_time_s", "causal_lag",
+    )
+    for row in lookup.loc[lookup["capacity_source"].eq("nominal_fallback")].itertuples(index=False):
+        prior_exists = bool((
+            eligible["cell_id"].eq(row.cell_id)
+            & eligible["end_source_row"].lt(row.mission_start_source_row)
+        ).any())
+        invalid_fallback += int(not (
+            np.isclose(
+                row.capacity_ah, NOMINAL_CAPACITY_AH,
+                rtol=0.0, atol=CAPACITY_ABS_TOLERANCE_AH,
+            )
+            and all(pd.isna(getattr(row, field)) for field in provenance_fields)
+            and not prior_exists
+        ))
+
+    lookup_keys = set(map(tuple, lookup[["cell_id", "mission_cycle_id"]].to_numpy()))
+    mission_keys = set(map(tuple, matched[["cell_id", "development_candidate_id"]].to_numpy()))
     return {
         "unmatched_source_rpt_count": unmatched,
-        "duplicate_lookup_row_count": int(lookup["mission_cycle_id"].duplicated().sum()),
+        "duplicate_lookup_row_count": int(
+            lookup.duplicated(["cell_id", "mission_cycle_id"]).sum()
+        ),
         "future_leakage_count": future,
         "cross_cell_usage_count": cross_cell,
         "ineligible_rpt_usage_count": ineligible,
-        "missing_mission_count": int(
-            len(set(matched["development_candidate_id"]) - set(lookup["mission_cycle_id"]))
-        ),
-        "unexpected_mission_count": int(
-            len(set(lookup["mission_cycle_id"]) - set(matched["development_candidate_id"]))
-        ),
+        "non_latest_rpt_assignment_count": non_latest,
+        "capacity_value_mismatch_count": capacity_mismatch,
+        "rpt_provenance_mismatch_count": provenance_mismatch,
+        "causal_lag_mismatch_count": lag_mismatch,
+        "invalid_fallback_row_count": invalid_fallback,
+        "missing_mission_count": len(mission_keys - lookup_keys),
+        "unexpected_mission_count": len(lookup_keys - mission_keys),
     }

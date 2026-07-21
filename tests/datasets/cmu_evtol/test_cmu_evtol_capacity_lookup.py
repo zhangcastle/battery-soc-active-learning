@@ -93,8 +93,67 @@ def test_cycle_number_changes_do_not_affect_lookup() -> None:
 def test_duplicate_mission_ids_are_rejected() -> None:
     missions = _missions()
     missions.loc[1, "development_candidate_id"] = missions.loc[0, "development_candidate_id"]
-    with pytest.raises(ValueError, match="mission cycle IDs must be unique"):
+    with pytest.raises(ValueError, match="mission cycle IDs must be unique within each cell"):
         build_causal_capacity_lookup(missions, _observations())
+
+
+def test_validator_rebuilds_latest_rpt_and_checks_values_provenance_and_lag() -> None:
+    missions, observations = _missions(), _observations()
+    valid = build_causal_capacity_lookup(missions, observations)
+    assert not any(validate_lookup(valid, missions, observations).values())
+
+    older = valid.copy()
+    index = older.index[older["mission_cycle_id"].eq("a4")][0]
+    r0 = observations.set_index("rpt_id").loc["r0"]
+    older.loc[index, [
+        "capacity_ah", "source_rpt_id", "source_rpt_capacity_ah",
+        "source_rpt_continuous_block_id", "source_rpt_end_source_row",
+        "source_rpt_end_time_s", "causal_lag",
+    ]] = [2.9, "r0", 2.9, r0.continuous_block_id, r0.end_source_row,
+          r0.end_time_s, older.at[index, "mission_start_source_row"] - r0.end_source_row]
+    assert validate_lookup(older, missions, observations)["non_latest_rpt_assignment_count"] == 1
+
+    wrong_capacity = valid.copy()
+    wrong_capacity.loc[index, "capacity_ah"] = 2.7
+    assert validate_lookup(wrong_capacity, missions, observations)[
+        "capacity_value_mismatch_count"
+    ] == 1
+
+    wrong_provenance = valid.copy()
+    wrong_provenance.loc[index, "source_rpt_continuous_block_id"] = 99
+    assert validate_lookup(wrong_provenance, missions, observations)[
+        "rpt_provenance_mismatch_count"
+    ] == 1
+
+    wrong_lag = valid.copy()
+    wrong_lag.loc[index, "causal_lag"] += 1
+    assert validate_lookup(wrong_lag, missions, observations)["causal_lag_mismatch_count"] == 1
+
+
+def test_validator_detects_invalid_fallback_and_uses_composite_identity() -> None:
+    missions, observations = _missions(), _observations()
+    missions.loc[missions["cell_id"].eq("VAH17"), "development_candidate_id"] = "a0"
+    valid = build_causal_capacity_lookup(missions, observations)
+    assert not valid.duplicated(["cell_id", "mission_cycle_id"]).any()
+    assert not any(validate_lookup(valid, missions, observations).values())
+
+    invalid_fallback = valid.copy()
+    index = invalid_fallback.index[
+        invalid_fallback["cell_id"].eq("VAH01")
+        & invalid_fallback["mission_cycle_id"].eq("a2")
+    ][0]
+    invalid_fallback.loc[index, "capacity_ah"] = 3.0
+    invalid_fallback.loc[index, "capacity_source"] = "nominal_fallback"
+    invalid_fallback.loc[index, [
+        "source_rpt_id", "source_rpt_capacity_ah", "source_rpt_continuous_block_id",
+        "source_rpt_end_source_row", "source_rpt_end_time_s", "causal_lag",
+    ]] = None
+    assert validate_lookup(invalid_fallback, missions, observations)[
+        "invalid_fallback_row_count"
+    ] == 1
+
+    duplicated = pd.concat([valid, valid.iloc[[0]]], ignore_index=True)
+    assert validate_lookup(duplicated, missions, observations)["duplicate_lookup_row_count"] == 1
 
 
 def test_frozen_52_rpt_observations_are_unchanged() -> None:
