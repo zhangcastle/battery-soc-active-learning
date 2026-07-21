@@ -1,13 +1,18 @@
 from __future__ import annotations
 
 import json
+import subprocess
+import sys
 from pathlib import Path
 
 import pandas as pd
 import pytest
 
 from battery_benchmark.data.cmu_evtol_pipeline_v0 import (
+    MANIFEST_COLUMNS,
     PHASE_ROLES,
+    ROW_COLUMNS,
+    build_candidate_rows,
     contiguous_ns_runs,
     enumerate_diagnostic_candidates,
     load_diagnostic_protocol,
@@ -89,6 +94,38 @@ def test_rpt_like_run_is_hard_rejected() -> None:
     assert "long_low_rate" in result["all_reason_codes"]
 
 
+def test_all_triggered_reasons_are_unique_and_primary_uses_protocol_order() -> None:
+    runs = contiguous_ns_runs(_canonical())
+    runs.loc[1, ["discharge_fraction", "discharge_power_median_W"]] = [0.5, 50.0]
+    runs.loc[2, "discharge_power_median_W"] = 16.0
+    result = enumerate_diagnostic_candidates(runs, _protocol()).iloc[0]
+    reasons = json.loads(result["all_reason_codes"])
+    assert result["screening_status"] == "hard_reject"
+    assert result["primary_reason"] == "severe_charge_or_rest_contamination"
+    assert reasons == [
+        "severe_charge_or_rest_contamination",
+        "segment_order_definitively_incorrect",
+        "power_or_duration_near_but_not_within_screening_range",
+    ]
+    assert len(reasons) == len(set(reasons))
+
+
+def test_empty_anchor_and_no_match_outputs_have_stable_schema() -> None:
+    canonical = _canonical(powers=[-16.0] * 9)
+    empty_manifest = enumerate_diagnostic_candidates(contiguous_ns_runs(canonical), _protocol())
+    rows, empty_manifest = build_candidate_rows(canonical, empty_manifest, capacity_ah=3.0)
+    assert empty_manifest.empty
+    assert tuple(empty_manifest.columns[: len(MANIFEST_COLUMNS)]) == MANIFEST_COLUMNS
+    assert rows.empty and tuple(rows.columns) == ROW_COLUMNS
+
+    contaminated = _canonical(powers=[-50.0] * 3 + [16.0] * 3 + [-50.0] * 3)
+    no_match = enumerate_diagnostic_candidates(contiguous_ns_runs(contaminated), _protocol())
+    rows, _ = build_candidate_rows(contaminated, no_match, capacity_ah=3.0)
+    assert not no_match.empty
+    assert not no_match["screening_status"].eq("diagnostic_screening_match").any()
+    assert rows.empty and tuple(rows.columns) == ROW_COLUMNS
+
+
 def test_synthetic_raw_to_candidate_soc_and_manifest(tmp_path: Path) -> None:
     raw_root, output_root = tmp_path / "raw", tmp_path / "out"
     raw_root.mkdir()
@@ -113,7 +150,35 @@ def test_synthetic_raw_to_candidate_soc_and_manifest(tmp_path: Path) -> None:
     assert metadata["label_is_ground_truth"] is False
     forbidden = {"mission_id", "phase_name", "split", "soh", "rpt_capacity"}
     assert forbidden.isdisjoint({column.lower() for column in rows.columns})
-    assert json.loads((output_root / "VAH01_qc_summary.json").read_text())["processed_row_count"] == 9
+    qc = json.loads((output_root / "VAH01_qc_summary.json").read_text())
+    assert qc["processed_row_count"] == 9
+    assert qc["screening_unit"] == "anchor_window"
+    assert "anchor_window_status_counts" in qc
+    assert "candidate_status_counts" not in qc
+    assert qc["capacity_mode"] == "constant" and qc["capacity_ah"] == 3.0
+    assert qc["soc_initial_source"] == "protocol_full_charge_assumption"
+
+
+def test_no_anchor_writes_empty_outputs_and_qc(tmp_path: Path) -> None:
+    raw_root, output_root = tmp_path / "raw", tmp_path / "out"
+    raw_root.mkdir()
+    canonical = _canonical(powers=[-16.0] * 9)
+    raw = pd.DataFrame({column: 0.0 for column in RAW_COLUMNS}, index=range(len(canonical)))
+    for column in ("time_s", "Ecell_V", "I_mA", "Temperature__C", "cycleNumber", "Ns"):
+        raw[column] = canonical[column].to_numpy()
+    main = raw_root / "VAH01.csv"
+    raw.to_csv(main, index=False)
+    inventory = tmp_path / "inventory.csv"
+    pd.DataFrame([{"cell_id": "VAH01", "sha256": sha256_file(main)}]).to_csv(inventory, index=False)
+    write_pipeline_outputs(
+        raw_root, output_root, PROTOCOL_PATH,
+        asset_inventory_path=inventory, cells=["VAH01"], repo_root=ROOT,
+    )
+    assert pd.read_parquet(output_root / "VAH01_candidate_rows.parquet").empty
+    assert tuple(pd.read_csv(output_root / "candidate_manifest.csv").columns[: len(MANIFEST_COLUMNS)]) == MANIFEST_COLUMNS
+    qc = json.loads((output_root / "VAH01_qc_summary.json").read_text())
+    assert qc["anchor_window_status_counts"] == {}
+    assert qc["processed_row_count"] == 0
 
 
 def test_non_baseline_cell_is_rejected(tmp_path: Path) -> None:
@@ -122,6 +187,35 @@ def test_non_baseline_cell_is_rejected(tmp_path: Path) -> None:
             tmp_path, tmp_path / "out", PROTOCOL_PATH,
             asset_inventory_path=tmp_path / "missing.csv", cells=["VAH02"], repo_root=ROOT,
         )
+
+
+def test_duplicate_cells_and_non_3ah_api_and_cli_are_rejected(tmp_path: Path) -> None:
+    common = dict(
+        raw_root=tmp_path,
+        output_root=tmp_path / "out",
+        protocol_path=PROTOCOL_PATH,
+        asset_inventory_path=tmp_path / "missing.csv",
+        repo_root=ROOT,
+    )
+    with pytest.raises(ValueError, match="duplicate cell IDs"):
+        write_pipeline_outputs(**common, cells=["VAH01", "VAH01"])
+    with pytest.raises(ValueError, match="requires capacity_ah=3.0"):
+        write_pipeline_outputs(**common, cells=["VAH01"], capacity_ah=2.9)
+
+    result = subprocess.run(
+        [
+            sys.executable,
+            "scripts/build_cmu_evtol_pipeline_v0.py",
+            "--raw-root", str(tmp_path),
+            "--asset-inventory", str(tmp_path / "missing.csv"),
+            "--capacity-ah", "2.9",
+        ],
+        cwd=ROOT,
+        capture_output=True,
+        text=True,
+    )
+    assert result.returncode != 0
+    assert "requires capacity_ah=3.0" in result.stderr
 
 
 @pytest.mark.integration

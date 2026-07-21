@@ -11,14 +11,38 @@ import numpy as np
 import pandas as pd
 import yaml
 
-from battery_benchmark.data.cmu_evtol_raw import load_cmu_v3_main_file, sha256_file
-from battery_benchmark.labels.cmu_soc import LABEL_SOURCE, integrate_cmu_candidate_soc
+from battery_benchmark.data.cmu_evtol_raw import (
+    CANONICAL_COLUMNS,
+    load_cmu_v3_main_file,
+    sha256_file,
+)
+from battery_benchmark.labels.cmu_soc import (
+    LABEL_SOURCE,
+    REFERENCE_CAPACITY_AH,
+    integrate_cmu_candidate_soc,
+    validate_cmu_reference_capacity,
+)
 from battery_benchmark.utils.git_info import get_full_commit_hash, is_dirty
 
 
 BASELINE_CELLS = ("VAH01", "VAH17", "VAH27")
 PIPELINE_STATUS = "development_only"
 PHASE_ROLES = ("high_1", "lower", "high_2")
+MANIFEST_COLUMNS = (
+    "development_candidate_id", "cell_id", "continuous_block_id",
+    "start_source_row", "end_source_row", "start_time_s", "end_time_s",
+    "row_count", "screening_status", "primary_reason", "all_reason_codes",
+    *(f"{role}_{suffix}" for role in PHASE_ROLES for suffix in (
+        "source_row_start", "source_row_end", "duration_s", "median_power_W"
+    )),
+)
+ROW_COLUMNS = (
+    *CANONICAL_COLUMNS,
+    "development_candidate_id", "development_phase_index",
+    "development_phase_role", "elapsed_candidate_s", "capacity_mode",
+    "capacity_ah", "soc_initial", "soc_raw", "soc_reference_v0",
+    "label_source", "label_is_ground_truth", "formal_benchmark_eligible", "qc_flags",
+)
 
 
 def add_power_columns(data: pd.DataFrame) -> pd.DataFrame:
@@ -98,6 +122,31 @@ def _rpt_like(run: pd.Series, thresholds: dict) -> bool:
     ))
 
 
+def _classify_reasons(
+    protocol: dict,
+    hard_reasons: Iterable[str],
+    uncertain_reasons: Iterable[str],
+) -> tuple[str, str, str]:
+    configured = protocol["classification"]["reason_codes"]
+    triggered = set(hard_reasons) | set(uncertain_reasons)
+    ordered = [
+        code
+        for status in protocol["classification"]["precedence"]
+        for code in configured[status]
+        if code in triggered
+    ]
+    hard = [code for code in configured["hard_reject"] if code in triggered]
+    uncertain = [code for code in configured["uncertain"] if code in triggered]
+    if hard:
+        status, primary = "hard_reject", hard[0]
+    elif uncertain:
+        status, primary = "uncertain", uncertain[0]
+    else:
+        status, primary = "diagnostic_screening_match", configured["accept"][0]
+        ordered = [primary]
+    return status, primary, json.dumps(ordered, separators=(",", ":"))
+
+
 def enumerate_diagnostic_candidates(runs: pd.DataFrame, protocol: dict) -> pd.DataFrame:
     """Enumerate draft high/lower/high candidates, retaining non-match reasons."""
     t = protocol["diagnostic_screening_thresholds"]
@@ -111,34 +160,38 @@ def enumerate_diagnostic_candidates(runs: pd.DataFrame, protocol: dict) -> pd.Da
         ):
             continue
         triple = runs.iloc[index : index + 3]
-        reasons: list[str] = []
-        status = "diagnostic_screening_match"
+        hard_reasons: list[str] = []
+        uncertain_reasons: list[str] = []
         if len(triple) < 3:
-            status, reasons = "uncertain", ["missing_required_segment"]
+            uncertain_reasons.append("missing_required_segment")
         else:
             first, middle, last = triple.itertuples(index=False)
             if len({first.continuous_block_id, middle.continuous_block_id, last.continuous_block_id}) != 1:
-                status, reasons = "hard_reject", ["crosses_continuous_block"]
-            elif min(first.duration_s, middle.duration_s, last.duration_s) <= 0:
-                status, reasons = "hard_reject", ["segment_duration_zero_or_negative"]
-            elif min(first.discharge_fraction, middle.discharge_fraction, last.discharge_fraction) < t["minimum_discharge_fraction"]:
-                status, reasons = "hard_reject", ["severe_charge_or_rest_contamination"]
-            elif any(_rpt_like(run, t) for run in triple.itertuples(index=False)):
-                status, reasons = "hard_reject", ["clearly_matches_long_low_rate_diagnostic_evidence"]
-            elif _between(middle.discharge_power_median_W, t["high_discharge_power_W"]) or _between(last.discharge_power_median_W, t["lower_discharge_power_W"]):
-                status, reasons = "hard_reject", ["segment_order_definitively_incorrect"]
-            elif not all((
+                hard_reasons.append("crosses_continuous_block")
+            if min(first.duration_s, middle.duration_s, last.duration_s) <= 0:
+                hard_reasons.append("segment_duration_zero_or_negative")
+            if min(first.discharge_fraction, middle.discharge_fraction, last.discharge_fraction) < t["minimum_discharge_fraction"]:
+                hard_reasons.append("severe_charge_or_rest_contamination")
+            if any(_rpt_like(run, t) for run in triple.itertuples(index=False)):
+                hard_reasons.append("clearly_matches_long_low_rate_diagnostic_evidence")
+            if _between(middle.discharge_power_median_W, t["high_discharge_power_W"]) or _between(last.discharge_power_median_W, t["lower_discharge_power_W"]):
+                hard_reasons.append("segment_order_definitively_incorrect")
+            thresholds_match = all((
                 _between(middle.discharge_power_median_W, t["lower_discharge_power_W"]),
                 _between(last.discharge_power_median_W, t["high_discharge_power_W"]),
                 _between(middle.duration_s, t["lower_duration_s"]),
                 _between(last.duration_s, t["last_high_duration_s"]),
-            )):
-                status, reasons = "uncertain", ["power_or_duration_near_but_not_within_screening_range"]
-            elif claimed_runs.intersection(range(index, index + 3)):
-                status, reasons = "uncertain", ["overlaps_earlier_candidate"]
-            else:
+            ))
+            if not thresholds_match:
+                uncertain_reasons.append("power_or_duration_near_but_not_within_screening_range")
+            if not hard_reasons and thresholds_match and claimed_runs.intersection(range(index, index + 3)):
+                uncertain_reasons.append("overlaps_earlier_candidate")
+            if not hard_reasons and not uncertain_reasons:
                 claimed_runs.update(range(index, index + 3))
 
+        status, primary_reason, all_reason_codes = _classify_reasons(
+            protocol, hard_reasons, uncertain_reasons
+        )
         last = triple.iloc[-1]
         record: dict[str, object] = {
             "development_candidate_id": (
@@ -153,7 +206,8 @@ def enumerate_diagnostic_candidates(runs: pd.DataFrame, protocol: dict) -> pd.Da
             "end_time_s": float(last.time_end_s),
             "row_count": int(triple["row_count"].sum()),
             "screening_status": status,
-            "all_reason_codes": json.dumps(reasons, separators=(",", ":")),
+            "primary_reason": primary_reason,
+            "all_reason_codes": all_reason_codes,
         }
         for position, role in enumerate(PHASE_ROLES):
             run = triple.iloc[position] if position < len(triple) else None
@@ -162,7 +216,7 @@ def enumerate_diagnostic_candidates(runs: pd.DataFrame, protocol: dict) -> pd.Da
             record[f"{role}_duration_s"] = float(run.duration_s) if run is not None else None
             record[f"{role}_median_power_W"] = float(run.discharge_power_median_W) if run is not None else None
         records.append(record)
-    return pd.DataFrame(records)
+    return pd.DataFrame.from_records(records, columns=MANIFEST_COLUMNS)
 
 
 def build_candidate_rows(
@@ -171,6 +225,7 @@ def build_candidate_rows(
     *,
     capacity_ah: float,
 ) -> tuple[pd.DataFrame, pd.DataFrame]:
+    validate_cmu_reference_capacity(capacity_ah)
     outputs = []
     manifest = manifest.copy()
     manifest["capacity_ah"] = float(capacity_ah)
@@ -199,7 +254,8 @@ def build_candidate_rows(
             float(rows["soc_raw"].iloc[0]), float(rows["soc_raw"].iloc[-1]), count
         ]
         outputs.append(rows)
-    return (pd.concat(outputs, ignore_index=True) if outputs else pd.DataFrame()), manifest
+    rows = pd.concat(outputs, ignore_index=True) if outputs else pd.DataFrame(columns=ROW_COLUMNS)
+    return rows.loc[:, ROW_COLUMNS], manifest
 
 
 def process_cmu_cell(
@@ -210,6 +266,7 @@ def process_cmu_cell(
     capacity_ah: float = 3.0,
     repo_root: str | Path | None = None,
 ) -> tuple[pd.DataFrame, pd.DataFrame, dict[str, object]]:
+    validate_cmu_reference_capacity(capacity_ah)
     result = load_cmu_v3_main_file(main_path, repo_root=repo_root)
     cell_id = result.metadata["cell_id"]
     if cell_id not in BASELINE_CELLS:
@@ -234,7 +291,11 @@ def process_cmu_cell(
         "pipeline_status": PIPELINE_STATUS,
         "formal_benchmark_eligible": False,
         "label_is_ground_truth": False,
-        "candidate_status_counts": {key: int(value) for key, value in counts.items()},
+        "capacity_mode": "constant",
+        "capacity_ah": REFERENCE_CAPACITY_AH,
+        "soc_initial_source": "protocol_full_charge_assumption",
+        "screening_unit": "anchor_window",
+        "anchor_window_status_counts": {key: int(value) for key, value in counts.items()},
         "processed_row_count": len(rows),
         "soc_out_of_bounds_count": int(rows["qc_flags"].eq("soc_out_of_bounds").sum()) if len(rows) else 0,
     }
@@ -252,6 +313,9 @@ def write_pipeline_outputs(
     repo_root: str | Path | None = None,
 ) -> dict[str, object]:
     cells = tuple(cells)
+    validate_cmu_reference_capacity(capacity_ah)
+    if len(cells) != len(set(cells)):
+        raise ValueError("CMU pipeline v0 rejects duplicate cell IDs")
     invalid = sorted(set(cells) - set(BASELINE_CELLS))
     if invalid:
         raise ValueError(f"CMU pipeline v0 rejects non-baseline cells: {invalid}")
@@ -282,6 +346,10 @@ def write_pipeline_outputs(
         "pipeline_status": PIPELINE_STATUS,
         "formal_benchmark_eligible": False,
         "label_is_ground_truth": False,
+        "capacity_mode": "constant",
+        "capacity_ah": REFERENCE_CAPACITY_AH,
+        "soc_initial_source": "protocol_full_charge_assumption",
+        "screening_unit": "anchor_window",
         "cells": summaries,
     }
     (output_root / "qc_summary.json").write_text(json.dumps(qc_summary, indent=2), encoding="utf-8")
@@ -291,11 +359,12 @@ def write_pipeline_outputs(
         "label_is_ground_truth": False,
         "segmentation_protocol_status": "draft",
         "capacity_mode": "constant",
-        "capacity_ah": float(capacity_ah),
+        "capacity_ah": REFERENCE_CAPACITY_AH,
         "soc_initial": 1.0,
         "soc_initial_source": "protocol_full_charge_assumption",
         "current_sign": "positive_charge_negative_discharge",
         "integration_method": "trapezoidal",
+        "screening_unit": "anchor_window",
         "label_source": LABEL_SOURCE,
         "protocol_sha256": protocol_sha,
         "git_revision": get_full_commit_hash(repo_root),

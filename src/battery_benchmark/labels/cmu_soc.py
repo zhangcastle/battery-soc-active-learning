@@ -7,6 +7,12 @@ import pandas as pd
 
 
 LABEL_SOURCE = "cmu_coulomb_counted_constant_capacity_reference_v0"
+REFERENCE_CAPACITY_AH = 3.0
+
+
+def validate_cmu_reference_capacity(capacity_ah: float) -> None:
+    if not np.isfinite(capacity_ah) or float(capacity_ah) != REFERENCE_CAPACITY_AH:
+        raise ValueError("CMU constant-capacity reference v0 requires capacity_ah=3.0")
 
 
 def integrate_cmu_candidate_soc(
@@ -16,8 +22,7 @@ def integrate_cmu_candidate_soc(
     soc_initial: float = 1.0,
 ) -> pd.DataFrame:
     """Integrate one candidate independently using trapezoidal current integration."""
-    if not np.isfinite(capacity_ah) or capacity_ah <= 0:
-        raise ValueError("capacity_ah must be finite and positive")
+    validate_cmu_reference_capacity(capacity_ah)
     if rows.empty:
         raise ValueError("candidate rows must not be empty")
 
