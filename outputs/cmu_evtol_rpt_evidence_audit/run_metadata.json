@@ -1,0 +1,60 @@
+{
+  "audit_status": "draft_evidence_only",
+  "article_id": "14226830",
+  "dataset_version": "3",
+  "raw_loader_schema_version": "cmu_evtol_kilthub_v3_raw_v0.1",
+  "cells": [
+    "VAH01",
+    "VAH17",
+    "VAH27"
+  ],
+  "inputs": {
+    "VAH01": {
+      "main_file": "VAH01.csv",
+      "main_sha256": "596ab1e1e80eeac3509f789609f751527c2073a4310deec8274cbfaf4fef39c4",
+      "impedance_file": "VAH01_impedance.csv",
+      "impedance_sha256": "f92a2e6b141d732863fbf5ba09e8867c073f15df2d35c80c83887051a1d31b25"
+    },
+    "VAH17": {
+      "main_file": "VAH17.csv",
+      "main_sha256": "a20cf42e2a58eed8dff3a1d54816012c043664dbf4cfdcee61bf86bd5048b4d8",
+      "impedance_file": "VAH17_impedance.csv",
+      "impedance_sha256": "543f86f5ed7558833311a145b3ae57bf56916f01eb6223e873711aca48908a29"
+    },
+    "VAH27": {
+      "main_file": "VAH27.csv",
+      "main_sha256": "c9a2fcdb18a6265cd5b2e0ccba8afc7d5a4051e6bf56590340834df2304a137f",
+      "impedance_file": "VAH27_impedance.csv",
+      "impedance_sha256": "76ab678e83be9c5d51f8c4a3c9b7fb0c68bc20ef8479331adfe67bf8b1d7a4da"
+    }
+  },
+  "paper_derived_priors": {
+    "rated_capacity_ah": 3.0,
+    "nominal_c5_current_a": -0.6,
+    "broad_discharge_power_w": [
+      0.2,
+      8.0
+    ],
+    "broad_fragment_min_duration_s": 900.0,
+    "near_c5_current_a": [
+      -0.75,
+      -0.45
+    ],
+    "strong_start_voltage_v": 4.1,
+    "strong_end_voltage_v": 2.55,
+    "strong_discharged_ah": [
+      2.4,
+      3.5
+    ],
+    "strong_low_rate_fraction": 0.7,
+    "resistance_interruption_max_abs_current_a": 0.15,
+    "resistance_interruption_max_duration_s": 120.0
+  },
+  "protocol_sha256": "391c3d3f3c7e7a72c69dc8b65b68793be2f61d4c5f904cf0cd116f15dd9e3b00",
+  "git_revision": "68ff45edc9f7094fe928d0794bda70f31e42226b",
+  "git_dirty": true,
+  "generated_at_utc": "2026-07-21T11:52:26.321565+00:00",
+  "cycle_number_role": "auxiliary_evidence_only",
+  "formal_rpt_ids_emitted": false,
+  "capacity_observations_emitted": false
+}

@@ -1,0 +1,108 @@
+{
+  "VAH01": {
+    "audit_status_counts": {
+      "strong_rpt_evidence": 18
+    },
+    "diagnostic_capacity_range_ah": [
+      2.5172236016536957,
+      3.089428394721103
+    ],
+    "impedance": {
+      "file": "VAH01_impedance.csv",
+      "sha256": "f92a2e6b141d732863fbf5ba09e8867c073f15df2d35c80c83887051a1d31b25",
+      "measurement_count": 17,
+      "cycle_numbers": [
+        1,
+        52,
+        103,
+        154,
+        205,
+        256,
+        307,
+        358,
+        409,
+        460,
+        511,
+        562,
+        613,
+        664,
+        715,
+        766,
+        817
+      ],
+      "duplicate_cycle_number_count": 0,
+      "candidate_cycle_number_overlap_count": 1,
+      "mapping_status": "ambiguous_auxiliary_only_no_direct_join"
+    }
+  },
+  "VAH17": {
+    "audit_status_counts": {
+      "strong_rpt_evidence": 21
+    },
+    "diagnostic_capacity_range_ah": [
+      2.4356558900509073,
+      3.112055598801935
+    ],
+    "impedance": {
+      "file": "VAH17_impedance.csv",
+      "sha256": "543f86f5ed7558833311a145b3ae57bf56916f01eb6223e873711aca48908a29",
+      "measurement_count": 20,
+      "cycle_numbers": [
+        1,
+        52,
+        103,
+        154,
+        205,
+        256,
+        307,
+        358,
+        409,
+        460,
+        511,
+        562,
+        613,
+        664,
+        715,
+        766,
+        817,
+        868,
+        919,
+        970
+      ],
+      "duplicate_cycle_number_count": 0,
+      "candidate_cycle_number_overlap_count": 1,
+      "mapping_status": "ambiguous_auxiliary_only_no_direct_join"
+    }
+  },
+  "VAH27": {
+    "audit_status_counts": {
+      "strong_rpt_evidence": 13
+    },
+    "diagnostic_capacity_range_ah": [
+      2.5837635475105714,
+      3.1206023717775433
+    ],
+    "impedance": {
+      "file": "VAH27_impedance.csv",
+      "sha256": "76ab678e83be9c5d51f8c4a3c9b7fb0c68bc20ef8479331adfe67bf8b1d7a4da",
+      "measurement_count": 12,
+      "cycle_numbers": [
+        1,
+        52,
+        103,
+        154,
+        205,
+        256,
+        307,
+        358,
+        409,
+        460,
+        511,
+        562
+      ],
+      "duplicate_cycle_number_count": 0,
+      "candidate_cycle_number_overlap_count": 1,
+      "mapping_status": "ambiguous_auxiliary_only_no_direct_join"
+    }
+  }
+}

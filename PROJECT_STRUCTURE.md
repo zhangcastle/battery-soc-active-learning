@@ -269,6 +269,7 @@ configs/
 | `inventory_cmu_evtol_raw.py` | CMU Version 3 主时序/impedance 资产清单与 provenance |
 | `qc_cmu_evtol_raw.py` | CMU Version 3 顺序式 per-cell continuous-block QC 汇总 |
 | `audit_cmu_evtol_phase_evidence.py` | CMU 代表性 cells 的 mission/phase reconstruction 描述性证据审计（不生成正式标签） |
+| `audit_cmu_evtol_rpt_evidence.py` | CMU baseline cells 的 broad RPT 证据审计（不生成正式 capacity observations） |
 | `build_cmu_evtol_pipeline_v0.py` | CMU baseline raw → diagnostic candidates → constant-capacity SOC development 管线 |
 | `register_external_repo.py` | clone 外部仓库并记录到 registry |
 | `audit_external_repo.py` | 记录外部仓库的 commit hash 和 license |
@@ -320,6 +321,7 @@ notebooks/
 | `test_cmu_evtol_mission_segmentation_protocol_v0_1.py` | CMU mission segmentation v0.1 草案状态、规则、cell coverage 与 evidence provenance |
 | `test_cmu_evtol_pipeline_v0.py` | CMU diagnostic candidate enumeration、development 输出与真实 baseline integration |
 | `test_cmu_soc.py` | CMU candidate 独立梯形积分、单位、时间与越界 QC |
+| `test_cmu_evtol_rpt_evidence.py` | CMU broad RPT discovery、内阻测量扰动与真实 baseline integration |
 
 运行：`.venv/bin/pytest tests/ -v`
 

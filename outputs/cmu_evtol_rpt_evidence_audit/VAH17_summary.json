@@ -1,0 +1,39 @@
+{
+  "audit_status_counts": {
+    "strong_rpt_evidence": 21
+  },
+  "diagnostic_capacity_range_ah": [
+    2.4356558900509073,
+    3.112055598801935
+  ],
+  "impedance": {
+    "file": "VAH17_impedance.csv",
+    "sha256": "543f86f5ed7558833311a145b3ae57bf56916f01eb6223e873711aca48908a29",
+    "measurement_count": 20,
+    "cycle_numbers": [
+      1,
+      52,
+      103,
+      154,
+      205,
+      256,
+      307,
+      358,
+      409,
+      460,
+      511,
+      562,
+      613,
+      664,
+      715,
+      766,
+      817,
+      868,
+      919,
+      970
+    ],
+    "duplicate_cycle_number_count": 0,
+    "candidate_cycle_number_overlap_count": 1,
+    "mapping_status": "ambiguous_auxiliary_only_no_direct_join"
+  }
+}
