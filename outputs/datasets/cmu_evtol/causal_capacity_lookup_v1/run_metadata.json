@@ -1,0 +1,43 @@
+{
+  "dataset_name": "CMU eVTOL Battery Dataset",
+  "article_id": "14226830",
+  "dataset_version": "3",
+  "raw_loader_schema_version": "cmu_evtol_kilthub_v3_raw_v0.1",
+  "lookup_protocol_version": "cmu_evtol_causal_capacity_lookup_v1",
+  "lookup_key": "cell_id + strict source_row order",
+  "selection_rule": "latest_eligible_rpt_with_end_source_row_strictly_less_than_mission_start_source_row",
+  "mission_identity_source": "development_candidate_id",
+  "mission_input_status": "diagnostic_screening_match",
+  "formal_mission_labels": false,
+  "generator": "scripts/datasets/cmu_evtol/build_causal_capacity_lookup.py",
+  "lookup_protocol_path": "configs/datasets/cmu_evtol/protocols/cmu_evtol_causal_capacity_lookup_v1.yaml",
+  "lookup_protocol_sha256": "6c1aedd68bb1440ba166958451e322ccbc91de912c2b2fabaa57b86ab6227010",
+  "mission_protocol_path": "configs/datasets/cmu_evtol/protocols/cmu_evtol_mission_segmentation_v0_1.yaml",
+  "mission_protocol_sha256": "a3129dd0c6243917dde6853636fb4f298d99ee7b479947ffb575bfc1a26154fa",
+  "rpt_observations_path": "outputs/cmu_evtol_rpt_capacity_v1/capacity_observations.csv",
+  "rpt_observations_sha256": "a54f1c99a1b684eec7679b7bb0c8ebb68c36eb34b076464a70f349cfaa5e5e1e",
+  "rpt_observation_count": 52,
+  "raw_inputs": {
+    "VAH01": {
+      "path": "data/raw/cmu_evtol_vtc6/figshare_14226830/VAH01.csv",
+      "sha256": "596ab1e1e80eeac3509f789609f751527c2073a4310deec8274cbfaf4fef39c4"
+    },
+    "VAH17": {
+      "path": "data/raw/cmu_evtol_vtc6/figshare_14226830/VAH17.csv",
+      "sha256": "a20cf42e2a58eed8dff3a1d54816012c043664dbf4cfdcee61bf86bd5048b4d8"
+    },
+    "VAH27": {
+      "path": "data/raw/cmu_evtol_vtc6/figshare_14226830/VAH27.csv",
+      "sha256": "c9a2fcdb18a6265cd5b2e0ccba8afc7d5a4051e6bf56590340834df2304a137f"
+    }
+  },
+  "git_revision": "47b2022f3b5e4a6ae65c01c2f2383be538cde966",
+  "git_dirty": true,
+  "generated_at_utc": "2026-07-21T14:06:43.016886+00:00",
+  "nominal_capacity_ah": 3.0,
+  "interpolation_used": false,
+  "future_information_used": false,
+  "cycle_number_used_for_ordering": false,
+  "soc_recomputed": false,
+  "dynamic_capacity_soc_generated": false
+}

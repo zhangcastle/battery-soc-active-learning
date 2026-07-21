@@ -1,0 +1,50 @@
+{
+  "lookup_row_count": 2380,
+  "capacity_source_counts": {
+    "observed_rpt": 2380
+  },
+  "anomaly_counts": {
+    "unmatched_source_rpt_count": 0,
+    "duplicate_lookup_row_count": 0,
+    "future_leakage_count": 0,
+    "cross_cell_usage_count": 0,
+    "ineligible_rpt_usage_count": 0,
+    "missing_mission_count": 0,
+    "unexpected_mission_count": 0
+  },
+  "coverage_by_cell": [
+    {
+      "cell_id": "VAH01",
+      "mission_count": 828,
+      "nominal_fallback_count": 0,
+      "nominal_fallback_fraction": 0.0,
+      "observed_rpt_count": 828,
+      "observed_rpt_fraction": 1.0,
+      "rpt_observations_used": 17,
+      "minimum_causal_lag_source_rows": 286,
+      "maximum_causal_lag_source_rows": 94163
+    },
+    {
+      "cell_id": "VAH17",
+      "mission_count": 980,
+      "nominal_fallback_count": 0,
+      "nominal_fallback_fraction": 0.0,
+      "observed_rpt_count": 980,
+      "observed_rpt_fraction": 1.0,
+      "rpt_observations_used": 20,
+      "minimum_causal_lag_source_rows": 222,
+      "maximum_causal_lag_source_rows": 16831
+    },
+    {
+      "cell_id": "VAH27",
+      "mission_count": 572,
+      "nominal_fallback_count": 0,
+      "nominal_fallback_fraction": 0.0,
+      "observed_rpt_count": 572,
+      "observed_rpt_fraction": 1.0,
+      "rpt_observations_used": 12,
+      "minimum_causal_lag_source_rows": 225,
+      "maximum_causal_lag_source_rows": 16176
+    }
+  ]
+}

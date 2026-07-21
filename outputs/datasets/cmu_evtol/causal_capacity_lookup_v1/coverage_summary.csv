@@ -1,0 +1,4 @@
+cell_id,mission_count,nominal_fallback_count,nominal_fallback_fraction,observed_rpt_count,observed_rpt_fraction,rpt_observations_used,minimum_causal_lag_source_rows,maximum_causal_lag_source_rows
+VAH01,828,0,0.0,828,1.0,17,286,94163
+VAH17,980,0,0.0,980,1.0,20,222,16831
+VAH27,572,0,0.0,572,1.0,12,225,16176

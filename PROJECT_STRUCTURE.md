@@ -63,9 +63,10 @@ battery-soc-transfer-benchmark/
 - Normalization, sequence construction, training, metrics, generic models, and
   transfer methods remain shared because they have no dataset- or paper-owned
   scientific rule.
-- Generated outputs are ignored by Git. Formal producers record dataset,
-  protocol/config, generator, input hashes, generation time, and Git revision
-  plus dirty state in metadata.
+- Reviewable generated outputs, including CMU QC and lookup artifacts, may be
+  committed for verification. Producers record dataset, protocol/config,
+  generator, input hashes, generation time, and Git revision plus dirty state
+  in metadata.
 
 Historical top-level output directories are legacy artifacts. New commands use
 the namespaced layout documented in `outputs/README.md`.
