@@ -135,15 +135,16 @@ def _classify_reasons(
         for code in configured[status]
         if code in triggered
     ]
-    hard = [code for code in configured["hard_reject"] if code in triggered]
-    uncertain = [code for code in configured["uncertain"] if code in triggered]
-    if hard:
-        status, primary = "hard_reject", hard[0]
-    elif uncertain:
-        status, primary = "uncertain", uncertain[0]
-    else:
-        status, primary = "diagnostic_screening_match", configured["accept"][0]
+    status = primary = None
+    for configured_status in protocol["classification"]["precedence"]:
+        matching = [code for code in configured[configured_status] if code in triggered]
+        if matching:
+            status, primary = configured_status, matching[0]
+            break
+    if status is None:
+        status, primary = "accept", configured["accept"][0]
         ordered = [primary]
+    status = "diagnostic_screening_match" if status == "accept" else status
     return status, primary, json.dumps(ordered, separators=(",", ":"))
 
 
@@ -184,7 +185,7 @@ def enumerate_diagnostic_candidates(runs: pd.DataFrame, protocol: dict) -> pd.Da
             ))
             if not thresholds_match:
                 uncertain_reasons.append("power_or_duration_near_but_not_within_screening_range")
-            if not hard_reasons and thresholds_match and claimed_runs.intersection(range(index, index + 3)):
+            if thresholds_match and claimed_runs.intersection(range(index, index + 3)):
                 uncertain_reasons.append("overlaps_earlier_candidate")
             if not hard_reasons and not uncertain_reasons:
                 claimed_runs.update(range(index, index + 3))

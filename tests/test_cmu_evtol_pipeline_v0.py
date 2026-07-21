@@ -110,6 +110,18 @@ def test_all_triggered_reasons_are_unique_and_primary_uses_protocol_order() -> N
     assert len(reasons) == len(set(reasons))
 
 
+def test_overlap_reason_is_retained_when_hard_reject_wins() -> None:
+    runs = contiguous_ns_runs(_canonical())
+    overlap = pd.concat([runs, runs.iloc[[1, 2]]], ignore_index=True)
+    overlap.loc[3:, "continuous_block_id"] = 1
+    result = enumerate_diagnostic_candidates(overlap, _protocol()).iloc[1]
+    reasons = json.loads(result["all_reason_codes"])
+    assert result["screening_status"] == "hard_reject"
+    assert result["primary_reason"] == "crosses_continuous_block"
+    assert reasons == ["crosses_continuous_block", "overlaps_earlier_candidate"]
+    assert len(reasons) == len(set(reasons))
+
+
 def test_empty_anchor_and_no_match_outputs_have_stable_schema() -> None:
     canonical = _canonical(powers=[-16.0] * 9)
     empty_manifest = enumerate_diagnostic_candidates(contiguous_ns_runs(canonical), _protocol())
