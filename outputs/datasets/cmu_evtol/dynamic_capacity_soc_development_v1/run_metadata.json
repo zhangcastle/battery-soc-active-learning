@@ -1,0 +1,49 @@
+{
+  "dataset_name": "CMU eVTOL Battery Dataset",
+  "article_id": "14226830",
+  "dataset_version": "3",
+  "raw_loader_schema_version": "cmu_evtol_kilthub_v3_raw_v0.1",
+  "dynamic_soc_protocol_version": "cmu_evtol_dynamic_capacity_soc_development_v1",
+  "protocol_path": "configs/datasets/cmu_evtol/protocols/cmu_evtol_dynamic_capacity_soc_development_v1.yaml",
+  "protocol_sha256": "8c2f25d18f5578b7ed50fee0e16a6530df3d660a17f2ae8437ca75ea9ece7c9f",
+  "fixed_soc_baseline_version": "cmu_coulomb_counted_constant_capacity_reference_v0",
+  "fixed_soc_baseline_path": "/Users/yue/Research/battery-soc-transfer-benchmark/src/battery_benchmark/datasets/cmu_evtol/soc.py",
+  "fixed_soc_baseline_sha256": "48e89eb2d618a368f6f1b93450bd294308c62ef58320fd71ed480775ae023f6c",
+  "capacity_lookup_version": "cmu_evtol_causal_capacity_lookup_v1",
+  "capacity_lookup_path": "outputs/datasets/cmu_evtol/causal_capacity_lookup_v1/capacity_lookup.csv",
+  "capacity_lookup_sha256": "b0a810abbb483194ca24c9b014cffe4c1e1d24c542ae242e2dd6136482eee88a",
+  "rpt_observations_path": "outputs/cmu_evtol_rpt_capacity_v1/capacity_observations.csv",
+  "rpt_observations_sha256": "a54f1c99a1b684eec7679b7bb0c8ebb68c36eb34b076464a70f349cfaa5e5e1e",
+  "mission_protocol_path": "configs/datasets/cmu_evtol/protocols/cmu_evtol_mission_segmentation_v0_1.yaml",
+  "mission_protocol_sha256": "a3129dd0c6243917dde6853636fb4f298d99ee7b479947ffb575bfc1a26154fa",
+  "raw_inputs": {
+    "VAH01": {
+      "path": "data/raw/cmu_evtol_vtc6/figshare_14226830/VAH01.csv",
+      "sha256": "596ab1e1e80eeac3509f789609f751527c2073a4310deec8274cbfaf4fef39c4"
+    },
+    "VAH17": {
+      "path": "data/raw/cmu_evtol_vtc6/figshare_14226830/VAH17.csv",
+      "sha256": "a20cf42e2a58eed8dff3a1d54816012c043664dbf4cfdcee61bf86bd5048b4d8"
+    },
+    "VAH27": {
+      "path": "data/raw/cmu_evtol_vtc6/figshare_14226830/VAH27.csv",
+      "sha256": "c9a2fcdb18a6265cd5b2e0ccba8afc7d5a4051e6bf56590340834df2304a137f"
+    }
+  },
+  "generator": "scripts/datasets/cmu_evtol/build_dynamic_capacity_soc_development_v1.py",
+  "git_revision": "6e4d8e59b2fccc0659055013372b66b70b15da1a",
+  "git_dirty": true,
+  "generated_at_utc": "2026-07-21T14:53:11.044189+00:00",
+  "target_cells": [
+    "VAH01",
+    "VAH17",
+    "VAH27"
+  ],
+  "interpolation_used": false,
+  "future_information_used": false,
+  "within_candidate_capacity_change": false,
+  "fixed_soc_outputs_modified": false,
+  "formal_mission_labels": false,
+  "mission_identity_source": "development_candidate_id",
+  "soc_clipping_applied": false
+}

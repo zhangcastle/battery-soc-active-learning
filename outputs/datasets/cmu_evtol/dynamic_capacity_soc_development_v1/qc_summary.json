@@ -1,0 +1,66 @@
+{
+  "row_count": 539657,
+  "candidate_count": 2380,
+  "cells": {
+    "VAH01": {
+      "unmatched_lookup_count": 0,
+      "duplicate_lookup_match_count": 0,
+      "unused_lookup_count": 0,
+      "cross_cell_lookup_count": 0,
+      "missing_capacity_count": 0,
+      "within_candidate_capacity_change_count": 0,
+      "invalid_rpt_provenance_count": 0,
+      "future_capacity_usage_count": 0,
+      "row_alignment_mismatch_count": 0,
+      "fixed_dynamic_row_count_mismatch_count": 0,
+      "nonfinite_soc_count": 0,
+      "soc_out_of_allowed_range_count": 0,
+      "dynamic_recalculation_mismatch_count": 0
+    },
+    "VAH17": {
+      "unmatched_lookup_count": 0,
+      "duplicate_lookup_match_count": 0,
+      "unused_lookup_count": 0,
+      "cross_cell_lookup_count": 0,
+      "missing_capacity_count": 0,
+      "within_candidate_capacity_change_count": 0,
+      "invalid_rpt_provenance_count": 0,
+      "future_capacity_usage_count": 0,
+      "row_alignment_mismatch_count": 0,
+      "fixed_dynamic_row_count_mismatch_count": 0,
+      "nonfinite_soc_count": 0,
+      "soc_out_of_allowed_range_count": 0,
+      "dynamic_recalculation_mismatch_count": 0
+    },
+    "VAH27": {
+      "unmatched_lookup_count": 0,
+      "duplicate_lookup_match_count": 0,
+      "unused_lookup_count": 0,
+      "cross_cell_lookup_count": 0,
+      "missing_capacity_count": 0,
+      "within_candidate_capacity_change_count": 0,
+      "invalid_rpt_provenance_count": 0,
+      "future_capacity_usage_count": 0,
+      "row_alignment_mismatch_count": 0,
+      "fixed_dynamic_row_count_mismatch_count": 0,
+      "nonfinite_soc_count": 0,
+      "soc_out_of_allowed_range_count": 0,
+      "dynamic_recalculation_mismatch_count": 0
+    }
+  },
+  "aggregate_counts": {
+    "unmatched_lookup_count": 0,
+    "duplicate_lookup_match_count": 0,
+    "unused_lookup_count": 0,
+    "cross_cell_lookup_count": 0,
+    "missing_capacity_count": 0,
+    "within_candidate_capacity_change_count": 0,
+    "invalid_rpt_provenance_count": 0,
+    "future_capacity_usage_count": 0,
+    "row_alignment_mismatch_count": 0,
+    "fixed_dynamic_row_count_mismatch_count": 0,
+    "nonfinite_soc_count": 0,
+    "soc_out_of_allowed_range_count": 0,
+    "dynamic_recalculation_mismatch_count": 0
+  }
+}
