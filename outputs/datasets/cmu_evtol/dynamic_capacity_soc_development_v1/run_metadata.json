@@ -5,7 +5,7 @@
   "raw_loader_schema_version": "cmu_evtol_kilthub_v3_raw_v0.1",
   "dynamic_soc_protocol_version": "cmu_evtol_dynamic_capacity_soc_development_v1",
   "protocol_path": "configs/datasets/cmu_evtol/protocols/cmu_evtol_dynamic_capacity_soc_development_v1.yaml",
-  "protocol_sha256": "8c2f25d18f5578b7ed50fee0e16a6530df3d660a17f2ae8437ca75ea9ece7c9f",
+  "protocol_sha256": "090258c188abffb393a3909d577d1e64ba803d2c44f34443b2b6c5bd56433a3c",
   "fixed_soc_baseline_version": "cmu_coulomb_counted_constant_capacity_reference_v0",
   "fixed_soc_baseline_path": "/Users/yue/Research/battery-soc-transfer-benchmark/src/battery_benchmark/datasets/cmu_evtol/soc.py",
   "fixed_soc_baseline_sha256": "48e89eb2d618a368f6f1b93450bd294308c62ef58320fd71ed480775ae023f6c",
@@ -31,9 +31,9 @@
     }
   },
   "generator": "scripts/datasets/cmu_evtol/build_dynamic_capacity_soc_development_v1.py",
-  "git_revision": "6e4d8e59b2fccc0659055013372b66b70b15da1a",
+  "git_revision": "36aeeecca071dc4f7d7e95dc7240f6e8547c5442",
   "git_dirty": true,
-  "generated_at_utc": "2026-07-21T14:53:11.044189+00:00",
+  "generated_at_utc": "2026-07-22T09:57:29.975208+00:00",
   "target_cells": [
     "VAH01",
     "VAH17",

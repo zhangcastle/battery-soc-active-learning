@@ -31,6 +31,8 @@ from battery_benchmark.datasets.cmu_evtol.development_pipeline_v0 import (  # no
 from battery_benchmark.datasets.cmu_evtol.dynamic_soc import (  # noqa: E402
     DYNAMIC_SOC_PROTOCOL_VERSION,
     build_dynamic_soc_rows,
+    combine_qc,
+    qc_has_errors,
     validate_dynamic_soc,
 )
 from battery_benchmark.datasets.cmu_evtol.raw import (  # noqa: E402
@@ -112,10 +114,14 @@ def build_outputs(
             raise ValueError(f"Asset inventory SHA mismatch for {cell_id}")
         manifest = enumerate_diagnostic_candidates(contiguous_ns_runs(result.data), mission_protocol)
         cell_lookup = lookup.loc[lookup["cell_id"].eq(cell_id)].copy()
-        dynamic, comparison, join_qc = build_dynamic_soc_rows(result.data, manifest, cell_lookup)
-        qc = validate_dynamic_soc(dynamic, comparison, cell_lookup, manifest, observations)
-        qc.update(join_qc)
-        if any(qc.values()):
+        fixed, dynamic, comparison, join_qc = build_dynamic_soc_rows(
+            result.data, manifest, cell_lookup
+        )
+        validator_qc = validate_dynamic_soc(
+            fixed, dynamic, comparison, cell_lookup, manifest, observations
+        )
+        qc = combine_qc(join_qc, validator_qc)
+        if qc_has_errors(qc):
             raise ValueError(f"Dynamic SOC QC failed for {cell_id}: {qc}")
 
         dynamic.to_parquet(output_root / f"{cell_id}_dynamic_soc.parquet", index=False)
@@ -146,7 +152,7 @@ def build_outputs(
             "path": str(raw_root / f"{cell_id}.csv"),
             "sha256": result.metadata["source_sha256"],
         }
-        del result, dynamic
+        del result, fixed, dynamic
 
     combined = pd.concat(all_comparisons, ignore_index=True)
     combined.to_parquet(output_root / "fixed_vs_dynamic_comparison.parquet", index=False)
@@ -156,7 +162,11 @@ def build_outputs(
         "candidate_count": int(combined[["cell_id", "mission_cycle_id"]].drop_duplicates().shape[0]),
         "cells": cell_qc,
         "aggregate_counts": {
-            key: sum(qc[key] for qc in cell_qc.values()) for key in next(iter(cell_qc.values()))
+            namespace: {
+                key: sum(qc[namespace][key] for qc in cell_qc.values())
+                for key in next(iter(cell_qc.values()))[namespace]
+            }
+            for namespace in ("join_qc", "validator_qc")
         },
     }
     (output_root / "qc_summary.json").write_text(json.dumps(qc_summary, indent=2), encoding="utf-8")

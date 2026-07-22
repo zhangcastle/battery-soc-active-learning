@@ -41,7 +41,7 @@ def build_dynamic_soc_rows(
     canonical: pd.DataFrame,
     candidate_manifest: pd.DataFrame,
     lookup: pd.DataFrame,
-) -> tuple[pd.DataFrame, pd.DataFrame, dict[str, int]]:
+) -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame, dict[str, int]]:
     """Build dynamic SOC rows; fixed v0 remains the sole integration implementation."""
     matched = candidate_manifest.loc[
         candidate_manifest["screening_status"].eq("diagnostic_screening_match")
@@ -113,15 +113,50 @@ def build_dynamic_soc_rows(
     comparison["abs_soc_difference"] = comparison["soc_difference"].abs()
     comparison["capacity_difference_from_3ah"] = comparison["capacity_ah"] - 3.0
     comparison = comparison.loc[:, COMPARISON_COLUMNS]
-    return dynamic.loc[:, DYNAMIC_OUTPUT_COLUMNS], comparison, join_qc
+    return fixed, dynamic.loc[:, DYNAMIC_OUTPUT_COLUMNS], comparison, join_qc
+
+
+def combine_qc(join_qc: dict[str, int], validator_qc: dict[str, int]) -> dict[str, dict[str, int]]:
+    """Keep independently produced QC namespaces separate."""
+    return {"join_qc": dict(join_qc), "validator_qc": dict(validator_qc)}
+
+
+def qc_has_errors(qc: dict[str, object]) -> bool:
+    """Return True if any nested QC count is non-zero."""
+    return any(
+        qc_has_errors(value) if isinstance(value, dict) else bool(value)
+        for value in qc.values()
+    )
+
+
+def _series_mismatch_count(left: pd.Series, right: pd.Series) -> int:
+    left, right = left.reset_index(drop=True), right.reset_index(drop=True)
+    common = min(len(left), len(right))
+    mismatch = ~(
+        left.iloc[:common].eq(right.iloc[:common])
+        | (left.iloc[:common].isna() & right.iloc[:common].isna())
+    )
+    return int(mismatch.sum()) + abs(len(left) - len(right))
+
+
+def _frame_mismatch_count(left: pd.DataFrame, right: pd.DataFrame) -> int:
+    left, right = left.reset_index(drop=True), right.reset_index(drop=True)
+    common = min(len(left), len(right))
+    equal = left.iloc[:common].eq(right.iloc[:common]) | (
+        left.iloc[:common].isna() & right.iloc[:common].isna()
+    )
+    return int((~equal).any(axis=1).sum()) + abs(len(left) - len(right))
 
 
 def validate_dynamic_soc(
+    fixed: pd.DataFrame,
     dynamic: pd.DataFrame,
     comparison: pd.DataFrame,
     lookup: pd.DataFrame,
     candidate_manifest: pd.DataFrame,
     observations: pd.DataFrame,
+    *,
+    raise_on_error: bool = True,
 ) -> dict[str, int]:
     """Independently validate joins, provenance, alignment, and SOC arithmetic."""
     lookup_qc = validate_lookup(lookup, candidate_manifest, observations)
@@ -149,20 +184,50 @@ def validate_dynamic_soc(
             ~np.isclose(rows["soc_dynamic"], expected, rtol=0.0, atol=SOC_ABS_TOLERANCE)
         ).sum())
 
-    alignment = dynamic[[*KEY, "source_row", "time_s"]].reset_index(drop=True)
-    compared = comparison[[*KEY, "source_row"]].reset_index(drop=True)
-    return {
+    fixed_identity = fixed[["cell_id", "mission_cycle_id", "source_row"]]
+    dynamic_identity = dynamic[["cell_id", "mission_cycle_id", "source_row"]]
+    comparison_identity = comparison[["cell_id", "mission_cycle_id", "source_row"]]
+    current_a_mismatch = _series_mismatch_count(fixed["I_mA"] / 1000.0, dynamic["current_a"])
+    voltage_v_mismatch = _series_mismatch_count(fixed["Ecell_V"], dynamic["voltage_v"])
+    lookup_qc_names = {
+        "unmatched_source_rpt_count": "lookup_unmatched_source_rpt_count",
+        "duplicate_lookup_row_count": "lookup_duplicate_row_count",
+        "future_leakage_count": "future_capacity_usage_count",
+        "cross_cell_usage_count": "cross_cell_lookup_count",
+        "ineligible_rpt_usage_count": "ineligible_rpt_usage_count",
+        "non_latest_rpt_assignment_count": "non_latest_rpt_assignment_count",
+        "capacity_value_mismatch_count": "capacity_value_mismatch_count",
+        "rpt_provenance_mismatch_count": "invalid_rpt_provenance_count",
+        "causal_lag_mismatch_count": "causal_lag_mismatch_count",
+        "invalid_fallback_row_count": "invalid_fallback_row_count",
+        "missing_mission_count": "lookup_missing_mission_count",
+        "unexpected_mission_count": "lookup_unexpected_mission_count",
+    }
+    qc = {
         "unmatched_lookup_count": len(set(map(tuple, keys.to_numpy())) - set(map(tuple, lookup_keys.to_numpy()))),
         "duplicate_lookup_match_count": int(lookup.duplicated(KEY).sum()),
         "unused_lookup_count": len(set(map(tuple, lookup_keys.to_numpy())) - set(map(tuple, keys.to_numpy()))),
-        "cross_cell_lookup_count": lookup_qc["cross_cell_usage_count"],
         "missing_capacity_count": int(dynamic["capacity_ah"].isna().sum()),
         "within_candidate_capacity_change_count": capacity_changes,
-        "invalid_rpt_provenance_count": int(provenance_missing) + lookup_qc["rpt_provenance_mismatch_count"],
-        "future_capacity_usage_count": future + lookup_qc["future_leakage_count"],
-        "row_alignment_mismatch_count": int(not alignment[[*KEY, "source_row"]].equals(compared)),
-        "fixed_dynamic_row_count_mismatch_count": abs(len(dynamic) - len(comparison)),
+        "dynamic_missing_rpt_provenance_row_count": int(provenance_missing),
+        "dynamic_future_provenance_row_count": future,
+        "fixed_dynamic_row_count_mismatch_count": abs(len(fixed) - len(dynamic)),
+        "fixed_comparison_row_count_mismatch_count": abs(len(fixed) - len(comparison)),
+        "fixed_dynamic_identity_order_mismatch_count": _frame_mismatch_count(fixed_identity, dynamic_identity),
+        "fixed_comparison_identity_order_mismatch_count": _frame_mismatch_count(fixed_identity, comparison_identity),
+        "fixed_dynamic_time_mismatch_count": _series_mismatch_count(fixed["time_s"], dynamic["time_s"]),
+        "fixed_dynamic_current_mismatch_count": _series_mismatch_count(fixed["I_mA"], dynamic["I_mA"]),
+        "fixed_dynamic_current_alias_mismatch_count": current_a_mismatch,
+        "fixed_dynamic_voltage_mismatch_count": _series_mismatch_count(fixed["Ecell_V"], dynamic["Ecell_V"]),
+        "fixed_dynamic_voltage_alias_mismatch_count": voltage_v_mismatch,
+        "fixed_comparison_soc_mismatch_count": _series_mismatch_count(
+            fixed["soc_reference_v0"], comparison["soc_fixed_3ah"]
+        ),
         "nonfinite_soc_count": int((~np.isfinite(dynamic["soc_dynamic"])).sum()),
         "soc_out_of_allowed_range_count": int(((dynamic["soc_dynamic"] < 0) | (dynamic["soc_dynamic"] > 1)).sum()),
         "dynamic_recalculation_mismatch_count": recalculation_mismatch,
     }
+    qc.update({output_name: lookup_qc[input_name] for input_name, output_name in lookup_qc_names.items()})
+    if raise_on_error and any(qc.values()):
+        raise ValueError(f"Dynamic SOC validation failed closed: {qc}")
+    return qc

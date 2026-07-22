@@ -16,6 +16,8 @@ from battery_benchmark.datasets.cmu_evtol.development_pipeline_v0 import (
 )
 from battery_benchmark.datasets.cmu_evtol.dynamic_soc import (
     build_dynamic_soc_rows,
+    combine_qc,
+    qc_has_errors,
     validate_dynamic_soc,
 )
 from battery_benchmark.datasets.cmu_evtol.raw import load_cmu_v3_main_file
@@ -79,7 +81,7 @@ def _lookup() -> pd.DataFrame:
 def test_three_ah_lookup_is_bitwise_equal_to_fixed_v0() -> None:
     canonical, manifest, lookup = _canonical(), _manifest(), _lookup()
     lookup["capacity_ah"] = 3.0
-    dynamic, comparison, _ = build_dynamic_soc_rows(canonical, manifest, lookup)
+    _, dynamic, comparison, _ = build_dynamic_soc_rows(canonical, manifest, lookup)
     fixed, _ = build_candidate_rows(canonical, manifest, capacity_ah=3.0)
     pd.testing.assert_series_equal(
         dynamic["soc_dynamic"], fixed["soc_reference_v0"], check_exact=True,
@@ -92,7 +94,9 @@ def test_three_ah_lookup_is_bitwise_equal_to_fixed_v0() -> None:
 
 
 def test_capacity_is_constant_per_candidate_and_changes_only_after_rpt() -> None:
-    dynamic, comparison, join_qc = build_dynamic_soc_rows(_canonical(), _manifest(), _lookup())
+    fixed, dynamic, comparison, join_qc = build_dynamic_soc_rows(
+        _canonical(), _manifest(), _lookup()
+    )
     assert not any(join_qc.values())
     capacities = dynamic.groupby("mission_cycle_id", sort=False)["capacity_ah"].unique()
     assert [values.tolist() for values in capacities] == [[3.0], [2.0], [4.0]]
@@ -100,12 +104,14 @@ def test_capacity_is_constant_per_candidate_and_changes_only_after_rpt() -> None
     assert endpoints.at["candidate-1", "soc_dynamic"] < endpoints.at["candidate-1", "soc_fixed_3ah"]
     assert endpoints.at["candidate-2", "soc_dynamic"] > endpoints.at["candidate-2", "soc_fixed_3ah"]
     assert not any(validate_dynamic_soc(
-        dynamic, comparison, _lookup(), _manifest(), _observations()
+        fixed, dynamic, comparison, _lookup(), _manifest(), _observations()
     ).values())
 
 
 def test_zero_current_soc_does_not_drift_with_capacity() -> None:
-    dynamic, _, _ = build_dynamic_soc_rows(_canonical(current_ma=0.0), _manifest(), _lookup())
+    _, dynamic, _, _ = build_dynamic_soc_rows(
+        _canonical(current_ma=0.0), _manifest(), _lookup()
+    )
     assert dynamic["soc_dynamic"].eq(1.0).all()
 
 
@@ -120,6 +126,100 @@ def test_missing_duplicate_and_cross_cell_lookup_fail_closed() -> None:
         build_dynamic_soc_rows(canonical, manifest, wrong_cell)
 
 
+def _valid_frames():
+    lookup, observations = _lookup(), _observations()
+    fixed, dynamic, comparison, _ = build_dynamic_soc_rows(_canonical(), _manifest(), lookup)
+    return fixed, dynamic, comparison, lookup, observations
+
+
+def _assert_rejected(
+    fixed: pd.DataFrame,
+    dynamic: pd.DataFrame,
+    comparison: pd.DataFrame,
+    lookup: pd.DataFrame,
+    observations: pd.DataFrame,
+    reason: str,
+) -> None:
+    with pytest.raises(ValueError, match=reason):
+        validate_dynamic_soc(
+            fixed, dynamic, comparison, lookup, _manifest(), observations
+        )
+
+
+def test_lookup_error_injections_fail_closed() -> None:
+    fixed, dynamic, comparison, lookup, observations = _valid_frames()
+
+    wrong_capacity = lookup.copy(); wrong_capacity.loc[1, "capacity_ah"] = 2.1
+    _assert_rejected(fixed, dynamic, comparison, wrong_capacity, observations, "capacity_value_mismatch_count")
+
+    foreign = observations.iloc[[0]].copy()
+    foreign.loc[:, ["rpt_id", "cell_id"]] = ["foreign-rpt", "VAH17"]
+    observations_with_foreign = pd.concat([observations, foreign], ignore_index=True)
+    wrong_cell = lookup.copy(); wrong_cell.loc[1, "source_rpt_id"] = "foreign-rpt"
+    _assert_rejected(fixed, dynamic, comparison, wrong_cell, observations_with_foreign, "cross_cell_lookup_count")
+
+    non_latest = lookup.copy()
+    r0 = observations.set_index("rpt_id").loc["r0"]
+    non_latest.loc[2, [
+        "source_rpt_id", "source_rpt_capacity_ah", "source_rpt_continuous_block_id",
+        "source_rpt_end_source_row", "source_rpt_end_time_s", "causal_lag",
+    ]] = ["r0", r0.capacity_net_ah, r0.continuous_block_id, r0.end_source_row,
+          r0.end_time_s, non_latest.loc[2, "mission_start_source_row"] - r0.end_source_row]
+    non_latest.loc[2, "capacity_ah"] = r0.capacity_net_ah
+    _assert_rejected(fixed, dynamic, comparison, non_latest, observations, "non_latest_rpt_assignment_count")
+
+    future = lookup.copy()
+    r1 = observations.set_index("rpt_id").loc["r1"]
+    future.loc[1, [
+        "source_rpt_id", "source_rpt_capacity_ah", "source_rpt_continuous_block_id",
+        "source_rpt_end_source_row", "source_rpt_end_time_s", "causal_lag",
+    ]] = ["r1", r1.capacity_net_ah, r1.continuous_block_id, r1.end_source_row,
+          r1.end_time_s, future.loc[1, "mission_start_source_row"] - r1.end_source_row]
+    future.loc[1, "capacity_ah"] = r1.capacity_net_ah
+    _assert_rejected(fixed, dynamic, comparison, future, observations, "future_capacity_usage_count")
+
+    wrong_lag = lookup.copy(); wrong_lag.loc[1, "causal_lag"] += 1
+    _assert_rejected(fixed, dynamic, comparison, wrong_lag, observations, "causal_lag_mismatch_count")
+
+    bad_fallback = lookup.copy(); bad_fallback.loc[0, "source_rpt_id"] = "r0"
+    _assert_rejected(fixed, dynamic, comparison, bad_fallback, observations, "invalid_fallback_row_count")
+
+
+@pytest.mark.parametrize(
+    ("target", "mutate", "reason"),
+    [
+        ("fixed", lambda frame: frame.iloc[:-1].copy(), "fixed_dynamic_row_count_mismatch_count"),
+        ("fixed", lambda frame: pd.concat([frame, frame.iloc[[0]]], ignore_index=True), "fixed_dynamic_row_count_mismatch_count"),
+        ("fixed", lambda frame: frame.iloc[[1, 0, *range(2, len(frame))]].reset_index(drop=True), "fixed_dynamic_identity_order_mismatch_count"),
+        ("fixed", lambda frame: frame.assign(source_row=frame["source_row"] + 1), "fixed_dynamic_identity_order_mismatch_count"),
+        ("fixed", lambda frame: frame.assign(time_s=frame["time_s"] + 0.5), "fixed_dynamic_time_mismatch_count"),
+        ("fixed", lambda frame: frame.assign(I_mA=frame["I_mA"] + 1.0), "fixed_dynamic_current_mismatch_count"),
+        ("fixed", lambda frame: frame.assign(Ecell_V=frame["Ecell_V"] + 0.01), "fixed_dynamic_voltage_mismatch_count"),
+        ("fixed", lambda frame: frame.assign(soc_reference_v0=frame["soc_reference_v0"] + 0.01), "fixed_comparison_soc_mismatch_count"),
+        ("comparison", lambda frame: frame.iloc[[1, 0, *range(2, len(frame))]].reset_index(drop=True), "fixed_comparison_identity_order_mismatch_count"),
+    ],
+)
+def test_fixed_and_comparison_alignment_error_injections_fail_closed(
+    target, mutate, reason,
+) -> None:
+    fixed, dynamic, comparison, lookup, observations = _valid_frames()
+    if target == "fixed":
+        fixed = mutate(fixed)
+    else:
+        comparison = mutate(comparison)
+    _assert_rejected(fixed, dynamic, comparison, lookup, observations, reason)
+
+
+def test_qc_namespaces_prevent_nonzero_overwrite() -> None:
+    combined = combine_qc(
+        {"cross_cell_lookup_count": 1},
+        {"cross_cell_lookup_count": 0},
+    )
+    assert combined["join_qc"]["cross_cell_lookup_count"] == 1
+    assert combined["validator_qc"]["cross_cell_lookup_count"] == 0
+    assert qc_has_errors(combined)
+
+
 @pytest.mark.integration
 def test_real_dynamic_soc_has_complete_alignment_and_zero_qc() -> None:
     if not RAW_ROOT.is_dir():
@@ -131,8 +231,12 @@ def test_real_dynamic_soc_has_complete_alignment_and_zero_qc() -> None:
         canonical = load_cmu_v3_main_file(RAW_ROOT / f"{cell_id}.csv").data
         manifest = enumerate_diagnostic_candidates(contiguous_ns_runs(canonical), protocol)
         cell_lookup = lookup.loc[lookup["cell_id"].eq(cell_id)]
-        dynamic, comparison, join_qc = build_dynamic_soc_rows(canonical, manifest, cell_lookup)
-        qc = validate_dynamic_soc(dynamic, comparison, cell_lookup, manifest, observations)
+        fixed, dynamic, comparison, join_qc = build_dynamic_soc_rows(
+            canonical, manifest, cell_lookup
+        )
+        qc = validate_dynamic_soc(
+            fixed, dynamic, comparison, cell_lookup, manifest, observations
+        )
         assert not any(join_qc.values())
         assert not any(qc.values())
         counts[cell_id] = comparison["mission_cycle_id"].nunique()

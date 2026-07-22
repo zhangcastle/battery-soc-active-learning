@@ -12,3 +12,13 @@ at 1.0 for every candidate, uses the existing positive-charge/negative-discharge
 trapezoidal integration, is not clipped, and retains out-of-range values for QC.
 An independent full-row recomputation uses absolute tolerance `1e-12` and zero
 relative tolerance.
+
+QC keeps join counts and independent validator counts in separate `join_qc`
+and `validator_qc` namespaces; any non-zero count fails generation. The
+validator receives a separate fixed-v0 DataFrame directly from
+`build_candidate_rows(..., capacity_ah=3.0)` and exactly checks row count,
+order, cell/candidate identity, source row, time, current, voltage, and fixed
+SOC against dynamic and comparison rows. The frozen comparison schema stores
+identity/source row and fixed SOC; its input alignment is therefore verified
+through that exact mapping to the independent fixed frame rather than by
+adding columns that would change the frozen parquet.
