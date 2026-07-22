@@ -21,7 +21,12 @@ def _median_positive_dt(time: np.ndarray) -> float:
     return float(np.median(positive))
 
 
-def resample_vidal_record(record: VidalV2Record, target_hz: float = 1.0) -> VidalV2Record:
+def resample_vidal_record(
+    record: VidalV2Record,
+    target_hz: float = 1.0,
+    *,
+    clip_soc: bool = True,
+) -> VidalV2Record:
     """Resample one Vidal v2 record to a regular per-record time grid.
 
     The function never connects records or segments. Duplicate timestamps are
@@ -68,13 +73,15 @@ def resample_vidal_record(record: VidalV2Record, target_hz: float = 1.0) -> Vida
 
     resampled = pd.DataFrame({"timestamp": new_time})
     resampled["time_s"] = new_time
+    soc_clipping_count = 0
     for column in RESAMPLE_COLUMNS:
         values = grouped[column].to_numpy(dtype=float)
         if len(time) == 1:
             out = np.full(len(new_time), values[0], dtype=float)
         else:
             out = np.interp(new_time, time, values)
-        if column == "soc":
+        if column == "soc" and clip_soc:
+            soc_clipping_count = int(np.count_nonzero((out < 0.0) | (out > 1.0)))
             out = np.clip(out, 0.0, 1.0)
         resampled[column] = out
 
@@ -90,6 +97,8 @@ def resample_vidal_record(record: VidalV2Record, target_hz: float = 1.0) -> Vida
         "median_dt_s_before": median_dt_before,
         "target_hz": float(target_hz),
         "resampled": True,
+        "soc_clipping_enabled": bool(clip_soc),
+        "soc_clipping_count": soc_clipping_count,
     })
     return VidalV2Record(resampled, metadata)
 

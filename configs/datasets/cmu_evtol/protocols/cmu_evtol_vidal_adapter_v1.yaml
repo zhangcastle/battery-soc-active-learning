@@ -1,0 +1,30 @@
+adapter_version: cmu_evtol_to_vidal_adapter_v1
+status: development_only
+source_dataset: cmu_evtol_vtc6
+target_model_protocol: vidal_2019_case1
+input_label:
+  column: soc_dynamic
+  source: cmu_causal_dynamic_capacity_reference_development_v1
+  protocol_version: cmu_evtol_dynamic_capacity_soc_development_v1
+  label_is_ground_truth: false
+  formal_benchmark_eligible: false
+features:
+  order: [voltage, current, temperature]
+  mapping:
+    voltage: voltage_v
+    current: current_a
+    temperature: Temperature__C
+sampling:
+  target_hz: 1.0
+  scope: per_candidate
+  extrapolation: forbidden
+  soc_clipping: false
+windows:
+  seq_len: 50
+  stride: 50
+  policy: fixed_non_overlapping
+  keep_incomplete: false
+normalization:
+  adapter_fits_scaler: false
+  future_transform_source: panasonic_checkpoint_normalizer_state_dict
+

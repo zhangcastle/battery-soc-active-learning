@@ -56,3 +56,13 @@ def test_duplicate_timestamps_are_averaged_before_resampling():
     assert out.metadata["deduplicated_n_samples"] == 3
     assert out.data["timestamp"].is_unique
     assert out.data["soc"].iloc[0] == pytest.approx(0.9)
+
+
+def test_soc_clipping_can_be_disabled_without_changing_default():
+    record = _record([0.0, 1.0], soc=[1.1, -0.1])
+    default = resample_vidal_record(record, target_hz=1.0)
+    unchanged = resample_vidal_record(record, target_hz=1.0, clip_soc=False)
+    assert default.data["soc"].tolist() == [1.0, 0.0]
+    assert default.metadata["soc_clipping_count"] == 2
+    assert unchanged.data["soc"].tolist() == [1.1, -0.1]
+    assert unchanged.metadata["soc_clipping_count"] == 0
