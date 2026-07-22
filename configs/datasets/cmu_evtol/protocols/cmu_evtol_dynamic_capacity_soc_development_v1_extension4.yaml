@@ -1,0 +1,53 @@
+protocol_name: cmu_evtol_dynamic_capacity_soc_development
+protocol_version: cmu_evtol_dynamic_capacity_soc_development_v1
+status: development_only
+formal_benchmark_eligible: false
+label_is_ground_truth: false
+formal_mission_labels: false
+cells: [VAH30, VAH15, VAH12, VAH11]
+
+fixed_soc_baseline:
+  version: cmu_coulomb_counted_constant_capacity_reference_v0
+  implementation: src/battery_benchmark/datasets/cmu_evtol/soc.py
+  implementation_sha256: 48e89eb2d618a368f6f1b93450bd294308c62ef58320fd71ed480775ae023f6c
+  capacity_ah: 3.0
+  soc_initial: 1.0
+  soc_initial_source: protocol_full_charge_assumption
+  current_sign: positive_charge_negative_discharge
+  integration_method: trapezoidal
+
+capacity_lookup:
+  version: cmu_evtol_causal_capacity_lookup_v1
+  path: outputs/datasets/cmu_evtol/causal_capacity_lookup_v1_extension4/capacity_lookup.csv
+  sha256: 87feac01efdeb07c08b7b1f148f70c90332a2ed0ac2a3ff60795340e81430e36
+  key: [cell_id, mission_cycle_id]
+  capacity_fixed_at_candidate_start: true
+  interpolation_used: false
+  future_information_used: false
+  within_candidate_capacity_change: false
+
+rpt_observations:
+  path: outputs/cmu_evtol_rpt_capacity_v1_extension4/capacity_observations.csv
+  sha256: 3716565493943daff186cd18e14c3129da4499acec7a3f13e0acc259c944915e
+  expected_count: 122
+
+numeric_validation:
+  soc_absolute_tolerance: 1.0e-12
+  soc_relative_tolerance: 0.0
+  allowed_soc_range: [0.0, 1.0]
+  clipping_applied: false
+
+qc_validation:
+  namespaces: [join_qc, validator_qc]
+  fail_closed_on_any_nonzero_count: true
+  fixed_source: existing_fixed_v0_generation_path
+  fixed_alignment_exact_fields:
+    [cell_id, mission_cycle_id, source_row, time_s, I_mA, Ecell_V, soc_reference_v0]
+  comparison_alignment_exact_fields:
+    [cell_id, mission_cycle_id, source_row, soc_fixed_3ah]
+  propagate_all_causal_lookup_qc: true
+
+output:
+  root: outputs/datasets/cmu_evtol/dynamic_capacity_soc_development_v1_extension4
+  generator: scripts/datasets/cmu_evtol/build_dynamic_capacity_soc_development_v1.py
+  fixed_soc_outputs_modified: false

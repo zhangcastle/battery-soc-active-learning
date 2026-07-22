@@ -12,8 +12,11 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Sequence
 
-import matplotlib.pyplot as plt
+import matplotlib
 import pandas as pd
+
+matplotlib.use("Agg")
+import matplotlib.pyplot as plt  # noqa: E402
 
 REPO_ROOT = Path(__file__).resolve().parents[3]
 if str(REPO_ROOT / "src") not in sys.path:
@@ -30,6 +33,7 @@ from battery_benchmark.datasets.cmu_evtol.raw import (  # noqa: E402
 )
 from battery_benchmark.datasets.cmu_evtol.rpt import (  # noqa: E402
     BASELINE_CELLS,
+    SUPPORTED_CELLS,
     detect_rpt_capacity_observations,
     load_rpt_capacity_protocol,
 )
@@ -80,9 +84,9 @@ def extract_outputs(
     cells = tuple(cells)
     if len(cells) != len(set(cells)):
         raise ValueError("RPT capacity v1 rejects duplicate cell IDs")
-    invalid = sorted(set(cells) - set(BASELINE_CELLS))
+    invalid = sorted(set(cells) - set(SUPPORTED_CELLS))
     if invalid:
-        raise ValueError(f"RPT capacity v1 supports baseline cells only: {invalid}")
+        raise ValueError(f"RPT capacity v1 rejects unsupported cells: {invalid}")
 
     protocol, protocol_sha = load_rpt_capacity_protocol(protocol_path)
     mission_protocol, mission_protocol_sha = load_diagnostic_protocol(mission_protocol_path)

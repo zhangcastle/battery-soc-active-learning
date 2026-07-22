@@ -18,6 +18,7 @@ from battery_benchmark.datasets.cmu_evtol.raw import sha256_file
 
 
 BASELINE_CELLS = ("VAH01", "VAH17", "VAH27")
+SUPPORTED_CELLS = (*BASELINE_CELLS, "VAH30", "VAH15", "VAH12", "VAH11")
 OBSERVATION_COLUMNS = (
     "rpt_id", "cell_id", "cell_rpt_ordinal", "protocol_version",
     "detector_status", "accepted_for_capacity_lookup", "primary_reason",
@@ -335,8 +336,8 @@ def detect_rpt_capacity_observations(
     if data.empty:
         return pd.DataFrame(columns=OBSERVATION_COLUMNS)
     cell_ids = pd.unique(data["cell_id"])
-    if len(cell_ids) != 1 or cell_ids[0] not in BASELINE_CELLS:
-        raise ValueError(f"RPT capacity v1 supports one baseline cell at a time: {cell_ids.tolist()}")
+    if len(cell_ids) != 1 or cell_ids[0] not in SUPPORTED_CELLS:
+        raise ValueError(f"RPT capacity v1 supports one configured cell at a time: {cell_ids.tolist()}")
     runs = contiguous_ns_runs(data)
     windows = discover_broad_rpt_windows(runs, protocol["broad_discovery"])
     observations = [

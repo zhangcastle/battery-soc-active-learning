@@ -26,6 +26,7 @@ from battery_benchmark.utils.git_info import get_full_commit_hash, is_dirty
 
 
 BASELINE_CELLS = ("VAH01", "VAH17", "VAH27")
+SUPPORTED_CELLS = (*BASELINE_CELLS, "VAH30", "VAH15", "VAH12", "VAH11")
 PIPELINE_STATUS = "development_only"
 PHASE_ROLES = ("high_1", "lower", "high_2")
 MANIFEST_COLUMNS = (
@@ -270,8 +271,8 @@ def process_cmu_cell(
     validate_cmu_reference_capacity(capacity_ah)
     result = load_cmu_v3_main_file(main_path, repo_root=repo_root)
     cell_id = result.metadata["cell_id"]
-    if cell_id not in BASELINE_CELLS:
-        raise ValueError(f"CMU pipeline v0 supports baseline cells only: {cell_id}")
+    if cell_id not in SUPPORTED_CELLS:
+        raise ValueError(f"CMU pipeline v0 does not support cell: {cell_id}")
     manifest = enumerate_diagnostic_candidates(contiguous_ns_runs(result.data), protocol)
     rows, manifest = build_candidate_rows(result.data, manifest, capacity_ah=capacity_ah)
     now = datetime.now(timezone.utc).isoformat()
@@ -317,9 +318,9 @@ def write_pipeline_outputs(
     validate_cmu_reference_capacity(capacity_ah)
     if len(cells) != len(set(cells)):
         raise ValueError("CMU pipeline v0 rejects duplicate cell IDs")
-    invalid = sorted(set(cells) - set(BASELINE_CELLS))
+    invalid = sorted(set(cells) - set(SUPPORTED_CELLS))
     if invalid:
-        raise ValueError(f"CMU pipeline v0 rejects non-baseline cells: {invalid}")
+        raise ValueError(f"CMU pipeline v0 rejects non-baseline or unsupported cells: {invalid}")
     protocol, protocol_sha = load_diagnostic_protocol(protocol_path)
     inventory = pd.read_csv(asset_inventory_path).set_index("cell_id")
     raw_root, output_root = Path(raw_root), Path(output_root)

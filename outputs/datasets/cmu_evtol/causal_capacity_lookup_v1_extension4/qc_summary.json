@@ -1,0 +1,66 @@
+{
+  "lookup_row_count": 5946,
+  "capacity_source_counts": {
+    "observed_rpt": 5946
+  },
+  "anomaly_counts": {
+    "unmatched_source_rpt_count": 0,
+    "duplicate_lookup_row_count": 0,
+    "future_leakage_count": 0,
+    "cross_cell_usage_count": 0,
+    "ineligible_rpt_usage_count": 0,
+    "non_latest_rpt_assignment_count": 0,
+    "capacity_value_mismatch_count": 0,
+    "rpt_provenance_mismatch_count": 0,
+    "causal_lag_mismatch_count": 0,
+    "invalid_fallback_row_count": 0,
+    "missing_mission_count": 0,
+    "unexpected_mission_count": 0
+  },
+  "coverage_by_cell": [
+    {
+      "cell_id": "VAH30",
+      "mission_count": 900,
+      "nominal_fallback_count": 0,
+      "nominal_fallback_fraction": 0.0,
+      "observed_rpt_count": 900,
+      "observed_rpt_fraction": 1.0,
+      "rpt_observations_used": 18,
+      "minimum_causal_lag_source_rows": 213,
+      "maximum_causal_lag_source_rows": 17213
+    },
+    {
+      "cell_id": "VAH15",
+      "mission_count": 542,
+      "nominal_fallback_count": 0,
+      "nominal_fallback_fraction": 0.0,
+      "observed_rpt_count": 542,
+      "observed_rpt_fraction": 1.0,
+      "rpt_observations_used": 11,
+      "minimum_causal_lag_source_rows": 225,
+      "maximum_causal_lag_source_rows": 17407
+    },
+    {
+      "cell_id": "VAH12",
+      "mission_count": 2302,
+      "nominal_fallback_count": 0,
+      "nominal_fallback_fraction": 0.0,
+      "observed_rpt_count": 2302,
+      "observed_rpt_fraction": 1.0,
+      "rpt_observations_used": 39,
+      "minimum_causal_lag_source_rows": 224,
+      "maximum_causal_lag_source_rows": 212339
+    },
+    {
+      "cell_id": "VAH11",
+      "mission_count": 2202,
+      "nominal_fallback_count": 0,
+      "nominal_fallback_fraction": 0.0,
+      "observed_rpt_count": 2202,
+      "observed_rpt_fraction": 1.0,
+      "rpt_observations_used": 36,
+      "minimum_causal_lag_source_rows": 249,
+      "maximum_causal_lag_source_rows": 238263
+    }
+  ]
+}

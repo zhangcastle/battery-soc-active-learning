@@ -1,0 +1,44 @@
+protocol_name: cmu_evtol_causal_capacity_lookup
+protocol_version: cmu_evtol_causal_capacity_lookup_v1
+dataset: cmu_evtol_vtc6
+article_id: "14226830"
+dataset_version: "3"
+cells: [VAH30, VAH15, VAH12, VAH11]
+
+mission_input:
+  source: diagnostic_screening_match
+  identity_field: development_candidate_id
+  ordering_key: [cell_id, start_source_row]
+  formal_mission_labels: false
+
+rpt_input:
+  path: outputs/cmu_evtol_rpt_capacity_v1_extension4/capacity_observations.csv
+  sha256: 3716565493943daff186cd18e14c3129da4499acec7a3f13e0acc259c944915e
+  expected_observation_count: 122
+  required_detector_status: accepted
+  required_lookup_eligible: true
+
+causality:
+  lookup_key: cell_id_and_source_row
+  selection: latest_eligible_rpt_with_end_source_row_strictly_less_than_mission_start_source_row
+  nominal_capacity_ah: 3.0
+  fallback_before_first_rpt: nominal_fallback
+  hold_between_rpts: step
+  interpolation_allowed: false
+  future_rpt_allowed: false
+  cycle_number_role: ignored_for_ordering
+  causal_lag_unit: source_rows
+
+validation:
+  identity_key: [cell_id, mission_cycle_id]
+  independently_reconstruct_latest_prior_rpt: true
+  capacity_absolute_tolerance_ah: 1.0e-12
+  capacity_relative_tolerance: 0.0
+  validate_rpt_provenance: true
+  validate_causal_lag: true
+  validate_nominal_fallback: true
+
+output:
+  root: outputs/datasets/cmu_evtol/causal_capacity_lookup_v1_extension4
+  generator: scripts/datasets/cmu_evtol/build_causal_capacity_lookup.py
+  dynamic_capacity_soc_authorized: false
