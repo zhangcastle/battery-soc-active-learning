@@ -63,6 +63,15 @@ target_label_budgets:
   record_realized_sample_count: true
   record_realized_duration: true
 
+development_budget_manifest:
+  status: development_only
+  path: data/manifests/cmu_evtol/cmu_evtol_supervised_budget_manifest_v0_1.csv
+  mission_identity: existing_development_candidate_mission_cycle_id
+  label_column: soc_dynamic
+  label_is_ground_truth: false
+  formal_benchmark_eligible: false
+  note: formal mission identifiers and a formal SOC reference remain deferred
+
 tracks:
   zero_shot:
     source_labels: true

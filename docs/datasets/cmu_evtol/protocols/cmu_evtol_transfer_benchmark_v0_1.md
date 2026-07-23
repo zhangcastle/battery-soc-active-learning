@@ -69,7 +69,12 @@ Supervised target budgets are 1%, 5%, and 10% of eligible adaptation missions, c
 - Every model evaluated at a target-label budget must use the exact same fold-specific budget manifest.
 - Transfer and same-budget scratch runs must reuse that same manifest without resampling or replacement.
 
-No mission IDs are assigned in v0.1.
+Formal mission IDs are not assigned in v0.1. The deterministic development
+budget manifest at
+`data/manifests/cmu_evtol/cmu_evtol_supervised_budget_manifest_v0_1.csv`
+references the existing development-candidate `mission_cycle_id` values only.
+It is explicitly `development_only`, uses `soc_dynamic` as a reference rather
+than ground truth, and does not make those candidates formal benchmark labels.
 
 ## Reporting tracks
 

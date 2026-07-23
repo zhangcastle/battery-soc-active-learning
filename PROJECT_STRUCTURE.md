@@ -45,6 +45,7 @@ battery-soc-transfer-benchmark/
 ├── tests/
 │   ├── datasets/cmu_evtol/       CMU pipeline and protocol tests
 │   ├── reproductions/vidal_2019/ Vidal reproduction tests
+│   ├── benchmarks/               Unified benchmark protocol and manifest tests
 │   └── test_*.py                  Shared infrastructure tests
 └── outputs/
     ├── datasets/<dataset>/<pipeline>/
