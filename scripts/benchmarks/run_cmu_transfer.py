@@ -336,6 +336,7 @@ def run_setting(
             require_formal=True,
             device=device,
         )
+        model.to(device)
         if cfg.setting == "zero_shot":
             scaler = _load_source_scaler(
                 checkpoint_path, scaler_path, model, device
