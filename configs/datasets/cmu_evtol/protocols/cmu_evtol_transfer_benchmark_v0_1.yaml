@@ -1,6 +1,6 @@
 protocol_name: cmu_evtol_transfer_benchmark
 protocol_version: "0.1"
-status: protocol_only
+status: development_protocol
 
 source_domain:
   dataset: panasonic_18650pf
@@ -15,30 +15,28 @@ target_domain:
   soc_reference_status: not_defined_in_v0_1
 
 primary_benchmark:
-  population: baseline_protocol_cells
-  cell_selection:
-    manifest_filter:
-      protocol_group: baseline
-      is_baseline: true
-  evaluation_strategy: leave_one_cell_out
+  population: core7_independent_target_cells
+  evaluation_strategy: per_cell_supervised_adaptation
   split_unit: complete_mission
   row_level_random_split: false
   window_level_random_split_before_mission_assignment: false
   same_mission_must_remain_in_one_split: true
 
-folds:
-  - fold_id: test_vah01
-    adaptation_cells: [VAH17, VAH27]
-    test_cells: [VAH01]
-  - fold_id: test_vah17
-    adaptation_cells: [VAH01, VAH27]
-    test_cells: [VAH17]
-  - fold_id: test_vah27
-    adaptation_cells: [VAH01, VAH17]
-    test_cells: [VAH27]
+development_supervised_benchmark:
+  target_cells: [VAH01, VAH17, VAH27, VAH30, VAH15, VAH12, VAH11]
+  split_order: mission_start_source_row_then_mission_cycle_id
+  split_percent: {train: 60, validation: 20, test: 20}
+  split_rounding: {train: floor, validation: floor, test: remainder}
+  same_test_missions_for_all_tracks: true
+  manifest_path: data/manifests/cmu_evtol/cmu_evtol_supervised_budget_manifest_v0_1.csv
+  status: development_only
+  label_column: soc_dynamic
+  label_is_ground_truth: false
+  formal_benchmark_eligible: false
 
 condition_stress_tests:
-  enabled_in_primary_benchmark: false
+  included_as_independent_targets: true
+  pooled_with_baseline_cells: false
   source: cell_protocol_manifest
   groups:
     - discharge_power_shift
@@ -49,28 +47,19 @@ condition_stress_tests:
     - other_or_uncertain
 
 target_label_budgets:
-  unit: percent_of_eligible_complete_missions_per_adaptation_cell
-  values_percent: [1, 5, 10]
-  selection: chronological_prefix_per_adaptation_cell
-  cell_order: lexical_cell_id
+  unit: percent_of_train_complete_missions_per_target_cell
+  values_percent_of_train: [1, 5, 10]
+  vidal_partial_percent_of_train: 40
+  vidal_full_percent_of_train: 100
+  selection: chronological_prefix_per_target_cell
   rounding: ceil
-  rounding_scope: per_adaptation_cell
-  merge_scope: fold_after_per_cell_selection
+  rounding_scope: per_target_cell
   nested_subsets_required: true
   same_budget_manifest_for_all_models: true
-  same_manifest_for_transfer_and_scratch: true
+  same_split_manifest_for_all_tracks: true
   record_realized_mission_count: true
   record_realized_sample_count: true
   record_realized_duration: true
-
-development_budget_manifest:
-  status: development_only
-  path: data/manifests/cmu_evtol/cmu_evtol_supervised_budget_manifest_v0_1.csv
-  mission_identity: existing_development_candidate_mission_cycle_id
-  label_column: soc_dynamic
-  label_is_ground_truth: false
-  formal_benchmark_eligible: false
-  note: formal mission identifiers and a formal SOC reference remain deferred
 
 tracks:
   zero_shot:
@@ -98,17 +87,15 @@ tracks:
     target_label_scope: all_eligible_adaptation_missions
 
 test_isolation:
-  test_cells_allowed_in_adaptation: false
-  test_cells_allowed_in_scaler_fit: false
-  test_cells_allowed_in_hyperparameter_tuning: false
-  test_cells_allowed_in_early_stopping: false
-  test_cells_allowed_in_model_selection: false
+  test_missions_allowed_in_adaptation: false
+  test_missions_allowed_in_scaler_fit: false
+  test_missions_allowed_in_hyperparameter_tuning: false
+  test_missions_allowed_in_early_stopping: false
+  test_missions_allowed_in_model_selection: false
 
 deferred:
-  mission_ids: not_defined_in_v0_1
-  mission_reconstruction: not_defined_in_v0_1
-  soc_reference_version: not_defined_in_v0_1
-  rpt_and_capacity_policy: not_defined_in_v0_1
-  resampling_interval: not_defined_in_v0_1
-  physical_context_length: not_defined_in_v0_1
+  formal_mission_ids: not_defined
+  formal_mission_reconstruction: not_defined
+  formal_soc_reference: not_defined
+  phase_name_mapping: not_defined
   aging_stage_boundaries: not_defined_in_v0_1

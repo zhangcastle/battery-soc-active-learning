@@ -2,7 +2,7 @@
 
 ## Status and scope
 
-This document freezes the cell-level comparison protocol for the first CMU eVTOL transfer benchmark implementation. Version 0.1 is protocol-only: it does not define mission identifiers, generate SOC references, transform raw data, construct sequences, or train models.
+This document records the development comparison protocol for the first CMU eVTOL transfer benchmark implementation. It uses the existing development candidate identities and dynamic-capacity SOC reference; these remain development artifacts rather than formal mission labels or ground truth.
 
 The authoritative cell-level protocol assignments are stored in:
 
@@ -20,31 +20,13 @@ Assignments are based on the dataset-supplied `README.txt`. Raw tester `cycleNum
 - Common model inputs: voltage, current, and cell-surface temperature.
 - A future CMU SOC label must be called an SOC reference rather than measured ground truth.
 
-## Primary benchmark population
+## Development target population
 
-The primary benchmark uses only cells explicitly labelled `Baseline` by the source README. The v0.1 manifest identifies VAH01, VAH17, and VAH27 as baseline cells.
-
-All non-baseline cells are excluded from primary-fold construction. They are reserved for later independent stress-test groups:
-
-- discharge-power shift;
-- cruise-duration shift;
-- charge-current shift;
-- thermal or cooling shift;
-- end-of-charge-voltage shift;
-- other or uncertain conditions, if later evidence requires that classification.
-
-Stress-test groups must not be silently pooled into the primary baseline benchmark.
-
-## Leave-one-cell-out evaluation
-
-The primary evaluation uses three fixed leave-one-cell-out folds. In each fold:
-
-1. one baseline cell is the held-out target-test cell;
-2. the other two baseline cells form the target adaptation/validation population;
-3. the held-out test cell contributes no input, label, scaler statistics, hyperparameter evidence, early-stopping evidence, or model-selection evidence before final evaluation;
-4. every model uses the same folds and held-out test cells.
-
-The explicit cell lists are stored in the protocol YAML. Mission identifiers are intentionally absent from v0.1 and will be introduced only after mission reconstruction is independently reviewed.
+The supervised development comparison treats each of VAH01, VAH17, VAH27,
+VAH30, VAH15, VAH12, and VAH11 as an independent target. Models are never
+adapted on one target cell and evaluated as though it were another target.
+Baseline and condition results remain separately identified by the manifest's
+`condition` column.
 
 ## Split integrity
 
@@ -52,19 +34,28 @@ The explicit cell lists are stored in the protocol YAML. Mission identifiers are
 - Window-level random splitting before mission assignment is prohibited.
 - A complete mission is the smallest splittable target unit.
 - Every row and every future sequence window from one mission must remain in the same split.
-- Target-test missions and cells must never participate in normalization, adaptation, validation, tuning, early stopping, threshold selection, or model selection.
-- Condition stress-test cells must not enter primary baseline adaptation folds.
+- Each cell is ordered by `mission_start_source_row`, with
+  `mission_cycle_id` as a deterministic tie-breaker.
+- Per cell, `floor(60%)` missions form Train, `floor(20%)` form Validation,
+  and the remainder form Test.
+- Target-test missions must never participate in normalization, adaptation,
+  validation, tuning, early stopping, threshold selection, or model selection.
+- Zero-shot and every supervised setting use the exact same Test missions.
 
 ## Target-label budgets
 
-Supervised target budgets are 1%, 5%, and 10% of eligible adaptation missions, calculated independently within each adaptation cell.
+Supervised target budgets are chronological prefixes of each target cell's
+Train split:
+
+- shared comparison budgets: 1%, 5%, and 10% of Train;
+- Vidal-style Partial: 40% of Train (approximately 24% of all missions);
+- Vidal-style Full: 100% of Train (approximately 60% of all missions).
 
 - Budgets are constructed from complete missions, never rows, samples, or windows.
-- For each adaptation cell, the denominator is that cell's own eligible complete-mission count.
-- Eligible missions are ordered chronologically within each adaptation cell and selected as a chronological prefix.
-- The percentage and ceiling operation are applied independently to each adaptation cell, so every non-empty cell contributes at least one mission at the 1% budget.
-- The per-cell selections are merged only after selection to form one fold-specific budget manifest.
-- Budget subsets must be nested: 1% is a subset of 5%, which is a subset of 10%.
+- For each target cell, the denominator is that cell's Train mission count.
+- Train missions are selected as chronological prefixes.
+- The percentage and ceiling operation are applied independently to each cell.
+- Budget subsets are nested: 1% ⊂ 5% ⊂ 10% ⊂ Partial ⊂ Full.
 - The realized mission count, sample count, and physical duration must later be reported for every budget.
 - Every model evaluated at a target-label budget must use the exact same fold-specific budget manifest.
 - Transfer and same-budget scratch runs must reuse that same manifest without resampling or replacement.
@@ -72,7 +63,8 @@ Supervised target budgets are 1%, 5%, and 10% of eligible adaptation missions, c
 Formal mission IDs are not assigned in v0.1. The deterministic development
 budget manifest at
 `data/manifests/cmu_evtol/cmu_evtol_supervised_budget_manifest_v0_1.csv`
-references the existing development-candidate `mission_cycle_id` values only.
+stores every core7 development-candidate `mission_cycle_id`, its Train,
+Validation, or Test assignment, and its budget membership.
 It is explicitly `development_only`, uses `soc_dynamic` as a reference rather
 than ground truth, and does not make those candidates formal benchmark labels.
 

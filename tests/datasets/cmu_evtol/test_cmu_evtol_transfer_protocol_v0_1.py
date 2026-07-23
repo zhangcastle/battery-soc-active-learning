@@ -39,10 +39,8 @@ EXPECTED_CELL_IDS = {
 
 EXPECTED_BASELINE_IDS = {"VAH01", "VAH17", "VAH27"}
 
-EXPECTED_FOLDS = {
-    "test_vah01": ({"VAH17", "VAH27"}, {"VAH01"}),
-    "test_vah17": ({"VAH01", "VAH27"}, {"VAH17"}),
-    "test_vah27": ({"VAH01", "VAH17"}, {"VAH27"}),
+EXPECTED_CORE7_IDS = {
+    "VAH01", "VAH17", "VAH27", "VAH30", "VAH15", "VAH12", "VAH11"
 }
 
 REQUIRED_TRACKS = {
@@ -178,53 +176,46 @@ def test_protocol_prohibits_row_level_splitting_and_uses_fixed_budgets() -> None
     primary = protocol["primary_benchmark"]
     budgets = protocol["target_label_budgets"]
 
-    assert primary["evaluation_strategy"] == "leave_one_cell_out"
+    benchmark = protocol["development_supervised_benchmark"]
+    assert primary["evaluation_strategy"] == "per_cell_supervised_adaptation"
     assert primary["split_unit"] == "complete_mission"
     assert primary["row_level_random_split"] is False
     assert primary["window_level_random_split_before_mission_assignment"] is False
     assert primary["same_mission_must_remain_in_one_split"] is True
-    assert budgets["values_percent"] == [1, 5, 10]
-    assert budgets["unit"] == "percent_of_eligible_complete_missions_per_adaptation_cell"
-    assert budgets["selection"] == "chronological_prefix_per_adaptation_cell"
+    assert set(benchmark["target_cells"]) == EXPECTED_CORE7_IDS
+    assert benchmark["split_percent"] == {"train": 60, "validation": 20, "test": 20}
+    assert benchmark["same_test_missions_for_all_tracks"] is True
+    assert budgets["values_percent_of_train"] == [1, 5, 10]
+    assert budgets["vidal_partial_percent_of_train"] == 40
+    assert budgets["vidal_full_percent_of_train"] == 100
+    assert budgets["unit"] == "percent_of_train_complete_missions_per_target_cell"
+    assert budgets["selection"] == "chronological_prefix_per_target_cell"
     assert budgets["rounding"] == "ceil"
-    assert budgets["rounding_scope"] == "per_adaptation_cell"
-    assert budgets["merge_scope"] == "fold_after_per_cell_selection"
+    assert budgets["rounding_scope"] == "per_target_cell"
     assert budgets["nested_subsets_required"] is True
     assert budgets["same_budget_manifest_for_all_models"] is True
-    assert budgets["same_manifest_for_transfer_and_scratch"] is True
+    assert budgets["same_split_manifest_for_all_tracks"] is True
 
 
-def test_leave_one_cell_out_folds_keep_test_cells_out_of_adaptation() -> None:
+def test_test_missions_are_isolated_from_training_and_selection() -> None:
     protocol = _protocol()
-    observed_test_cells = set()
-
-    for fold in protocol["folds"]:
-        adaptation = set(fold["adaptation_cells"])
-        test = set(fold["test_cells"])
-        expected_adaptation, expected_test = EXPECTED_FOLDS[fold["fold_id"]]
-        assert adaptation == expected_adaptation
-        assert test == expected_test
-        assert adaptation.isdisjoint(test)
-        assert adaptation | test == EXPECTED_BASELINE_IDS
-        assert len(adaptation) == 2
-        assert len(test) == 1
-        observed_test_cells.update(test)
-
-    assert len(protocol["folds"]) == 3
-    assert observed_test_cells == EXPECTED_BASELINE_IDS
     assert all(value is False for value in protocol["test_isolation"].values())
 
 
-def test_protocol_does_not_claim_mission_ids_or_enable_condition_cells() -> None:
+def test_protocol_keeps_development_labels_and_condition_targets_explicit() -> None:
     protocol = _protocol()
-    assert protocol["condition_stress_tests"]["enabled_in_primary_benchmark"] is False
+    assert protocol["condition_stress_tests"]["included_as_independent_targets"] is True
+    assert protocol["condition_stress_tests"]["pooled_with_baseline_cells"] is False
+    assert protocol["development_supervised_benchmark"]["status"] == "development_only"
+    assert protocol["development_supervised_benchmark"]["label_is_ground_truth"] is False
+    assert (
+        protocol["development_supervised_benchmark"]["formal_benchmark_eligible"]
+        is False
+    )
     assert protocol["deferred"] == {
-        "mission_ids": "not_defined_in_v0_1",
-        "mission_reconstruction": "not_defined_in_v0_1",
-        "soc_reference_version": "not_defined_in_v0_1",
-        "rpt_and_capacity_policy": "not_defined_in_v0_1",
-        "resampling_interval": "not_defined_in_v0_1",
-        "physical_context_length": "not_defined_in_v0_1",
+        "formal_mission_ids": "not_defined",
+        "formal_mission_reconstruction": "not_defined",
+        "formal_soc_reference": "not_defined",
+        "phase_name_mapping": "not_defined",
         "aging_stage_boundaries": "not_defined_in_v0_1",
     }
-    assert "mission_ids" not in protocol["folds"][0]
