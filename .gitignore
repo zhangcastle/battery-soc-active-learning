@@ -43,6 +43,8 @@ docs/*
 !docs/datasets/**
 !docs/reproductions/
 !docs/reproductions/**
+!docs/benchmarks/
+!docs/benchmarks/vidal_panasonic_to_cmu_evtol_results_v0_1.md
 
 # Data — NEVER commit raw or processed battery data
 data/raw/

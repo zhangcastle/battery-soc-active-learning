@@ -20,6 +20,7 @@ battery-soc-transfer-benchmark/
 │       ├── cmu_evtol/            CMU assets, protocols, and compact QC tables
 │       └── vidal_2019/           Vidal source-file split manifests
 ├── docs/
+│   ├── benchmarks/               Unified benchmark results and analyses
 │   ├── datasets/cmu_evtol/       CMU protocols and evidence audits
 │   └── reproductions/vidal_2019/ Vidal reproduction protocol and Colab notes
 ├── notebooks/
