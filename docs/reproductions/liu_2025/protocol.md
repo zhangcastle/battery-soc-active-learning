@@ -63,3 +63,9 @@ Drive so `--resume` survives a Colab disconnect.
 An L4 GPU has ample memory for this approximately 198k-parameter model and
 batch size 256. Runtime, not memory, is the constraint: 500 source epochs may
 take hours, and Colab session limits can interrupt the run.
+
+## Downstream CMU extension
+
+The paper reproduction remains the source-of-truth source protocol. The
+subsequent Panasonic-to-CMU development benchmark is specified separately in
+`docs/benchmarks/liu_2025_panasonic_to_cmu_evtol_plan.md`.
