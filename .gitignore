@@ -39,6 +39,7 @@ coverage.xml
 # Docs — protocols and concise audit conclusions are versioned.
 docs/*
 !docs/known_uncertainties.md
+!docs/google_drive_layout.md
 !docs/datasets/
 !docs/datasets/**
 !docs/reproductions/

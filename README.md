@@ -31,6 +31,7 @@ reference only.** This repository is independent and does not modify it.
 
 1. Open [`notebooks/00_colab_setup.ipynb`](notebooks/00_colab_setup.ipynb).
 2. Follow the cells to mount Drive, clone the repo, install, and run the smoke test.
+3. See [`docs/google_drive_layout.md`](docs/google_drive_layout.md) for persistent paths.
 
 ### Local machine
 
