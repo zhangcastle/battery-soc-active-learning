@@ -128,6 +128,7 @@ See [`docs/datasets/cmu_evtol/overview.md`](docs/datasets/cmu_evtol/overview.md)
 | MMD / CORAL / DANN | ⏳ Placeholder |
 | Pseudo-label / source-free | ⏳ Placeholder |
 | Vidal reproduction | ⚠️ Implemented reconstruction; documented assumptions remain |
+| Liu 2025 DARM (25°C → 0°C) | ⚠️ Manifest-driven reconstruction; formal run pending |
 | CMU transfer | ⚠️ Protocol established; formal benchmark not complete |
 
 ---
