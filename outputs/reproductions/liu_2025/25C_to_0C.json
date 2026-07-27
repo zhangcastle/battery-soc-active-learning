@@ -1,0 +1,75 @@
+{
+  "paper": "Liu et al. 2025, doi:10.1109/TTE.2024.3483973",
+  "protocol": "Panasonic 25C -> 0C",
+  "device": "cpu",
+  "paper_defaults": false,
+  "source_epochs": 1,
+  "transfer_epochs": 1,
+  "source_final_mse": 0.16073417477309704,
+  "transfer_final_losses": {
+    "adversarial": 0.6946487426757812,
+    "reconstruction": 2.7428081035614014,
+    "mmd": 0.06419515609741211,
+    "total": 28.18692445755005
+  },
+  "source_only": {
+    "LA92": {
+      "rmse_percent": 65.1144790649414,
+      "mae_percent": 58.03287124633789,
+      "n_windows": 256
+    },
+    "UDDS": {
+      "rmse_percent": 44.0351676940918,
+      "mae_percent": 36.297054290771484,
+      "n_windows": 256
+    },
+    "US06": {
+      "rmse_percent": 42.934326171875,
+      "mae_percent": 35.29347610473633,
+      "n_windows": 256
+    },
+    "HWFET": {
+      "rmse_percent": 43.82320785522461,
+      "mae_percent": 36.06877899169922,
+      "n_windows": 256
+    },
+    "NN": {
+      "rmse_percent": 79.5169677734375,
+      "mae_percent": 77.70954132080078,
+      "n_windows": 256
+    }
+  },
+  "darm": {
+    "LA92": {
+      "rmse_percent": 55.34402847290039,
+      "mae_percent": 49.293495178222656,
+      "n_windows": 256
+    },
+    "UDDS": {
+      "rmse_percent": 36.079288482666016,
+      "mae_percent": 29.999345779418945,
+      "n_windows": 256
+    },
+    "US06": {
+      "rmse_percent": 35.60954666137695,
+      "mae_percent": 29.9039249420166,
+      "n_windows": 256
+    },
+    "HWFET": {
+      "rmse_percent": 36.19194793701172,
+      "mae_percent": 30.272281646728516,
+      "n_windows": 256
+    },
+    "NN": {
+      "rmse_percent": 68.12324523925781,
+      "mae_percent": 66.59195709228516,
+      "n_windows": 256
+    }
+  },
+  "known_reconstruction": {
+    "soc_label": "per-file Ah normalization; paper only says capacity/SOC",
+    "normalization": "fit on source Cycle 1-4 only to prevent target-test leakage",
+    "mk_mmd_bandwidth": "median x [0.5, 1, 2, 4]; paper unspecified",
+    "adversarial_gradient": "gradient reversal; paper pseudocode omits sign detail"
+  }
+}
