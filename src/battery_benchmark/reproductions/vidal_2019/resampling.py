@@ -7,8 +7,8 @@ import pandas as pd
 
 from battery_benchmark.reproductions.vidal_2019.sequence_v2 import VidalV2Record
 
-
-RESAMPLE_COLUMNS = ("voltage", "current", "temperature", "soc")
+FEATURE_COLUMNS = ("voltage", "current", "temperature")
+RESAMPLE_COLUMNS = (*FEATURE_COLUMNS, "soc")
 
 
 def _median_positive_dt(time: np.ndarray) -> float:
@@ -38,9 +38,10 @@ def resample_vidal_record(
     frame = record.data.copy()
     if "timestamp" not in frame:
         raise ValueError("record is missing canonical timestamp column")
-    missing = set(RESAMPLE_COLUMNS) - set(frame.columns)
+    missing = set(FEATURE_COLUMNS) - set(frame.columns)
     if missing:
         raise ValueError(f"record is missing resampling columns: {sorted(missing)}")
+    columns = [*FEATURE_COLUMNS, *(["soc"] if "soc" in frame else [])]
 
     original_n = len(frame)
     if original_n == 0:
@@ -52,7 +53,7 @@ def resample_vidal_record(
     median_dt_before = _median_positive_dt(original_time)
     duplicate_count = int(frame["timestamp"].duplicated(keep=False).sum())
 
-    grouped = frame.groupby("timestamp", as_index=False, sort=True)[list(RESAMPLE_COLUMNS)].mean()
+    grouped = frame.groupby("timestamp", as_index=False, sort=True)[columns].mean()
     time = grouped["timestamp"].to_numpy(dtype=float)
     if len(time) == 0 or not np.isfinite(time).all():
         raise ValueError("record has no finite timestamp values")
@@ -74,7 +75,7 @@ def resample_vidal_record(
     resampled = pd.DataFrame({"timestamp": new_time})
     resampled["time_s"] = new_time
     soc_clipping_count = 0
-    for column in RESAMPLE_COLUMNS:
+    for column in columns:
         values = grouped[column].to_numpy(dtype=float)
         if len(time) == 1:
             out = np.full(len(new_time), values[0], dtype=float)
@@ -87,23 +88,27 @@ def resample_vidal_record(
 
     metadata = dict(record.metadata)
     resampled_duration = float(new_time[-1] - new_time[0]) if len(new_time) > 1 else 0.0
-    metadata.update({
-        "original_n_samples": int(original_n),
-        "duplicate_timestamp_count": duplicate_count,
-        "deduplicated_n_samples": int(len(grouped)),
-        "resampled_n_samples": int(len(resampled)),
-        "original_duration_s": original_duration,
-        "resampled_duration_s": resampled_duration,
-        "median_dt_s_before": median_dt_before,
-        "target_hz": float(target_hz),
-        "resampled": True,
-        "soc_clipping_enabled": bool(clip_soc),
-        "soc_clipping_count": soc_clipping_count,
-    })
+    metadata.update(
+        {
+            "original_n_samples": int(original_n),
+            "duplicate_timestamp_count": duplicate_count,
+            "deduplicated_n_samples": int(len(grouped)),
+            "resampled_n_samples": int(len(resampled)),
+            "original_duration_s": original_duration,
+            "resampled_duration_s": resampled_duration,
+            "median_dt_s_before": median_dt_before,
+            "target_hz": float(target_hz),
+            "resampled": True,
+            "soc_clipping_enabled": bool(clip_soc and "soc" in columns),
+            "soc_clipping_count": soc_clipping_count,
+        }
+    )
     return VidalV2Record(resampled, metadata)
 
 
-def resample_vidal_records(records: list[VidalV2Record], target_hz: float | None) -> list[VidalV2Record]:
+def resample_vidal_records(
+    records: list[VidalV2Record], target_hz: float | None
+) -> list[VidalV2Record]:
     """Apply record-level resampling when ``target_hz`` is set."""
     if target_hz is None:
         unchanged = []
@@ -112,17 +117,21 @@ def resample_vidal_records(records: list[VidalV2Record], target_hz: float | None
             n = len(record.data)
             time = record.data["timestamp"].to_numpy(dtype=float)
             duration = float(time[-1] - time[0]) if n > 1 else 0.0
-            metadata.update({
-                "original_n_samples": int(n),
-                "duplicate_timestamp_count": int(record.data["timestamp"].duplicated(keep=False).sum()),
-                "deduplicated_n_samples": int(record.data["timestamp"].nunique()),
-                "resampled_n_samples": int(n),
-                "original_duration_s": duration,
-                "resampled_duration_s": duration,
-                "median_dt_s_before": _median_positive_dt(time),
-                "target_hz": None,
-                "resampled": False,
-            })
+            metadata.update(
+                {
+                    "original_n_samples": int(n),
+                    "duplicate_timestamp_count": int(
+                        record.data["timestamp"].duplicated(keep=False).sum()
+                    ),
+                    "deduplicated_n_samples": int(record.data["timestamp"].nunique()),
+                    "resampled_n_samples": int(n),
+                    "original_duration_s": duration,
+                    "resampled_duration_s": duration,
+                    "median_dt_s_before": _median_positive_dt(time),
+                    "target_hz": None,
+                    "resampled": False,
+                }
+            )
             unchanged.append(VidalV2Record(record.data.copy(), metadata))
         return unchanged
     return [resample_vidal_record(record, target_hz=target_hz) for record in records]
@@ -133,22 +142,24 @@ def sampling_inventory(records: list[VidalV2Record], dataset: str, split: str) -
     rows = []
     for record in records:
         meta = record.metadata
-        rows.append({
-            "dataset": dataset,
-            "protocol_split": split,
-            "sequence_order": meta.get("sequence_order"),
-            "sequence_segment_id": meta.get("sequence_segment_id"),
-            "source_filename": meta.get("source_filename"),
-            "file_type": meta.get("file_type"),
-            "paper_profile": meta.get("paper_profile"),
-            "original_n_samples": meta.get("original_n_samples"),
-            "duplicate_timestamp_count": meta.get("duplicate_timestamp_count"),
-            "deduplicated_n_samples": meta.get("deduplicated_n_samples"),
-            "resampled_n_samples": meta.get("resampled_n_samples"),
-            "original_duration_s": meta.get("original_duration_s"),
-            "resampled_duration_s": meta.get("resampled_duration_s"),
-            "median_dt_s_before": meta.get("median_dt_s_before"),
-            "target_hz": meta.get("target_hz"),
-            "resampled": meta.get("resampled"),
-        })
+        rows.append(
+            {
+                "dataset": dataset,
+                "protocol_split": split,
+                "sequence_order": meta.get("sequence_order"),
+                "sequence_segment_id": meta.get("sequence_segment_id"),
+                "source_filename": meta.get("source_filename"),
+                "file_type": meta.get("file_type"),
+                "paper_profile": meta.get("paper_profile"),
+                "original_n_samples": meta.get("original_n_samples"),
+                "duplicate_timestamp_count": meta.get("duplicate_timestamp_count"),
+                "deduplicated_n_samples": meta.get("deduplicated_n_samples"),
+                "resampled_n_samples": meta.get("resampled_n_samples"),
+                "original_duration_s": meta.get("original_duration_s"),
+                "resampled_duration_s": meta.get("resampled_duration_s"),
+                "median_dt_s_before": meta.get("median_dt_s_before"),
+                "target_hz": meta.get("target_hz"),
+                "resampled": meta.get("resampled"),
+            }
+        )
     return pd.DataFrame(rows)

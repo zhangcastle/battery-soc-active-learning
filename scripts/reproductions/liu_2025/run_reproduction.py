@@ -21,9 +21,12 @@ from battery_benchmark.labels.soc_calculator import compute_vidal_drive_soc
 from battery_benchmark.preprocessing.normalization import MinMaxNormalizer
 from battery_benchmark.reproductions.liu_2025.darm import DARM
 from battery_benchmark.reproductions.liu_2025.protocol import load_experiment_manifest
+from battery_benchmark.reproductions.liu_2025.source_artifact import save_source_artifact
+from battery_benchmark.reproductions.liu_2025.windows import build_liu_windows
 from battery_benchmark.reproductions.vidal_2019.resampling import resample_vidal_record
 from battery_benchmark.reproductions.vidal_2019.sequence_v2 import VidalV2Record
 from battery_benchmark.utils.device import get_device
+from battery_benchmark.utils.git_info import get_full_commit_hash, is_dirty
 from battery_benchmark.utils.hashing import sha256_file
 
 
@@ -69,32 +72,6 @@ def load_record(row) -> VidalV2Record:
     if not labelled:
         record.data["soc"] = np.nan
     return record
-
-
-def windows(
-    records: list[VidalV2Record],
-    *,
-    length: int = 40,
-    require_labels: bool,
-) -> tuple[np.ndarray, np.ndarray | None]:
-    feature_windows: list[np.ndarray] = []
-    targets: list[float] = []
-    for record in records:
-        values = record.data[["voltage", "current", "temperature"]].to_numpy(np.float32)
-        soc = record.data["soc"].to_numpy(np.float32)
-        for start in range(len(values) - length + 1):
-            feature_windows.append(values[start : start + length])
-            if require_labels:
-                targets.append(float(soc[start + length - 1]))
-    if not feature_windows:
-        raise ValueError("No complete windows were produced")
-    x = np.stack(feature_windows)
-    if not require_labels:
-        return x, None
-    y = np.asarray(targets, dtype=np.float32)
-    if not np.isfinite(y).all():
-        raise ValueError("Labelled split contains non-finite SOC")
-    return x, y
 
 
 def evenly_limit(
@@ -335,18 +312,18 @@ def main() -> None:
     target_tests = _group_records(manifest, "target_test")
 
     source_x, source_y = evenly_limit(
-        *windows(source_records, require_labels=True), args.max_windows
+        *build_liu_windows(source_records, require_labels=True), args.max_windows
     )
     target_x, target_y = evenly_limit(
-        *windows(target_records, require_labels=False), args.max_windows
+        *build_liu_windows(target_records, require_labels=False), args.max_windows
     )
     assert source_y is not None and target_y is None
     source_test_arrays = {
-        profile: evenly_limit(*windows(records, require_labels=True), args.max_windows)
+        profile: evenly_limit(*build_liu_windows(records, require_labels=True), args.max_windows)
         for profile, records in source_tests.items()
     }
     target_test_arrays = {
-        profile: evenly_limit(*windows(records, require_labels=True), args.max_windows)
+        profile: evenly_limit(*build_liu_windows(records, require_labels=True), args.max_windows)
         for profile, records in target_tests.items()
     }
 
@@ -384,6 +361,41 @@ def main() -> None:
         args.output,
         args.resume,
     )
+    source_artifact_path = args.output / "source_artifact.pt"
+    source_artifact_metadata = {
+        "paper": "Liu et al. 2025, doi:10.1109/TTE.2024.3483973",
+        "source_domain": "panasonic_25c",
+        "source_manifest": str(args.manifest),
+        "source_manifest_sha256": sha256_file(args.manifest),
+        "feature_order": ["voltage", "current", "temperature"],
+        "sampling_hz": 1.0,
+        "window_length": 40,
+        "window_stride": 1,
+        "source_epochs": args.source_epochs,
+        "source_learning_rate": args.source_lr,
+        "batch_size": args.batch_size,
+        "seed": args.seed,
+        "source_windows": len(source_x),
+        "git_commit": get_full_commit_hash(Path.cwd()),
+        "git_dirty": is_dirty(Path.cwd()),
+    }
+    source_artifact_sha256 = save_source_artifact(
+        source_artifact_path,
+        model,
+        normalizer,
+        source_artifact_metadata,
+    )
+    (args.output / "source_artifact.json").write_text(
+        json.dumps(
+            {
+                **source_artifact_metadata,
+                "artifact": str(source_artifact_path),
+                "artifact_sha256": source_artifact_sha256,
+            },
+            indent=2,
+        ),
+        encoding="utf-8",
+    )
     model.initialize_target()
     source_test = {
         profile: evaluate(model, test_loader, device)
@@ -418,6 +430,8 @@ def main() -> None:
         "run_mode": "smoke" if args.smoke else "formal",
         "manifest": str(args.manifest),
         "manifest_sha256": sha256_file(args.manifest),
+        "source_artifact": str(source_artifact_path),
+        "source_artifact_sha256": source_artifact_sha256,
         "window_length": 40,
         "source_windows": len(source_x),
         "target_adaptation_windows": len(target_x),
