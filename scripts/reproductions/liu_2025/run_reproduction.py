@@ -229,6 +229,7 @@ def _save_adaptation_state(
     target_bn_mode: str,
     adversarial_update: str,
     adversarial_schedule: str,
+    grl_strength: float,
 ) -> None:
     torch.save(
         {
@@ -251,6 +252,7 @@ def _save_adaptation_state(
                 "target_bn_mode": target_bn_mode,
                 "adversarial_update": adversarial_update,
                 "adversarial_schedule": adversarial_schedule,
+                "grl_strength": grl_strength,
                 "selection_uses_target_labels": False,
                 "diagnostic": adversarial_update == "eq12_joint",
             },
@@ -267,6 +269,7 @@ def _load_adaptation_state(
     target_bn_mode: str,
     adversarial_update: str,
     adversarial_schedule: str,
+    grl_strength: float,
     device: torch.device | str,
 ) -> dict[str, object]:
     state = torch.load(path, map_location=device, weights_only=False)
@@ -277,6 +280,8 @@ def _load_adaptation_state(
         raise ValueError("Checkpoint adversarial_update does not match the requested mode")
     if metadata.get("adversarial_schedule", "constant") != adversarial_schedule:
         raise ValueError("Checkpoint adversarial_schedule does not match the requested mode")
+    if metadata.get("grl_strength", 1.0) != grl_strength:
+        raise ValueError("Checkpoint grl_strength does not match the requested value")
     model.load_state_dict(state["model_state_dict"])
     optimizer_states = state.get("optimizer_state_dicts")
     if optimizer_states is None and "optimizer_state_dict" in state:
@@ -392,6 +397,7 @@ def adapt(
     target_bn_mode: str,
     adversarial_update: str,
     adversarial_schedule: str,
+    grl_strength: float,
     diagnostic_loaders: dict[str, DataLoader],
 ) -> tuple[dict[str, object], list[dict[str, object]]]:
     model.set_target_bn_mode(target_bn_mode)
@@ -425,6 +431,7 @@ def adapt(
             target_bn_mode=target_bn_mode,
             adversarial_update=adversarial_update,
             adversarial_schedule=adversarial_schedule,
+            grl_strength=grl_strength,
         )
     if resume and last_path.is_file():
         state = _load_adaptation_state(
@@ -434,6 +441,7 @@ def adapt(
             target_bn_mode=target_bn_mode,
             adversarial_update=adversarial_update,
             adversarial_schedule=adversarial_schedule,
+            grl_strength=grl_strength,
             device=device,
         )
         start = int(state["epoch"])
@@ -514,6 +522,7 @@ def adapt(
                     alpha=alpha,
                     beta=beta,
                     adversarial_update=adversarial_update,
+                    grl_strength=grl_strength,
                 )
                 if first_batch_gradient_l2 is None:
                     first_batch_gradient_l2, first_batch_gradient_cosine = (
@@ -574,6 +583,7 @@ def adapt(
             target_bn_mode=target_bn_mode,
             adversarial_update=adversarial_update,
             adversarial_schedule=adversarial_schedule,
+            grl_strength=grl_strength,
         )
         if improved:
             _save_adaptation_state(
@@ -588,6 +598,7 @@ def adapt(
                 target_bn_mode=target_bn_mode,
                 adversarial_update=adversarial_update,
                 adversarial_schedule=adversarial_schedule,
+                grl_strength=grl_strength,
             )
         if epoch + 1 in {1, 2, 5, 10}:
             _save_adaptation_state(
@@ -602,6 +613,7 @@ def adapt(
                 target_bn_mode=target_bn_mode,
                 adversarial_update=adversarial_update,
                 adversarial_schedule=adversarial_schedule,
+                grl_strength=grl_strength,
             )
         diagnostics.append({"epoch": epoch + 1, "training": dict(last_metrics)})
         diagnostics_path.write_text(json.dumps(diagnostics, indent=2), encoding="utf-8")
@@ -730,6 +742,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--source-lr", type=float, default=1e-3)
     parser.add_argument("--transfer-lr", type=float, default=1e-4)
     parser.add_argument("--adversarial-weight", type=float, default=1.0)
+    parser.add_argument("--grl-strength", type=float, default=1.0)
     parser.add_argument("--alpha", type=float, default=10.0)
     parser.add_argument("--beta", type=float, default=1.0)
     parser.add_argument("--patience", type=int, default=20)
@@ -1150,6 +1163,7 @@ def main() -> None:
         args.target_bn_mode,
         args.adversarial_update,
         args.adversarial_schedule,
+        args.grl_strength,
         target_test_loaders,
     )
     target_darm = {
@@ -1176,9 +1190,11 @@ def main() -> None:
         "target_bn_mode": args.target_bn_mode,
         "adversarial_update": args.adversarial_update,
         "adversarial_schedule": args.adversarial_schedule,
+        "grl_strength": args.grl_strength,
         "diagnostic": args.adversarial_update == "eq12_joint",
         "adaptation_loss_weights": {
             "adversarial": args.adversarial_weight,
+            "grl_strength": args.grl_strength,
             "reconstruction": args.alpha,
             "mmd": args.beta,
         },

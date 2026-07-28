@@ -412,6 +412,7 @@ class DARM(BaseSOCModel):
         target_x: torch.Tensor,
         *,
         adversarial_weight: float = 1.0,
+        grl_strength: float = 1.0,
         alpha: float = 10.0,
         beta: float = 1.0,
         adversarial_update: str = "grl_joint",
@@ -427,7 +428,7 @@ class DARM(BaseSOCModel):
 
         source_logits = self.discriminator(source_features.detach())
         discriminator_target_features = (
-            gradient_reverse(target_features)
+            gradient_reverse(target_features, grl_strength)
             if adversarial_update == "grl_joint"
             else target_features
         )

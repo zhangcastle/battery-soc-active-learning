@@ -39,6 +39,7 @@ def test_new_cli_modes_default_to_historical_behavior(monkeypatch):
     assert args.target_bn_mode == "legacy"
     assert args.adversarial_update == "grl_joint"
     assert args.adversarial_schedule == "constant"
+    assert args.grl_strength == 1.0
     assert args.source_normalization == "source_train"
     assert not args.source_only
     assert not args.audit_target_bn_forward
@@ -66,6 +67,7 @@ def test_adaptation_checkpoint_saves_and_restores_modes(tmp_path):
         target_bn_mode="frozen_stats",
         adversarial_update="grl_joint",
         adversarial_schedule="constant",
+        grl_strength=0.1,
     )
     expected_python = random.random()
     expected_numpy = np.random.rand()
@@ -80,6 +82,7 @@ def test_adaptation_checkpoint_saves_and_restores_modes(tmp_path):
         target_bn_mode="frozen_stats",
         adversarial_update="grl_joint",
         adversarial_schedule="constant",
+        grl_strength=0.1,
         device="cpu",
     )
 
@@ -88,6 +91,7 @@ def test_adaptation_checkpoint_saves_and_restores_modes(tmp_path):
         "target_bn_mode": "frozen_stats",
         "adversarial_update": "grl_joint",
         "adversarial_schedule": "constant",
+        "grl_strength": 0.1,
         "selection_uses_target_labels": False,
         "diagnostic": False,
     }

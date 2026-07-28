@@ -58,6 +58,40 @@ def test_mmd_is_zero_for_identical_batches():
     assert torch.allclose(multi_kernel_mmd(features, features), torch.tensor(0.0), atol=1e-6)
 
 
+def test_grl_strength_only_scales_target_encoder_adversarial_gradient():
+    torch.manual_seed(5)
+    base = DARM()
+    base.initialize_target()
+    source, target = torch.rand(4, 40, 3), torch.rand(4, 40, 3)
+    gradients = {}
+    for strength in (1.0, 0.1):
+        model = DARM()
+        model.load_state_dict(base.state_dict())
+        loss, _, _ = model.adaptation_loss(
+            source,
+            target,
+            grl_strength=strength,
+            alpha=0.0,
+            beta=0.0,
+        )
+        loss.backward()
+        gradients[strength] = {
+            "target": [p.grad.clone() for p in model.target_encoder.parameters()],
+            "discriminator": [p.grad.clone() for p in model.discriminator.parameters()],
+        }
+
+    assert all(
+        torch.allclose(weak, strong * 0.1, atol=1e-7)
+        for weak, strong in zip(gradients[0.1]["target"], gradients[1.0]["target"])
+    )
+    assert all(
+        torch.allclose(weak, strong, atol=1e-7)
+        for weak, strong in zip(
+            gradients[0.1]["discriminator"], gradients[1.0]["discriminator"]
+        )
+    )
+
+
 def test_frozen_source_parameters_and_buffers_do_not_update_during_adaptation():
     model = DARM()
     model.initialize_target()
