@@ -91,6 +91,7 @@ outputs/liu_2025/25c_to_0c/
 ├── diagnostic_paper_protocol_v2_alternating_10ep/
 ├── diagnostic_paper_protocol_v2_grl_10ep/
 ├── diagnostic_paper_protocol_v2_no_reconstruction_10ep/
+├── diagnostic_paper_protocol_v2_reconstruction_mmd_10ep/
 ├── diagnostic_source_checkpoints/
 ├── diagnostic_preprocessing_audit/
 ├── diagnostic_update_semantics_20260728/
@@ -141,6 +142,8 @@ and alternating flipped-label updates.
 and records pairwise target-gradient cosine diagnostics.
 `diagnostic_paper_protocol_v2_no_reconstruction_10ep/` is the matched
 alternating comparison with only the reconstruction term removed.
+`diagnostic_paper_protocol_v2_reconstruction_mmd_10ep/` keeps reconstruction
+and MMD while removing the target-encoder adversarial term.
 `diagnostic_source_checkpoints/` compares the paper-order source artifact,
 best checkpoint, and last checkpoint without retraining.
 `diagnostic_preprocessing_audit/` compares SOC label formulas and reports
