@@ -64,6 +64,9 @@ The paper does not publish code or fully specify the following details:
   only as a proxy checkpoint because GRL is not a joint minimization objective.
 - Target-label checkpoint comparisons are post-hoc diagnostic oracles and
   never participate in optimization, early stopping, or formal selection.
+- Source milestone comparisons likewise use source-test labels only after
+  training; they diagnose generalization and never select the formal source
+  artifact.
 - Early-stopping monitor: current-stage training-loss proxy.
 - Min-max normalisation scope: the baseline fits source Cycle 1-4 only. The
   paper states that measurements are transformed to `[0, 1]` but does not

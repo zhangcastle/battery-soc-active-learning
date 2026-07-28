@@ -302,6 +302,16 @@ def train_source(
         _save_training_state(last_path, model, optimizer, epoch, best_loss, stale, last_metrics)
         if improved:
             _save_training_state(best_path, model, optimizer, epoch, best_loss, stale, last_metrics)
+        if epoch + 1 in {1, 2, 5, 10, 20, 50, 100, 150, 200, 250, 300, 400, 500}:
+            _save_training_state(
+                output / f"source_epoch_{epoch + 1:03d}.pt",
+                model,
+                optimizer,
+                epoch,
+                best_loss,
+                stale,
+                last_metrics,
+            )
         progress.set_postfix(mse=f"{epoch_loss:.6f}")
         if patience and stale >= patience:
             break
@@ -932,6 +942,37 @@ def main() -> None:
         for profile, test_loader in target_test_loaders.items()
     }
     if args.source_only:
+        milestone_diagnostics = []
+        checkpoint_paths = sorted(args.output.glob("source_epoch_*.pt"))
+        checkpoint_paths.extend(
+            path
+            for path in (args.output / "source_best.pt", args.output / "source_last.pt")
+            if path.is_file()
+        )
+        for checkpoint_path in checkpoint_paths:
+            checkpoint = torch.load(checkpoint_path, map_location=device, weights_only=False)
+            model.load_state_dict(checkpoint["model_state_dict"])
+            model.initialize_target()
+            checkpoint_source_test = {
+                profile: evaluate(model, loader, device)
+                for profile, loader in source_test_loaders.items()
+            }
+            milestone_diagnostics.append(
+                {
+                    "checkpoint": checkpoint_path.name,
+                    "epoch": int(checkpoint["epoch"]) + 1,
+                    "training_mse": float(checkpoint["metrics"]["mse"]),
+                    "mean_profile_rmse_percent": float(
+                        np.mean(
+                            [
+                                metrics["rmse_percent"]
+                                for metrics in checkpoint_source_test.values()
+                            ]
+                        )
+                    ),
+                    "source_test": checkpoint_source_test,
+                }
+            )
         source_only_result = {
             "paper": "Liu et al. 2025, doi:10.1109/TTE.2024.3483973",
             "protocol": "Panasonic 25C source estimator",
@@ -946,6 +987,11 @@ def main() -> None:
             "window_length": 40,
             "source_windows": len(source_x),
             "source_normalization": args.source_normalization,
+            "source_milestone_diagnostics": {
+                "diagnostic_only": True,
+                "used_for_training_or_checkpoint_selection": False,
+                "checkpoints": milestone_diagnostics,
+            },
         }
         (args.output / "source_only_results.json").write_text(
             json.dumps(source_only_result, indent=2), encoding="utf-8"

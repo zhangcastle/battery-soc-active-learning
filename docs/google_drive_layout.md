@@ -87,6 +87,8 @@ outputs/liu_2025/25c_to_0c/
 ├── formal/
 ├── formal_paper_ivt/
 ├── formal_paper_protocol_v2_source_only/
+├── diagnostic_source_protocol_v2_milestones/
+├── diagnostic_paper_protocol_v2_alternating_10ep/
 ├── diagnostic_source_checkpoints/
 ├── diagnostic_preprocessing_audit/
 ├── diagnostic_update_semantics_20260728/
@@ -127,6 +129,12 @@ scaler sees all 0 C input covariates, but no target SOC labels.
 one 25 C HWFET session and a diagnostic scaler fitted to all 25 C input
 covariates without reading source-test SOC labels. It does not run adaptation
 or overwrite `formal_paper_ivt/`.
+`diagnostic_source_protocol_v2_milestones/` repeats that source optimization
+through epoch 200 and saves only fixed milestone checkpoints. Source-test
+labels are evaluated post-hoc and never select a checkpoint.
+`diagnostic_paper_protocol_v2_alternating_10ep/` reuses the corrected source
+artifact for a short full-loss transfer check with frozen target-BN statistics
+and alternating flipped-label updates.
 `diagnostic_source_checkpoints/` compares the paper-order source artifact,
 best checkpoint, and last checkpoint without retraining.
 `diagnostic_preprocessing_audit/` compares SOC label formulas and reports
