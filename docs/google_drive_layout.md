@@ -100,6 +100,7 @@ outputs/liu_2025/25c_to_0c/
 ├── diagnostic_frozen_stats_reconstruction_mmd_10ep/
 ├── diagnostic_frozen_stats_alternating_full_loss_10ep/
 ├── diagnostic_fully_frozen_alternating_full_loss_10ep/
+├── diagnostic_frozen_stats_alternating_adversarial_only_10ep/
 ├── diagnostic_bn_frozen/
 ├── diagnostic_clip/
 ├── diagnostic_no_reconstruction/
@@ -139,6 +140,9 @@ the ten-epoch full-loss diagnostic.
 `diagnostic_fully_frozen_alternating_full_loss_10ep/` repeats the alternating
 run with target-BN affine parameters frozen to isolate their contribution to
 late feature drift.
+`diagnostic_frozen_stats_alternating_adversarial_only_10ep/` removes
+reconstruction and MMD to test the alternating adversarial game without
+competing target-encoder losses.
 
 ### Current canonical Panasonic source bundle
 
