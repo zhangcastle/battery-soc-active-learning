@@ -99,6 +99,7 @@ outputs/liu_2025/25c_to_0c/
 ├── diagnostic_frozen_stats_grl_full_loss_10ep/
 ├── diagnostic_frozen_stats_reconstruction_mmd_10ep/
 ├── diagnostic_frozen_stats_alternating_full_loss_10ep/
+├── diagnostic_fully_frozen_alternating_full_loss_10ep/
 ├── diagnostic_bn_frozen/
 ├── diagnostic_clip/
 ├── diagnostic_no_reconstruction/
@@ -135,6 +136,9 @@ joint GRL updates.
 term, while `diagnostic_frozen_stats_alternating_full_loss_10ep/` replaces
 joint GRL with alternating flipped-label updates; all other settings match
 the ten-epoch full-loss diagnostic.
+`diagnostic_fully_frozen_alternating_full_loss_10ep/` repeats the alternating
+run with target-BN affine parameters frozen to isolate their contribution to
+late feature drift.
 
 ### Current canonical Panasonic source bundle
 
