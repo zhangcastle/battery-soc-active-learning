@@ -87,6 +87,7 @@ outputs/liu_2025/25c_to_0c/
 ├── formal/
 ├── formal_paper_ivt/
 ├── diagnostic_source_checkpoints/
+├── diagnostic_preprocessing_audit/
 ├── diagnostic_bn_frozen/
 ├── diagnostic_clip/
 ├── diagnostic_no_reconstruction/
@@ -110,6 +111,8 @@ scaler sees all 0 C input covariates, but no target SOC labels.
 `[current, voltage, temperature]` channel order.
 `diagnostic_source_checkpoints/` compares the paper-order source artifact,
 best checkpoint, and last checkpoint without retraining.
+`diagnostic_preprocessing_audit/` compares SOC label formulas and reports
+source-scaler range violations without retraining.
 
 ### Current canonical Panasonic source bundle
 

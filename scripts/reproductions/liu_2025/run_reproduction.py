@@ -60,21 +60,36 @@ def load_record(row) -> VidalV2Record:
         }
     ).dropna()
     frame = frame.sort_values("timestamp", kind="stable").reset_index(drop=True)
+    metadata = {
+        "record_id": row.record_id,
+        "profile": row.profile,
+        "role": row.role,
+        "label_usage": row.label_usage,
+    }
     if labelled:
-        _, frame["soc"] = compute_vidal_drive_soc(frame["ah"].to_numpy())
+        ah = frame["ah"].to_numpy()
+        denominator, soc = compute_vidal_drive_soc(ah)
+        frame["soc"] = soc
+        ah_delta = ah - ah[0]
+        metadata.update(
+            {
+                "soc_denominator_ah": denominator,
+                "delivered_ah": abs(float(ah_delta.min())),
+                "soc_end_per_file_percent": float(soc[-1] * 100),
+            }
+        )
+        for capacity in (2.75, 2.9):
+            nominal_soc = 1.0 + ah_delta / capacity
+            suffix = str(capacity).replace(".", "_")
+            metadata[f"soc_end_{suffix}ah_percent"] = float(nominal_soc[-1] * 100)
+            metadata[f"mae_per_file_vs_{suffix}ah_percent"] = float(
+                np.mean(np.abs(soc - nominal_soc)) * 100
+            )
     else:
         # resample_vidal_record expects a SOC column; zeros carry no label information.
         frame["soc"] = 0.0
     record = resample_vidal_record(
-        VidalV2Record(
-            frame,
-            {
-                "record_id": row.record_id,
-                "profile": row.profile,
-                "role": row.role,
-                "label_usage": row.label_usage,
-            },
-        ),
+        VidalV2Record(frame, metadata),
         target_hz=1.0,
     )
     if not labelled:
@@ -338,6 +353,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--max-windows", type=int)
     parser.add_argument("--source-artifact", type=Path)
     parser.add_argument("--compare-source-checkpoints", action="store_true")
+    parser.add_argument("--audit-preprocessing", action="store_true")
     parser.add_argument("--diagnose-adaptation", action="store_true")
     parser.add_argument(
         "--target-normalization",
@@ -353,8 +369,8 @@ def parse_args() -> argparse.Namespace:
 
 def main() -> None:
     args = parse_args()
-    if args.compare_source_checkpoints and not args.source_artifact:
-        raise ValueError("--compare-source-checkpoints requires --source-artifact")
+    if (args.compare_source_checkpoints or args.audit_preprocessing) and not args.source_artifact:
+        raise ValueError("Checkpoint comparison and preprocessing audit require --source-artifact")
     if args.smoke:
         args.source_epochs = args.transfer_epochs = 1
         args.max_windows = args.max_windows or 512
@@ -483,6 +499,51 @@ def main() -> None:
             for profile, (x, _) in target_test_arrays.items()
         },
     }
+    if args.audit_preprocessing:
+        label_rows = []
+        for role, groups in (
+            ("source_train", {"Cycle_1-4": source_records}),
+            ("source_test", source_tests),
+            ("target_test", target_tests),
+        ):
+            for profile, records in groups.items():
+                for record in records:
+                    label_rows.append(
+                        {
+                            "role": role,
+                            "profile": record.metadata.get("profile", profile),
+                            **{
+                                key: value
+                                for key, value in record.metadata.items()
+                                if key
+                                in {
+                                    "record_id",
+                                    "soc_denominator_ah",
+                                    "delivered_ah",
+                                    "soc_end_per_file_percent",
+                                    "soc_end_2_75ah_percent",
+                                    "mae_per_file_vs_2_75ah_percent",
+                                    "soc_end_2_9ah_percent",
+                                    "mae_per_file_vs_2_9ah_percent",
+                                }
+                            },
+                        }
+                    )
+        audit = {
+            "paper": "Liu et al. 2025, doi:10.1109/TTE.2024.3483973",
+            "manifest_sha256": sha256_file(args.manifest),
+            "feature_order": list(feature_order),
+            "source_artifact": str(source_artifact_path),
+            "source_normalizer_state_dict": normalizer.state_dict(),
+            "normalized_feature_ranges": normalized_feature_ranges,
+            "label_formula_comparison": label_rows,
+        }
+        (args.output / "preprocessing_audit.json").write_text(
+            json.dumps(audit, indent=2),
+            encoding="utf-8",
+        )
+        print(json.dumps(audit, indent=2))
+        return
 
     source_loader = supervised_loader(source_x, source_y, args.batch_size, True)
     target_loader = unlabelled_loader(target_x, args.batch_size)
