@@ -325,6 +325,11 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--max-windows", type=int)
     parser.add_argument("--source-artifact", type=Path)
     parser.add_argument("--diagnose-adaptation", action="store_true")
+    parser.add_argument(
+        "--target-normalization",
+        choices=("source", "target_adapt"),
+        default="source",
+    )
     parser.add_argument("--clip-normalized-inputs", action="store_true")
     parser.add_argument("--smoke", action="store_true")
     parser.add_argument("--resume", action="store_true")
@@ -390,14 +395,19 @@ def main() -> None:
         source_artifact_path = args.output / "source_artifact.pt"
         normalizer.fit(source_x)
 
+    target_normalizer = (
+        MinMaxNormalizer().fit(target_x)
+        if args.target_normalization == "target_adapt"
+        else normalizer
+    )
     source_x = normalizer.transform(source_x).astype(np.float32)
-    target_x = normalizer.transform(target_x).astype(np.float32)
+    target_x = target_normalizer.transform(target_x).astype(np.float32)
     source_test_arrays = {
         profile: (normalizer.transform(x).astype(np.float32), y)
         for profile, (x, y) in source_test_arrays.items()
     }
     target_test_arrays = {
-        profile: (normalizer.transform(x).astype(np.float32), y)
+        profile: (target_normalizer.transform(x).astype(np.float32), y)
         for profile, (x, y) in target_test_arrays.items()
     }
     normalized_feature_ranges_before_clipping = None
@@ -535,6 +545,8 @@ def main() -> None:
         },
         "adaptation_diagnostics": adaptation_diagnostics,
         "clip_normalized_inputs": args.clip_normalized_inputs,
+        "target_normalization": args.target_normalization,
+        "target_normalizer_state_dict": target_normalizer.state_dict(),
         "normalized_feature_ranges_before_clipping": normalized_feature_ranges_before_clipping,
         "normalized_feature_ranges": normalized_feature_ranges,
         "source_test": source_test,
@@ -542,7 +554,11 @@ def main() -> None:
         "target_darm": target_darm,
         "known_reconstruction": {
             "soc_label": "per-file cycler Ah normalization; paper formula unspecified",
-            "normalization": "fit on source Cycle 1-4 only",
+            "normalization": (
+                "source scaler: source Cycle 1-4; target scaler: target Cycle 1"
+                if args.target_normalization == "target_adapt"
+                else "fit on source Cycle 1-4 only"
+            ),
             "diagnostic_target_labels": (
                 "post-epoch evaluation only; never used for optimization, early stopping, "
                 "or checkpoint selection"

@@ -89,7 +89,8 @@ outputs/liu_2025/25c_to_0c/
 ├── diagnostic_clip/
 ├── diagnostic_no_reconstruction/
 ├── diagnostic_adversarial_only/
-└── diagnostic_mmd_only/
+├── diagnostic_mmd_only/
+└── diagnostic_target_normalized/
 ```
 
 All `diagnostic_*` directories reuse `formal/source_artifact.pt`; they
@@ -98,6 +99,8 @@ source-normalized inputs to `[0, 1]`, while `diagnostic_no_reconstruction/`
 sets the adaptation reconstruction weight to zero.
 `diagnostic_adversarial_only/` and `diagnostic_mmd_only/` isolate the two
 remaining alignment losses.
+`diagnostic_target_normalized/` fits a target min-max scaler using only the
+unlabelled target Cycle 1.
 
 ### Current canonical Panasonic source bundle
 

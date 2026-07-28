@@ -49,7 +49,10 @@ The paper does not publish code or fully specify the following details:
 - MK-MMD bandwidths: median distance multiplied by `[0.5, 1, 2, 4]`.
 - Adversarial sign: gradient reversal.
 - Early-stopping monitor: current-stage training loss.
-- Min-max normalisation: fitted on source Cycle 1-4 only.
+- Min-max normalisation scope: the baseline fits source Cycle 1-4 only. The
+  paper states that measurements are transformed to `[0, 1]` but does not
+  identify the fitting scope; `--target-normalization target_adapt` diagnoses
+  a separate scaler fitted only on unlabeled target Cycle 1.
 
 These assumptions must remain visible when comparing against the paper.
 
