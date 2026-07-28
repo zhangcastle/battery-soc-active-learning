@@ -86,6 +86,7 @@ outputs/liu_2025/25c_to_0c/
 ├── smoke/
 ├── formal/
 ├── formal_paper_ivt/
+├── formal_paper_protocol_v2_source_only/
 ├── diagnostic_source_checkpoints/
 ├── diagnostic_preprocessing_audit/
 ├── diagnostic_update_semantics_20260728/
@@ -122,6 +123,10 @@ unlabelled target Cycle 1.
 scaler sees all 0 C input covariates, but no target SOC labels.
 `formal_paper_ivt/` is a separate full run using the paper's stated
 `[current, voltage, temperature]` channel order.
+`formal_paper_protocol_v2_source_only/` is the corrected source-only check:
+one 25 C HWFET session and a diagnostic scaler fitted to all 25 C input
+covariates without reading source-test SOC labels. It does not run adaptation
+or overwrite `formal_paper_ivt/`.
 `diagnostic_source_checkpoints/` compares the paper-order source artifact,
 best checkpoint, and last checkpoint without retraining.
 `diagnostic_preprocessing_audit/` compares SOC label formulas and reports

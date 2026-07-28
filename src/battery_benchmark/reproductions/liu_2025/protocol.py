@@ -69,11 +69,15 @@ def load_experiment_manifest(
     if counts.get("source_train") != 4 or counts.get("target_adapt") != 1:
         raise ValueError("Expected four source_train rows and one target_adapt row")
     for role in ("source_test", "target_test"):
-        profiles = set(manifest.loc[manifest["role"] == role, "profile"])
+        rows = manifest.loc[manifest["role"] == role]
+        profiles = set(rows["profile"])
         if profiles != TEST_PROFILES:
             raise ValueError(
                 f"{role} profiles must be {sorted(TEST_PROFILES)}, got {sorted(profiles)}"
             )
+        duplicates = sorted(rows.loc[rows["profile"].duplicated(), "profile"].unique())
+        if duplicates:
+            raise ValueError(f"{role} must contain one file per profile; duplicates: {duplicates}")
 
     resolved = []
     for row in manifest.itertuples(index=False):

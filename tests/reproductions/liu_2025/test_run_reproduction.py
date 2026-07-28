@@ -15,6 +15,8 @@ def test_new_cli_modes_default_to_historical_behavior(monkeypatch):
     args = parse_args()
     assert args.target_bn_mode == "legacy"
     assert args.adversarial_update == "grl_joint"
+    assert args.source_normalization == "source_train"
+    assert not args.source_only
     assert not args.audit_target_bn_forward
 
 

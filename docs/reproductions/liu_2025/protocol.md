@@ -15,6 +15,12 @@ This phase implements one fixed-temperature task: Panasonic 18650PF
 The authoritative file assignment and hashes are in
 `data/manifests/liu_2025/panasonic_25c_to_0c.csv`.
 
+The public 25 C data contains two separate HWFET sessions. The paper reports
+and plots one approximately 7000-second HWFET sequence, so this protocol uses
+the first session (`HWFTa`) and excludes the later repeat (`HWFTb`). The paper
+does not publish the exact filename, so selection of the first session remains
+an explicit reconstruction assumption.
+
 ## Related files
 
 | Purpose | Path |
@@ -61,7 +67,10 @@ The paper does not publish code or fully specify the following details:
 - Early-stopping monitor: current-stage training-loss proxy.
 - Min-max normalisation scope: the baseline fits source Cycle 1-4 only. The
   paper states that measurements are transformed to `[0, 1]` but does not
-  identify the fitting scope; `--target-normalization target_adapt` diagnoses
+  identify the fitting scope. `--source-normalization source_domain` is a
+  transductive diagnostic that fits the source scaler on all 25 C input
+  covariates without reading test SOC labels; the historical default remains
+  `source_train`. `--target-normalization target_adapt` diagnoses
   a separate scaler fitted only on unlabeled target Cycle 1, while
   `target_domain` diagnoses normalization over all target input covariates
   without using target SOC labels.

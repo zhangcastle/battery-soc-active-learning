@@ -32,3 +32,14 @@ def test_manifest_rejects_target_adaptation_labels(tmp_path):
     manifest.to_csv(path, index=False)
     with pytest.raises(ValueError, match="requires label policy"):
         load_experiment_manifest(path, DATA_ROOT)
+
+
+def test_manifest_rejects_duplicate_test_profiles(tmp_path):
+    manifest = pd.read_csv(MANIFEST, keep_default_na=False)
+    duplicate = manifest.loc[manifest["record_id"] == "source_test_la92"].copy()
+    duplicate["record_id"] = "source_test_la92_duplicate"
+    path = tmp_path / "duplicate.csv"
+    pd.concat([manifest, duplicate], ignore_index=True).to_csv(path, index=False)
+
+    with pytest.raises(ValueError, match="one file per profile"):
+        load_experiment_manifest(path, DATA_ROOT)

@@ -655,8 +655,14 @@ def parse_args() -> argparse.Namespace:
         choices=tuple(FEATURE_ORDERS),
         default="legacy_vit",
     )
+    parser.add_argument(
+        "--source-normalization",
+        choices=("source_train", "source_domain"),
+        default="source_train",
+    )
     parser.add_argument("--max-windows", type=int)
     parser.add_argument("--source-artifact", type=Path)
+    parser.add_argument("--source-only", action="store_true")
     parser.add_argument("--compare-source-checkpoints", action="store_true")
     parser.add_argument("--audit-preprocessing", action="store_true")
     parser.add_argument("--audit-target-bn-forward", action="store_true")
@@ -685,9 +691,7 @@ def parse_args() -> argparse.Namespace:
 
 def main() -> None:
     args = parse_args()
-    if (
-        args.compare_source_checkpoints or args.audit_preprocessing or args.audit_target_bn_forward
-    ) and not args.source_artifact:
+    if (args.compare_source_checkpoints or args.audit_target_bn_forward) and not args.source_artifact:
         raise ValueError("Checkpoint comparison and audit modes require --source-artifact")
     if args.smoke:
         args.source_epochs = args.transfer_epochs = 1
@@ -751,10 +755,21 @@ def main() -> None:
             raise ValueError("Source artifact manifest hash does not match --manifest")
         if source_artifact_metadata.get("feature_order") != list(feature_order):
             raise ValueError("Source artifact feature order does not match --feature-order")
+        if source_artifact_metadata.get("source_normalization", "source_train") != (
+            args.source_normalization
+        ):
+            raise ValueError(
+                "Source artifact normalization does not match --source-normalization"
+            )
         source_training: dict[str, object] = {"reused": True}
     else:
         source_artifact_path = args.output / "source_artifact.pt"
-        normalizer.fit(source_x)
+        source_normalization_x = source_x
+        if args.source_normalization == "source_domain":
+            source_normalization_x = np.concatenate(
+                [source_x, *(x for x, _ in source_test_arrays.values())]
+            )
+        normalizer.fit(source_normalization_x)
 
     target_normalizer = normalizer
     if args.target_normalization == "target_adapt":
@@ -841,7 +856,8 @@ def main() -> None:
             "paper": "Liu et al. 2025, doi:10.1109/TTE.2024.3483973",
             "manifest_sha256": sha256_file(args.manifest),
             "feature_order": list(feature_order),
-            "source_artifact": str(source_artifact_path),
+            "source_artifact": str(source_artifact_path) if args.source_artifact else None,
+            "source_normalization": args.source_normalization,
             "source_normalizer_state_dict": normalizer.state_dict(),
             "normalized_feature_ranges": normalized_feature_ranges,
             "label_formula_comparison": label_rows,
@@ -889,6 +905,7 @@ def main() -> None:
             "batch_size": args.batch_size,
             "seed": args.seed,
             "source_windows": len(source_x),
+            "source_normalization": args.source_normalization,
             "git_commit": get_full_commit_hash(Path.cwd()),
             "git_dirty": is_dirty(Path.cwd()),
         }
@@ -914,6 +931,30 @@ def main() -> None:
         profile: evaluate(model, test_loader, device)
         for profile, test_loader in target_test_loaders.items()
     }
+    if args.source_only:
+        source_only_result = {
+            "paper": "Liu et al. 2025, doi:10.1109/TTE.2024.3483973",
+            "protocol": "Panasonic 25C source estimator",
+            "manifest": str(args.manifest),
+            "manifest_sha256": sha256_file(args.manifest),
+            "source_artifact": str(source_artifact_path),
+            "source_artifact_sha256": source_artifact_sha256,
+            "source_training": source_training,
+            "source_test": source_test,
+            "target_source_only": target_source_only,
+            "feature_order": list(feature_order),
+            "window_length": 40,
+            "source_windows": len(source_x),
+            "source_normalization": args.source_normalization,
+        }
+        (args.output / "source_only_results.json").write_text(
+            json.dumps(source_only_result, indent=2), encoding="utf-8"
+        )
+        print("Source test")
+        print(pd.DataFrame(source_test).T.to_string())
+        print("Target source-only")
+        print(pd.DataFrame(target_source_only).T.to_string())
+        return
     if args.compare_source_checkpoints:
         comparison = {
             "source_artifact": {
@@ -998,6 +1039,7 @@ def main() -> None:
         "source_artifact_sha256": source_artifact_sha256,
         "window_length": 40,
         "feature_order": list(feature_order),
+        "source_normalization": args.source_normalization,
         "source_windows": len(source_x),
         "target_adaptation_windows": len(target_x),
         "source_training": source_training,
