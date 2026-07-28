@@ -9,6 +9,7 @@ from scripts.reproductions.liu_2025.run_reproduction import (
     _load_adaptation_state,
     _save_adaptation_state,
     parse_args,
+    scheduled_adversarial_weight,
 )
 
 from battery_benchmark.reproductions.liu_2025.darm import DARM
@@ -27,11 +28,17 @@ def test_gradient_diagnostics_reports_opposing_directions():
     assert math.isclose(cosines["adversarial_vs_reconstruction"], -1.0)
 
 
+def test_dann_adversarial_schedule_starts_at_zero_and_ends_near_one():
+    assert scheduled_adversarial_weight(1.0, "dann", 0, 100) == 0.0
+    assert scheduled_adversarial_weight(1.0, "dann", 99, 100) > 0.99
+
+
 def test_new_cli_modes_default_to_historical_behavior(monkeypatch):
     monkeypatch.setattr(sys, "argv", ["run_reproduction.py"])
     args = parse_args()
     assert args.target_bn_mode == "legacy"
     assert args.adversarial_update == "grl_joint"
+    assert args.adversarial_schedule == "constant"
     assert args.source_normalization == "source_train"
     assert not args.source_only
     assert not args.audit_target_bn_forward
@@ -58,6 +65,7 @@ def test_adaptation_checkpoint_saves_and_restores_modes(tmp_path):
         checkpoint_kind="last",
         target_bn_mode="frozen_stats",
         adversarial_update="grl_joint",
+        adversarial_schedule="constant",
     )
     expected_python = random.random()
     expected_numpy = np.random.rand()
@@ -71,6 +79,7 @@ def test_adaptation_checkpoint_saves_and_restores_modes(tmp_path):
         optimizers,
         target_bn_mode="frozen_stats",
         adversarial_update="grl_joint",
+        adversarial_schedule="constant",
         device="cpu",
     )
 
@@ -78,6 +87,7 @@ def test_adaptation_checkpoint_saves_and_restores_modes(tmp_path):
         "checkpoint_kind": "last",
         "target_bn_mode": "frozen_stats",
         "adversarial_update": "grl_joint",
+        "adversarial_schedule": "constant",
         "selection_uses_target_labels": False,
         "diagnostic": False,
     }

@@ -150,6 +150,8 @@ and MMD while removing the target-encoder adversarial term.
 reconstruction and adversarial alignment while removing MMD.
 `diagnostic_paper_protocol_v2_continuous_30ep/` repeats the full corrected
 protocol without the historical epoch-10 and epoch-30 RNG resets.
+`diagnostic_paper_protocol_v2_dann_schedule_30ep/` matches that continuous
+run but ramps only the target encoder adversarial weight from 0 to 1.
 `diagnostic_source_checkpoints/` compares the paper-order source artifact,
 best checkpoint, and last checkpoint without retraining.
 `diagnostic_preprocessing_audit/` compares SOC label formulas and reports

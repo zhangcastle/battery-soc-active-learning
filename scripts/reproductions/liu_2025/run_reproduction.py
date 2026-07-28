@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import math
 import random
 from copy import deepcopy
 from itertools import cycle
@@ -44,6 +45,19 @@ FEATURE_ORDERS = {
     "legacy_vit": ("voltage", "current", "temperature"),
     "paper_ivt": ("current", "voltage", "temperature"),
 }
+ADVERSARIAL_SCHEDULES = ("constant", "dann")
+
+
+def scheduled_adversarial_weight(
+    weight: float,
+    schedule: str,
+    step: int,
+    total_steps: int,
+) -> float:
+    if schedule == "constant":
+        return weight
+    progress = step / max(total_steps - 1, 1)
+    return weight * (2.0 / (1.0 + math.exp(-10.0 * progress)) - 1.0)
 
 
 def load_record(row) -> VidalV2Record:
@@ -214,6 +228,7 @@ def _save_adaptation_state(
     checkpoint_kind: str,
     target_bn_mode: str,
     adversarial_update: str,
+    adversarial_schedule: str,
 ) -> None:
     torch.save(
         {
@@ -235,6 +250,7 @@ def _save_adaptation_state(
                 "checkpoint_kind": checkpoint_kind,
                 "target_bn_mode": target_bn_mode,
                 "adversarial_update": adversarial_update,
+                "adversarial_schedule": adversarial_schedule,
                 "selection_uses_target_labels": False,
                 "diagnostic": adversarial_update == "eq12_joint",
             },
@@ -250,6 +266,7 @@ def _load_adaptation_state(
     *,
     target_bn_mode: str,
     adversarial_update: str,
+    adversarial_schedule: str,
     device: torch.device | str,
 ) -> dict[str, object]:
     state = torch.load(path, map_location=device, weights_only=False)
@@ -258,6 +275,8 @@ def _load_adaptation_state(
         raise ValueError("Checkpoint target_bn_mode does not match the requested mode")
     if metadata.get("adversarial_update", "grl_joint") != adversarial_update:
         raise ValueError("Checkpoint adversarial_update does not match the requested mode")
+    if metadata.get("adversarial_schedule", "constant") != adversarial_schedule:
+        raise ValueError("Checkpoint adversarial_schedule does not match the requested mode")
     model.load_state_dict(state["model_state_dict"])
     optimizer_states = state.get("optimizer_state_dicts")
     if optimizer_states is None and "optimizer_state_dict" in state:
@@ -372,6 +391,7 @@ def adapt(
     resume: bool,
     target_bn_mode: str,
     adversarial_update: str,
+    adversarial_schedule: str,
     diagnostic_loaders: dict[str, DataLoader],
 ) -> tuple[dict[str, object], list[dict[str, object]]]:
     model.set_target_bn_mode(target_bn_mode)
@@ -404,6 +424,7 @@ def adapt(
             checkpoint_kind="initialization_source_only",
             target_bn_mode=target_bn_mode,
             adversarial_update=adversarial_update,
+            adversarial_schedule=adversarial_schedule,
         )
     if resume and last_path.is_file():
         state = _load_adaptation_state(
@@ -412,6 +433,7 @@ def adapt(
             optimizers,
             target_bn_mode=target_bn_mode,
             adversarial_update=adversarial_update,
+            adversarial_schedule=adversarial_schedule,
             device=device,
         )
         start = int(state["epoch"])
@@ -432,9 +454,15 @@ def adapt(
         first_batch_gradient_l2: dict[str, float] | None = None
         first_batch_gradient_cosine: dict[str, float] | None = None
         source_iterator = cycle(source)
-        for (target_x,) in target:
+        for batch_index, (target_x,) in enumerate(target):
             source_x, _ = next(source_iterator)
             source_x, target_x = source_x.to(device), target_x.to(device)
+            effective_adversarial_weight = scheduled_adversarial_weight(
+                adversarial_weight,
+                adversarial_schedule,
+                epoch * len(target) + batch_index,
+                epochs * len(target),
+            )
             target_parameters = [
                 parameter
                 for parameter in model.target_encoder.parameters()
@@ -455,7 +483,7 @@ def adapt(
                 loss, losses = model.alternating_target_loss(
                     source_x,
                     target_x,
-                    adversarial_weight=adversarial_weight,
+                    adversarial_weight=effective_adversarial_weight,
                     alpha=alpha,
                     beta=beta,
                 )
@@ -463,7 +491,9 @@ def adapt(
                     first_batch_gradient_l2, first_batch_gradient_cosine = (
                         _gradient_diagnostics(
                             {
-                                "adversarial": adversarial_weight * losses["adversarial"],
+                                "adversarial": (
+                                    effective_adversarial_weight * losses["adversarial"]
+                                ),
                                 "reconstruction": alpha * losses["reconstruction"],
                                 "mmd": beta * losses["mmd"],
                                 "total": losses["total"],
@@ -480,7 +510,7 @@ def adapt(
                 loss, losses, domain_metrics = model.adaptation_loss(
                     source_x,
                     target_x,
-                    adversarial_weight=adversarial_weight,
+                    adversarial_weight=effective_adversarial_weight,
                     alpha=alpha,
                     beta=beta,
                     adversarial_update=adversarial_update,
@@ -489,7 +519,9 @@ def adapt(
                     first_batch_gradient_l2, first_batch_gradient_cosine = (
                         _gradient_diagnostics(
                             {
-                                "adversarial": adversarial_weight * losses["adversarial"],
+                                "adversarial": (
+                                    effective_adversarial_weight * losses["adversarial"]
+                                ),
                                 "reconstruction": alpha * losses["reconstruction"],
                                 "mmd": beta * losses["mmd"],
                                 "total": losses["total"],
@@ -504,6 +536,7 @@ def adapt(
                 {
                     **domain_metrics,
                     **{name: float(value.detach()) for name, value in losses.items()},
+                    "adversarial_weight": effective_adversarial_weight,
                 }
             )
         last_metrics = {
@@ -540,6 +573,7 @@ def adapt(
             checkpoint_kind="last",
             target_bn_mode=target_bn_mode,
             adversarial_update=adversarial_update,
+            adversarial_schedule=adversarial_schedule,
         )
         if improved:
             _save_adaptation_state(
@@ -553,6 +587,7 @@ def adapt(
                 checkpoint_kind="lowest_total_loss_proxy",
                 target_bn_mode=target_bn_mode,
                 adversarial_update=adversarial_update,
+                adversarial_schedule=adversarial_schedule,
             )
         if epoch + 1 in {1, 2, 5, 10}:
             _save_adaptation_state(
@@ -566,6 +601,7 @@ def adapt(
                 checkpoint_kind=f"epoch_{epoch + 1}",
                 target_bn_mode=target_bn_mode,
                 adversarial_update=adversarial_update,
+                adversarial_schedule=adversarial_schedule,
             )
         diagnostics.append({"epoch": epoch + 1, "training": dict(last_metrics)})
         diagnostics_path.write_text(json.dumps(diagnostics, indent=2), encoding="utf-8")
@@ -586,6 +622,7 @@ def adapt(
         "selected_checkpoint": "last",
         "target_bn_mode": target_bn_mode,
         "adversarial_update": adversarial_update,
+        "adversarial_schedule": adversarial_schedule,
         "diagnostic": adversarial_update == "eq12_joint",
         "diagnostic_oracle": {
             "used_for_training_or_selection": False,
@@ -726,6 +763,11 @@ def parse_args() -> argparse.Namespace:
         default="grl_joint",
     )
     parser.add_argument(
+        "--adversarial-schedule",
+        choices=ADVERSARIAL_SCHEDULES,
+        default="constant",
+    )
+    parser.add_argument(
         "--target-normalization",
         choices=("source", "target_adapt", "target_domain"),
         default="source",
@@ -741,6 +783,8 @@ def main() -> None:
     args = parse_args()
     if (args.compare_source_checkpoints or args.audit_target_bn_forward) and not args.source_artifact:
         raise ValueError("Checkpoint comparison and audit modes require --source-artifact")
+    if args.adversarial_schedule == "dann" and args.adversarial_update != "alternating_flipped":
+        raise ValueError("The DANN schedule diagnostic requires --adversarial-update alternating_flipped")
     if args.smoke:
         args.source_epochs = args.transfer_epochs = 1
         args.max_windows = args.max_windows or 512
@@ -1105,6 +1149,7 @@ def main() -> None:
         args.resume,
         args.target_bn_mode,
         args.adversarial_update,
+        args.adversarial_schedule,
         target_test_loaders,
     )
     target_darm = {
@@ -1130,6 +1175,7 @@ def main() -> None:
         "target_training": target_training,
         "target_bn_mode": args.target_bn_mode,
         "adversarial_update": args.adversarial_update,
+        "adversarial_schedule": args.adversarial_schedule,
         "diagnostic": args.adversarial_update == "eq12_joint",
         "adaptation_loss_weights": {
             "adversarial": args.adversarial_weight,
