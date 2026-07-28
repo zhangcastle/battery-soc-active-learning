@@ -89,6 +89,7 @@ outputs/liu_2025/25c_to_0c/
 ├── formal_paper_protocol_v2_source_only/
 ├── diagnostic_source_protocol_v2_milestones/
 ├── diagnostic_paper_protocol_v2_alternating_10ep/
+├── diagnostic_paper_protocol_v2_grl_10ep/
 ├── diagnostic_source_checkpoints/
 ├── diagnostic_preprocessing_audit/
 ├── diagnostic_update_semantics_20260728/
@@ -135,6 +136,8 @@ labels are evaluated post-hoc and never select a checkpoint.
 `diagnostic_paper_protocol_v2_alternating_10ep/` reuses the corrected source
 artifact for a short full-loss transfer check with frozen target-BN statistics
 and alternating flipped-label updates.
+`diagnostic_paper_protocol_v2_grl_10ep/` is its matched joint-GRL comparison
+and records pairwise target-gradient cosine diagnostics.
 `diagnostic_source_checkpoints/` compares the paper-order source artifact,
 best checkpoint, and last checkpoint without retraining.
 `diagnostic_preprocessing_audit/` compares SOC label formulas and reports

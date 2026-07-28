@@ -1,15 +1,30 @@
+import math
 import random
 import sys
 
 import numpy as np
 import torch
 from scripts.reproductions.liu_2025.run_reproduction import (
+    _gradient_diagnostics,
     _load_adaptation_state,
     _save_adaptation_state,
     parse_args,
 )
 
 from battery_benchmark.reproductions.liu_2025.darm import DARM
+
+
+def test_gradient_diagnostics_reports_opposing_directions():
+    parameter = torch.nn.Parameter(torch.tensor([1.0, 2.0]))
+    losses = {
+        "adversarial": parameter.sum(),
+        "reconstruction": -parameter.sum(),
+        "mmd": parameter.square().sum(),
+        "total": parameter.square().sum(),
+    }
+    _, cosines = _gradient_diagnostics(losses, [parameter])
+
+    assert math.isclose(cosines["adversarial_vs_reconstruction"], -1.0)
 
 
 def test_new_cli_modes_default_to_historical_behavior(monkeypatch):

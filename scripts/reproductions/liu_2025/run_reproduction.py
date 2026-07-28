@@ -146,20 +146,42 @@ def feature_ranges(
     }
 
 
-def _gradient_l2(
-    loss: torch.Tensor,
+def _gradient_diagnostics(
+    losses: dict[str, torch.Tensor],
     parameters: list[torch.nn.Parameter],
-) -> float:
-    gradients = torch.autograd.grad(
-        loss,
-        parameters,
-        retain_graph=True,
-        allow_unused=True,
-    )
-    squared = sum(
-        float(gradient.detach().square().sum()) for gradient in gradients if gradient is not None
-    )
-    return squared**0.5
+) -> tuple[dict[str, float], dict[str, float]]:
+    gradients = {
+        name: torch.autograd.grad(
+            loss,
+            parameters,
+            retain_graph=True,
+            allow_unused=True,
+        )
+        for name, loss in losses.items()
+    }
+    norms = {
+        name: sum(
+            float(gradient.detach().square().sum())
+            for gradient in values
+            if gradient is not None
+        )
+        ** 0.5
+        for name, values in gradients.items()
+    }
+    cosines = {}
+    for left, right in (
+        ("adversarial", "reconstruction"),
+        ("adversarial", "mmd"),
+        ("reconstruction", "mmd"),
+    ):
+        dot = sum(
+            float((a.detach() * b.detach()).sum())
+            for a, b in zip(gradients[left], gradients[right])
+            if a is not None and b is not None
+        )
+        denominator = norms[left] * norms[right]
+        cosines[f"{left}_vs_{right}"] = dot / denominator if denominator else 0.0
+    return norms, cosines
 
 
 @torch.no_grad()
@@ -408,6 +430,7 @@ def adapt(
     for epoch in progress:
         batches = []
         first_batch_gradient_l2: dict[str, float] | None = None
+        first_batch_gradient_cosine: dict[str, float] | None = None
         source_iterator = cycle(source)
         for (target_x,) in target:
             source_x, _ = next(source_iterator)
@@ -437,16 +460,17 @@ def adapt(
                     beta=beta,
                 )
                 if first_batch_gradient_l2 is None:
-                    first_batch_gradient_l2 = {
-                        "adversarial": _gradient_l2(
-                            adversarial_weight * losses["adversarial"], target_parameters
-                        ),
-                        "reconstruction": _gradient_l2(
-                            alpha * losses["reconstruction"], target_parameters
-                        ),
-                        "mmd": _gradient_l2(beta * losses["mmd"], target_parameters),
-                        "total": _gradient_l2(losses["total"], target_parameters),
-                    }
+                    first_batch_gradient_l2, first_batch_gradient_cosine = (
+                        _gradient_diagnostics(
+                            {
+                                "adversarial": adversarial_weight * losses["adversarial"],
+                                "reconstruction": alpha * losses["reconstruction"],
+                                "mmd": beta * losses["mmd"],
+                                "total": losses["total"],
+                            },
+                            target_parameters,
+                        )
+                    )
                     target_optimizer.zero_grad(set_to_none=True)
                 loss.backward()
                 target_optimizer.step()
@@ -462,16 +486,17 @@ def adapt(
                     adversarial_update=adversarial_update,
                 )
                 if first_batch_gradient_l2 is None:
-                    first_batch_gradient_l2 = {
-                        "adversarial": _gradient_l2(
-                            adversarial_weight * losses["adversarial"], target_parameters
-                        ),
-                        "reconstruction": _gradient_l2(
-                            alpha * losses["reconstruction"], target_parameters
-                        ),
-                        "mmd": _gradient_l2(beta * losses["mmd"], target_parameters),
-                        "total": _gradient_l2(losses["total"], target_parameters),
-                    }
+                    first_batch_gradient_l2, first_batch_gradient_cosine = (
+                        _gradient_diagnostics(
+                            {
+                                "adversarial": adversarial_weight * losses["adversarial"],
+                                "reconstruction": alpha * losses["reconstruction"],
+                                "mmd": beta * losses["mmd"],
+                                "total": losses["total"],
+                            },
+                            target_parameters,
+                        )
+                    )
                     optimizer.zero_grad(set_to_none=True)
                 loss.backward()
                 optimizer.step()
@@ -486,6 +511,7 @@ def adapt(
         }
         last_metrics["epoch"] = epoch + 1
         last_metrics["gradient_l2"] = first_batch_gradient_l2 or {}
+        last_metrics["gradient_cosine"] = first_batch_gradient_cosine or {}
         target_test = {
             profile: evaluate(model, loader, device)
             for profile, loader in diagnostic_loaders.items()
