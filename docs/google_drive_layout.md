@@ -90,7 +90,8 @@ outputs/liu_2025/25c_to_0c/
 ├── diagnostic_no_reconstruction/
 ├── diagnostic_adversarial_only/
 ├── diagnostic_mmd_only/
-└── diagnostic_target_normalized/
+├── diagnostic_target_normalized/
+└── diagnostic_target_domain_normalized/
 ```
 
 All `diagnostic_*` directories reuse `formal/source_artifact.pt`; they
@@ -101,6 +102,8 @@ sets the adaptation reconstruction weight to zero.
 remaining alignment losses.
 `diagnostic_target_normalized/` fits a target min-max scaler using only the
 unlabelled target Cycle 1.
+`diagnostic_target_domain_normalized/` is a transductive diagnostic whose
+scaler sees all 0 C input covariates, but no target SOC labels.
 
 ### Current canonical Panasonic source bundle
 

@@ -327,7 +327,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--diagnose-adaptation", action="store_true")
     parser.add_argument(
         "--target-normalization",
-        choices=("source", "target_adapt"),
+        choices=("source", "target_adapt", "target_domain"),
         default="source",
     )
     parser.add_argument("--clip-normalized-inputs", action="store_true")
@@ -395,11 +395,13 @@ def main() -> None:
         source_artifact_path = args.output / "source_artifact.pt"
         normalizer.fit(source_x)
 
-    target_normalizer = (
-        MinMaxNormalizer().fit(target_x)
-        if args.target_normalization == "target_adapt"
-        else normalizer
-    )
+    target_normalizer = normalizer
+    if args.target_normalization == "target_adapt":
+        target_normalizer = MinMaxNormalizer().fit(target_x)
+    elif args.target_normalization == "target_domain":
+        target_normalizer = MinMaxNormalizer().fit(
+            np.concatenate([target_x, *(x for x, _ in target_test_arrays.values())])
+        )
     source_x = normalizer.transform(source_x).astype(np.float32)
     target_x = target_normalizer.transform(target_x).astype(np.float32)
     source_test_arrays = {
@@ -557,7 +559,12 @@ def main() -> None:
             "normalization": (
                 "source scaler: source Cycle 1-4; target scaler: target Cycle 1"
                 if args.target_normalization == "target_adapt"
-                else "fit on source Cycle 1-4 only"
+                else (
+                    "source scaler: source Cycle 1-4; target scaler: all target-domain "
+                    "input covariates (transductive diagnostic)"
+                    if args.target_normalization == "target_domain"
+                    else "fit on source Cycle 1-4 only"
+                )
             ),
             "diagnostic_target_labels": (
                 "post-epoch evaluation only; never used for optimization, early stopping, "

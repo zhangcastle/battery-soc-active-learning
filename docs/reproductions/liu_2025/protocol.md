@@ -52,7 +52,9 @@ The paper does not publish code or fully specify the following details:
 - Min-max normalisation scope: the baseline fits source Cycle 1-4 only. The
   paper states that measurements are transformed to `[0, 1]` but does not
   identify the fitting scope; `--target-normalization target_adapt` diagnoses
-  a separate scaler fitted only on unlabeled target Cycle 1.
+  a separate scaler fitted only on unlabeled target Cycle 1, while
+  `target_domain` diagnoses normalization over all target input covariates
+  without using target SOC labels.
 
 These assumptions must remain visible when comparing against the paper.
 
