@@ -87,6 +87,7 @@ outputs/liu_2025/25c_to_0c/
 ├── formal/
 ├── formal_paper_ivt/
 ├── formal_paper_protocol_v2_source_only/
+├── formal_paper_protocol_v2_grl_frozen_stats_50ep/
 ├── diagnostic_source_protocol_v2_milestones/
 ├── diagnostic_paper_protocol_v2_alternating_10ep/
 ├── diagnostic_paper_protocol_v2_grl_10ep/
@@ -134,6 +135,9 @@ scaler sees all 0 C input covariates, but no target SOC labels.
 one 25 C HWFET session and a diagnostic scaler fitted to all 25 C input
 covariates without reading source-test SOC labels. It does not run adaptation
 or overwrite `formal_paper_ivt/`.
+`formal_paper_protocol_v2_grl_frozen_stats_50ep/` reuses that source artifact
+for the 50-epoch formal transfer run with joint GRL, reconstruction, MMD, and
+frozen target-BN running statistics.
 `diagnostic_source_protocol_v2_milestones/` repeats that source optimization
 through epoch 200 and saves only fixed milestone checkpoints. Source-test
 labels are evaluated post-hoc and never select a checkpoint.
