@@ -93,6 +93,7 @@ outputs/liu_2025/25c_to_0c/
 ├── diagnostic_paper_protocol_v2_no_reconstruction_10ep/
 ├── diagnostic_paper_protocol_v2_reconstruction_mmd_10ep/
 ├── diagnostic_paper_protocol_v2_reconstruction_adversarial_10ep/
+├── diagnostic_paper_protocol_v2_continuous_30ep/
 ├── diagnostic_source_checkpoints/
 ├── diagnostic_preprocessing_audit/
 ├── diagnostic_update_semantics_20260728/
@@ -147,6 +148,8 @@ alternating comparison with only the reconstruction term removed.
 and MMD while removing the target-encoder adversarial term.
 `diagnostic_paper_protocol_v2_reconstruction_adversarial_10ep/` keeps
 reconstruction and adversarial alignment while removing MMD.
+`diagnostic_paper_protocol_v2_continuous_30ep/` repeats the full corrected
+protocol without the historical epoch-10 and epoch-30 RNG resets.
 `diagnostic_source_checkpoints/` compares the paper-order source artifact,
 best checkpoint, and last checkpoint without retraining.
 `diagnostic_preprocessing_audit/` compares SOC label formulas and reports
