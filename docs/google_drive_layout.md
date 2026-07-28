@@ -97,6 +97,8 @@ outputs/liu_2025/25c_to_0c/
 │   ├── mmd_legacy/
 │   └── mmd_frozen_stats/
 ├── diagnostic_frozen_stats_grl_full_loss_10ep/
+├── diagnostic_frozen_stats_reconstruction_mmd_10ep/
+├── diagnostic_frozen_stats_alternating_full_loss_10ep/
 ├── diagnostic_bn_frozen/
 ├── diagnostic_clip/
 ├── diagnostic_no_reconstruction/
@@ -129,6 +131,10 @@ formal run.
 `diagnostic_frozen_stats_grl_full_loss_10ep/` reuses that paper-order source
 artifact for a ten-epoch full-loss run with frozen target BN statistics and
 joint GRL updates.
+`diagnostic_frozen_stats_reconstruction_mmd_10ep/` removes the adversarial
+term, while `diagnostic_frozen_stats_alternating_full_loss_10ep/` replaces
+joint GRL with alternating flipped-label updates; all other settings match
+the ten-epoch full-loss diagnostic.
 
 ### Current canonical Panasonic source bundle
 
