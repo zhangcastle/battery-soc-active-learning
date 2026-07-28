@@ -6,6 +6,7 @@ from __future__ import annotations
 import argparse
 import json
 import random
+from copy import deepcopy
 from itertools import cycle
 from pathlib import Path
 
@@ -19,7 +20,14 @@ from tqdm.auto import tqdm
 from battery_benchmark.data.mat_loader import load_mat_file
 from battery_benchmark.labels.soc_calculator import compute_vidal_drive_soc
 from battery_benchmark.preprocessing.normalization import MinMaxNormalizer
-from battery_benchmark.reproductions.liu_2025.darm import DARM
+from battery_benchmark.reproductions.liu_2025.darm import (
+    ADVERSARIAL_UPDATES,
+    DARM,
+    TARGET_BN_MODES,
+    audit_target_bn_forward,
+    target_bn_buffer_drift,
+    target_bn_buffer_snapshot,
+)
 from battery_benchmark.reproductions.liu_2025.protocol import load_experiment_manifest
 from battery_benchmark.reproductions.liu_2025.source_artifact import (
     load_source_artifact,
@@ -132,12 +140,104 @@ def feature_ranges(
         name: {
             "min": float(x[..., index].min()),
             "max": float(x[..., index].max()),
-            "outside_0_1_fraction": float(
-                np.mean((x[..., index] < 0.0) | (x[..., index] > 1.0))
-            ),
+            "outside_0_1_fraction": float(np.mean((x[..., index] < 0.0) | (x[..., index] > 1.0))),
         }
         for index, name in enumerate(feature_order)
     }
+
+
+def _gradient_l2(
+    loss: torch.Tensor,
+    parameters: list[torch.nn.Parameter],
+) -> float:
+    gradients = torch.autograd.grad(
+        loss,
+        parameters,
+        retain_graph=True,
+        allow_unused=True,
+    )
+    squared = sum(
+        float(gradient.detach().square().sum()) for gradient in gradients if gradient is not None
+    )
+    return squared**0.5
+
+
+@torch.no_grad()
+def target_feature_drift(
+    model: DARM,
+    initial_encoder: torch.nn.Module,
+    data: DataLoader,
+    device: torch.device,
+) -> float:
+    model.target_encoder.eval()
+    squared, count = 0.0, 0
+    for (x,) in data:
+        x = x.to(device)
+        current = model.encode_target(x)[0]
+        initial = initial_encoder(x)[0]
+        squared += float((current - initial).square().sum())
+        count += current.numel()
+    return (squared / count) ** 0.5 if count else 0.0
+
+
+def _save_adaptation_state(
+    path: Path,
+    model: DARM,
+    optimizers: dict[str, torch.optim.Optimizer],
+    epoch: int,
+    lowest_total_loss: float,
+    stale_epochs: int,
+    metrics: dict[str, object],
+    *,
+    checkpoint_kind: str,
+    target_bn_mode: str,
+    adversarial_update: str,
+) -> None:
+    torch.save(
+        {
+            "model_state_dict": model.state_dict(),
+            "optimizer_state_dicts": {
+                name: optimizer.state_dict() for name, optimizer in optimizers.items()
+            },
+            "epoch": epoch,
+            "lowest_total_loss": lowest_total_loss,
+            "stale_epochs": stale_epochs,
+            "metrics": metrics,
+            "metadata": {
+                "checkpoint_kind": checkpoint_kind,
+                "target_bn_mode": target_bn_mode,
+                "adversarial_update": adversarial_update,
+                "selection_uses_target_labels": False,
+                "diagnostic": adversarial_update == "eq12_joint",
+            },
+        },
+        path,
+    )
+
+
+def _load_adaptation_state(
+    path: Path,
+    model: DARM,
+    optimizers: dict[str, torch.optim.Optimizer],
+    *,
+    target_bn_mode: str,
+    adversarial_update: str,
+    device: torch.device | str,
+) -> dict[str, object]:
+    state = torch.load(path, map_location=device, weights_only=False)
+    metadata = state.get("metadata", {})
+    if metadata.get("target_bn_mode", "legacy") != target_bn_mode:
+        raise ValueError("Checkpoint target_bn_mode does not match the requested mode")
+    if metadata.get("adversarial_update", "grl_joint") != adversarial_update:
+        raise ValueError("Checkpoint adversarial_update does not match the requested mode")
+    model.load_state_dict(state["model_state_dict"])
+    optimizer_states = state.get("optimizer_state_dicts")
+    if optimizer_states is None and "optimizer_state_dict" in state:
+        optimizer_states = {"joint": state["optimizer_state_dict"]}
+    for name, optimizer in optimizers.items():
+        optimizer.load_state_dict(optimizer_states[name])
+    model.set_target_bn_mode(target_bn_mode)
+    return state
 
 
 def _save_training_state(
@@ -226,22 +326,56 @@ def adapt(
     device: torch.device,
     output: Path,
     resume: bool,
-    diagnostic_loaders: dict[str, DataLoader] | None = None,
-) -> tuple[dict[str, float], list[dict[str, object]]]:
-    optimizer = torch.optim.Adam(model.adaptation_parameters(), lr=learning_rate)
-    last_path, best_path = output / "adapt_last.pt", output / "adapt_best.pt"
-    start, best_loss, stale, last_metrics = 0, float("inf"), 0, {}
+    target_bn_mode: str,
+    adversarial_update: str,
+    diagnostic_loaders: dict[str, DataLoader],
+) -> tuple[dict[str, object], list[dict[str, object]]]:
+    model.set_target_bn_mode(target_bn_mode)
+    if adversarial_update == "alternating_flipped":
+        optimizers = {
+            "discriminator": torch.optim.Adam(model.discriminator.parameters(), lr=learning_rate),
+            "target": torch.optim.Adam(model.target_adaptation_parameters(), lr=learning_rate),
+        }
+    else:
+        optimizers = {"joint": torch.optim.Adam(model.adaptation_parameters(), lr=learning_rate)}
+
+    last_path = output / "adapt_last.pt"
+    proxy_path = output / "adapt_lowest_total_loss_proxy.pt"
+    start, lowest_total, stale, last_metrics = 0, float("inf"), 0, {}
+    initial_encoder = deepcopy(model.target_encoder).to(device).eval()
+    for parameter in initial_encoder.parameters():
+        parameter.requires_grad_(False)
+    initial_bn = target_bn_buffer_snapshot(model.target_encoder)
+
+    initialization_path = output / "adapt_initialization.pt"
+    if not resume or not initialization_path.is_file():
+        _save_adaptation_state(
+            initialization_path,
+            model,
+            optimizers,
+            0,
+            lowest_total,
+            stale,
+            {},
+            checkpoint_kind="initialization_source_only",
+            target_bn_mode=target_bn_mode,
+            adversarial_update=adversarial_update,
+        )
     if resume and last_path.is_file():
-        state = torch.load(last_path, map_location=device, weights_only=False)
-        model.load_state_dict(state["model_state_dict"])
-        optimizer.load_state_dict(state["optimizer_state_dict"])
-        start = int(state["epoch"]) + 1
-        best_loss = float(state["best_loss"])
+        state = _load_adaptation_state(
+            last_path,
+            model,
+            optimizers,
+            target_bn_mode=target_bn_mode,
+            adversarial_update=adversarial_update,
+            device=device,
+        )
+        start = int(state["epoch"])
+        lowest_total = float(state.get("lowest_total_loss", state.get("best_loss", float("inf"))))
         stale = int(state["stale_epochs"])
         last_metrics = state["metrics"]
 
     progress = tqdm(range(start, epochs), desc="Target adaptation", initial=start, total=epochs)
-    diagnostic_epochs = {1, 2, 5, 10, 20, 50, epochs}
     diagnostics_path = output / "adaptation_diagnostics.json"
     diagnostics: list[dict[str, object]] = (
         json.loads(diagnostics_path.read_text(encoding="utf-8"))
@@ -251,53 +385,166 @@ def adapt(
     model.train()
     for epoch in progress:
         batches = []
+        first_batch_gradient_l2: dict[str, float] | None = None
         source_iterator = cycle(source)
         for (target_x,) in target:
             source_x, _ = next(source_iterator)
             source_x, target_x = source_x.to(device), target_x.to(device)
-            optimizer.zero_grad()
-            loss, parts = model.adaptation_loss(
-                source_x,
-                target_x,
-                adversarial_weight=adversarial_weight,
-                alpha=alpha,
-                beta=beta,
+            target_parameters = [
+                parameter
+                for parameter in model.target_encoder.parameters()
+                if parameter.requires_grad
+            ]
+            if adversarial_update == "alternating_flipped":
+                discriminator_optimizer = optimizers["discriminator"]
+                target_optimizer = optimizers["target"]
+                discriminator_optimizer.zero_grad(set_to_none=True)
+                discriminator_loss, domain_metrics = model.discriminator_step_loss(
+                    source_x, target_x
+                )
+                discriminator_loss.backward()
+                discriminator_optimizer.step()
+                discriminator_optimizer.zero_grad(set_to_none=True)
+
+                target_optimizer.zero_grad(set_to_none=True)
+                loss, losses = model.alternating_target_loss(
+                    source_x,
+                    target_x,
+                    adversarial_weight=adversarial_weight,
+                    alpha=alpha,
+                    beta=beta,
+                )
+                if first_batch_gradient_l2 is None:
+                    first_batch_gradient_l2 = {
+                        "adversarial": _gradient_l2(
+                            adversarial_weight * losses["adversarial"], target_parameters
+                        ),
+                        "reconstruction": _gradient_l2(
+                            alpha * losses["reconstruction"], target_parameters
+                        ),
+                        "mmd": _gradient_l2(beta * losses["mmd"], target_parameters),
+                        "total": _gradient_l2(losses["total"], target_parameters),
+                    }
+                    target_optimizer.zero_grad(set_to_none=True)
+                loss.backward()
+                target_optimizer.step()
+            else:
+                optimizer = optimizers["joint"]
+                optimizer.zero_grad(set_to_none=True)
+                loss, losses, domain_metrics = model.adaptation_loss(
+                    source_x,
+                    target_x,
+                    adversarial_weight=adversarial_weight,
+                    alpha=alpha,
+                    beta=beta,
+                    adversarial_update=adversarial_update,
+                )
+                if first_batch_gradient_l2 is None:
+                    first_batch_gradient_l2 = {
+                        "adversarial": _gradient_l2(
+                            adversarial_weight * losses["adversarial"], target_parameters
+                        ),
+                        "reconstruction": _gradient_l2(
+                            alpha * losses["reconstruction"], target_parameters
+                        ),
+                        "mmd": _gradient_l2(beta * losses["mmd"], target_parameters),
+                        "total": _gradient_l2(losses["total"], target_parameters),
+                    }
+                    optimizer.zero_grad(set_to_none=True)
+                loss.backward()
+                optimizer.step()
+            batches.append(
+                {
+                    **domain_metrics,
+                    **{name: float(value.detach()) for name, value in losses.items()},
+                }
             )
-            loss.backward()
-            optimizer.step()
-            batches.append(parts)
         last_metrics = {
             key: float(np.mean([batch[key] for batch in batches])) for key in batches[0]
         }
         last_metrics["epoch"] = epoch + 1
+        last_metrics["gradient_l2"] = first_batch_gradient_l2 or {}
+        target_test = {
+            profile: evaluate(model, loader, device)
+            for profile, loader in diagnostic_loaders.items()
+        }
+        last_metrics["target_test"] = target_test
+        last_metrics["mean_profile_rmse_percent"] = float(
+            np.mean([metrics["rmse_percent"] for metrics in target_test.values()])
+        )
+        last_metrics["target_feature_rms_drift"] = target_feature_drift(
+            model, initial_encoder, target, device
+        )
+        last_metrics["target_bn_running_stat_drift"] = target_bn_buffer_drift(
+            initial_bn, target_bn_buffer_snapshot(model.target_encoder)
+        )
         epoch_loss = last_metrics["total"]
-        improved = epoch_loss < best_loss
-        best_loss, stale = (epoch_loss, 0) if improved else (best_loss, stale + 1)
-        _save_training_state(last_path, model, optimizer, epoch, best_loss, stale, last_metrics)
+        improved = epoch_loss < lowest_total
+        lowest_total, stale = (epoch_loss, 0) if improved else (lowest_total, stale + 1)
+        _save_adaptation_state(
+            last_path,
+            model,
+            optimizers,
+            epoch + 1,
+            lowest_total,
+            stale,
+            last_metrics,
+            checkpoint_kind="last",
+            target_bn_mode=target_bn_mode,
+            adversarial_update=adversarial_update,
+        )
         if improved:
-            _save_training_state(best_path, model, optimizer, epoch, best_loss, stale, last_metrics)
-        if diagnostic_loaders and epoch + 1 in diagnostic_epochs:
-            diagnostics.append(
-                {
-                    "epoch": epoch + 1,
-                    "training": dict(last_metrics),
-                    "target_test": {
-                        profile: evaluate(model, loader, device)
-                        for profile, loader in diagnostic_loaders.items()
-                    },
-                }
+            _save_adaptation_state(
+                proxy_path,
+                model,
+                optimizers,
+                epoch + 1,
+                lowest_total,
+                stale,
+                last_metrics,
+                checkpoint_kind="lowest_total_loss_proxy",
+                target_bn_mode=target_bn_mode,
+                adversarial_update=adversarial_update,
             )
-            diagnostics_path.write_text(json.dumps(diagnostics, indent=2), encoding="utf-8")
-            model.train()
+        if epoch + 1 in {1, 2, 5, 10}:
+            _save_adaptation_state(
+                output / f"adapt_epoch_{epoch + 1:03d}.pt",
+                model,
+                optimizers,
+                epoch + 1,
+                lowest_total,
+                stale,
+                last_metrics,
+                checkpoint_kind=f"epoch_{epoch + 1}",
+                target_bn_mode=target_bn_mode,
+                adversarial_update=adversarial_update,
+            )
+        diagnostics.append({"epoch": epoch + 1, "training": dict(last_metrics)})
+        diagnostics_path.write_text(json.dumps(diagnostics, indent=2), encoding="utf-8")
+        model.train()
         progress.set_postfix(total=f"{epoch_loss:.6f}")
         if patience and stale >= patience:
             break
 
-    if not best_path.is_file():
+    if not last_path.is_file():
         raise RuntimeError("Target adaptation produced no checkpoint")
-    best = torch.load(best_path, map_location=device, weights_only=False)
-    model.load_state_dict(best["model_state_dict"])
-    return {**last_metrics, "best_total": float(best["best_loss"])}, diagnostics
+    oracle = min(
+        diagnostics,
+        key=lambda row: row["training"]["mean_profile_rmse_percent"],
+    )
+    return {
+        **last_metrics,
+        "lowest_total_loss_proxy": lowest_total,
+        "selected_checkpoint": "last",
+        "target_bn_mode": target_bn_mode,
+        "adversarial_update": adversarial_update,
+        "diagnostic": adversarial_update == "eq12_joint",
+        "diagnostic_oracle": {
+            "used_for_training_or_selection": False,
+            "epoch": oracle["epoch"],
+            "mean_profile_rmse_percent": oracle["training"]["mean_profile_rmse_percent"],
+        },
+    }, diagnostics
 
 
 @torch.no_grad()
@@ -314,6 +561,64 @@ def evaluate(model: DARM, data: DataLoader, device: torch.device) -> dict[str, f
         "mae_percent": float(torch.mean(torch.abs(error)) * 100),
         "n_windows": len(target),
     }
+
+
+def run_target_bn_forward_audit(
+    model: DARM,
+    target: DataLoader,
+    target_tests: dict[str, DataLoader],
+    device: torch.device,
+    output: Path,
+) -> dict[str, object]:
+    """Separate BN buffer drift from all gradient-based adaptation."""
+    model.initialize_target()
+    initial_state = deepcopy(model.state_dict())
+    before = {profile: evaluate(model, loader, device) for profile, loader in target_tests.items()}
+    after: dict[str, dict[str, dict[str, float]]] = {}
+    drift: dict[str, dict[str, object]] = {}
+    for mode in ("legacy", "frozen_stats"):
+        model.load_state_dict(initial_state)
+        model.initialize_target()
+        drift[mode] = audit_target_bn_forward(
+            model,
+            (batch[0].to(device) for batch in target),
+            mode,
+        )
+        after[mode] = {
+            profile: evaluate(model, loader, device) for profile, loader in target_tests.items()
+        }
+
+    rows = [
+        {
+            "profile": profile,
+            "rmse_before": metrics["rmse_percent"],
+            "rmse_after_legacy_bn_forward": after["legacy"][profile]["rmse_percent"],
+            "rmse_after_frozen_stats_forward": after["frozen_stats"][profile]["rmse_percent"],
+            "delta_rmse": (after["legacy"][profile]["rmse_percent"] - metrics["rmse_percent"]),
+        }
+        for profile, metrics in before.items()
+    ]
+    result = {
+        "audit": "target_bn_forward_no_grad",
+        "backward_called": False,
+        "optimizer_created_or_stepped": False,
+        "profiles": rows,
+        "bn_buffer_drift_summary": drift,
+        "parameter_drift_summary": {
+            mode: summary["parameter_drift"] for mode, summary in drift.items()
+        },
+    }
+    (output / "target_bn_forward_audit.json").write_text(
+        json.dumps(result, indent=2), encoding="utf-8"
+    )
+    print(pd.DataFrame(rows).to_string(index=False))
+    for mode, summary in drift.items():
+        print(
+            mode,
+            {key: value for key, value in summary["bn_buffer_drift"].items() if key != "layers"},
+            summary["parameter_drift"],
+        )
+    return result
 
 
 def _group_records(manifest: pd.DataFrame, role: str) -> dict[str, list[VidalV2Record]]:
@@ -354,7 +659,18 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--source-artifact", type=Path)
     parser.add_argument("--compare-source-checkpoints", action="store_true")
     parser.add_argument("--audit-preprocessing", action="store_true")
+    parser.add_argument("--audit-target-bn-forward", action="store_true")
     parser.add_argument("--diagnose-adaptation", action="store_true")
+    parser.add_argument(
+        "--target-bn-mode",
+        choices=TARGET_BN_MODES,
+        default="legacy",
+    )
+    parser.add_argument(
+        "--adversarial-update",
+        choices=ADVERSARIAL_UPDATES,
+        default="grl_joint",
+    )
     parser.add_argument(
         "--target-normalization",
         choices=("source", "target_adapt", "target_domain"),
@@ -369,8 +685,10 @@ def parse_args() -> argparse.Namespace:
 
 def main() -> None:
     args = parse_args()
-    if (args.compare_source_checkpoints or args.audit_preprocessing) and not args.source_artifact:
-        raise ValueError("Checkpoint comparison and preprocessing audit require --source-artifact")
+    if (
+        args.compare_source_checkpoints or args.audit_preprocessing or args.audit_target_bn_forward
+    ) and not args.source_artifact:
+        raise ValueError("Checkpoint comparison and audit modes require --source-artifact")
     if args.smoke:
         args.source_epochs = args.transfer_epochs = 1
         args.max_windows = args.max_windows or 512
@@ -398,32 +716,24 @@ def main() -> None:
     target_tests = _group_records(manifest, "target_test")
 
     source_x, source_y = evenly_limit(
-        *build_liu_windows(
-            source_records, require_labels=True, feature_order=feature_order
-        ),
+        *build_liu_windows(source_records, require_labels=True, feature_order=feature_order),
         args.max_windows,
     )
     target_x, target_y = evenly_limit(
-        *build_liu_windows(
-            target_records, require_labels=False, feature_order=feature_order
-        ),
+        *build_liu_windows(target_records, require_labels=False, feature_order=feature_order),
         args.max_windows,
     )
     assert source_y is not None and target_y is None
     source_test_arrays = {
         profile: evenly_limit(
-            *build_liu_windows(
-                records, require_labels=True, feature_order=feature_order
-            ),
+            *build_liu_windows(records, require_labels=True, feature_order=feature_order),
             args.max_windows,
         )
         for profile, records in source_tests.items()
     }
     target_test_arrays = {
         profile: evenly_limit(
-            *build_liu_windows(
-                records, require_labels=True, feature_order=feature_order
-            ),
+            *build_liu_windows(records, require_labels=True, feature_order=feature_order),
             args.max_windows,
         )
         for profile, records in target_tests.items()
@@ -480,12 +790,10 @@ def main() -> None:
         source_x = np.clip(source_x, 0.0, 1.0)
         target_x = np.clip(target_x, 0.0, 1.0)
         source_test_arrays = {
-            profile: (np.clip(x, 0.0, 1.0), y)
-            for profile, (x, y) in source_test_arrays.items()
+            profile: (np.clip(x, 0.0, 1.0), y) for profile, (x, y) in source_test_arrays.items()
         }
         target_test_arrays = {
-            profile: (np.clip(x, 0.0, 1.0), y)
-            for profile, (x, y) in target_test_arrays.items()
+            profile: (np.clip(x, 0.0, 1.0), y) for profile, (x, y) in target_test_arrays.items()
         }
     normalized_feature_ranges = {
         "source_train": feature_ranges(source_x, feature_order),
@@ -648,6 +956,15 @@ def main() -> None:
         )
         print(json.dumps(comparison_result, indent=2))
         return
+    if args.audit_target_bn_forward:
+        run_target_bn_forward_audit(
+            model,
+            target_loader,
+            target_test_loaders,
+            device,
+            args.output,
+        )
+        return
     target_training, adaptation_diagnostics = adapt(
         model,
         source_loader,
@@ -661,7 +978,9 @@ def main() -> None:
         device,
         args.output,
         args.resume,
-        target_test_loaders if args.diagnose_adaptation else None,
+        args.target_bn_mode,
+        args.adversarial_update,
+        target_test_loaders,
     )
     target_darm = {
         profile: evaluate(model, test_loader, device)
@@ -683,6 +1002,9 @@ def main() -> None:
         "target_adaptation_windows": len(target_x),
         "source_training": source_training,
         "target_training": target_training,
+        "target_bn_mode": args.target_bn_mode,
+        "adversarial_update": args.adversarial_update,
+        "diagnostic": args.adversarial_update == "eq12_joint",
         "adaptation_loss_weights": {
             "adversarial": args.adversarial_weight,
             "reconstruction": args.alpha,
@@ -712,13 +1034,24 @@ def main() -> None:
             "diagnostic_target_labels": (
                 "post-epoch evaluation only; never used for optimization, early stopping, "
                 "or checkpoint selection"
-                if args.diagnose_adaptation
-                else "not used"
             ),
             "window_stride": 1,
             "mk_mmd_bandwidth": "median x [0.5, 1, 2, 4]; paper unspecified",
-            "adversarial_gradient": "gradient reversal; paper pseudocode omits sign detail",
-            "early_stopping_monitor": "training loss; paper only reports patience=20",
+            "target_batch_norm": args.target_bn_mode,
+            "adversarial_gradient": {
+                "grl_joint": "gradient reversal with joint discriminator/target update",
+                "alternating_flipped": (
+                    "detached discriminator step, then flipped target-as-source step"
+                ),
+                "eq12_joint": (
+                    "diagnostic Eq.12 literal joint minimization without gradient reversal"
+                ),
+            }[args.adversarial_update],
+            "checkpoint_selection": (
+                "last is the formal output; lowest total loss is proxy-only; "
+                "target-label oracle is post-hoc diagnostic only"
+            ),
+            "early_stopping_monitor": ("training total-loss proxy; paper only reports patience=20"),
         },
     }
     (args.output / "results.json").write_text(json.dumps(result, indent=2), encoding="utf-8")

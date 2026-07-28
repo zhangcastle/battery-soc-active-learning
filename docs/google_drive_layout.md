@@ -88,6 +88,14 @@ outputs/liu_2025/25c_to_0c/
 ├── formal_paper_ivt/
 ├── diagnostic_source_checkpoints/
 ├── diagnostic_preprocessing_audit/
+├── diagnostic_update_semantics_20260728/
+│   ├── bn_forward_audit/
+│   ├── adversarial_grl_legacy/
+│   ├── adversarial_grl_frozen_stats/
+│   ├── adversarial_alternating_frozen_stats/
+│   ├── adversarial_eq12_frozen_stats/
+│   ├── mmd_legacy/
+│   └── mmd_frozen_stats/
 ├── diagnostic_bn_frozen/
 ├── diagnostic_clip/
 ├── diagnostic_no_reconstruction/
@@ -113,6 +121,10 @@ scaler sees all 0 C input covariates, but no target SOC labels.
 best checkpoint, and last checkpoint without retraining.
 `diagnostic_preprocessing_audit/` compares SOC label formulas and reports
 source-scaler range violations without retraining.
+`diagnostic_update_semantics_20260728/` isolates target-BN forward drift and
+the three adversarial update semantics using the same paper-order source
+artifact, seed, data order, and one adaptation epoch. It does not replace any
+formal run.
 
 ### Current canonical Panasonic source bundle
 

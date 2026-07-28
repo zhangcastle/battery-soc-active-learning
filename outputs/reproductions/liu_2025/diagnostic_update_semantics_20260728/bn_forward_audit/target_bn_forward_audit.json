@@ -1,0 +1,416 @@
+{
+  "audit": "target_bn_forward_no_grad",
+  "backward_called": false,
+  "optimizer_created_or_stepped": false,
+  "profiles": [
+    {
+      "profile": "LA92",
+      "rmse_before": 6.108520030975342,
+      "rmse_after_legacy_bn_forward": 13.410094261169434,
+      "rmse_after_frozen_stats_forward": 6.108520030975342,
+      "delta_rmse": 7.301574230194092
+    },
+    {
+      "profile": "UDDS",
+      "rmse_before": 6.4179911613464355,
+      "rmse_after_legacy_bn_forward": 18.850269317626953,
+      "rmse_after_frozen_stats_forward": 6.4179911613464355,
+      "delta_rmse": 12.432278156280518
+    },
+    {
+      "profile": "US06",
+      "rmse_before": 11.773283004760742,
+      "rmse_after_legacy_bn_forward": 15.837974548339844,
+      "rmse_after_frozen_stats_forward": 11.773283004760742,
+      "delta_rmse": 4.064691543579102
+    },
+    {
+      "profile": "HWFET",
+      "rmse_before": 11.611129760742188,
+      "rmse_after_legacy_bn_forward": 13.777974128723145,
+      "rmse_after_frozen_stats_forward": 11.611129760742188,
+      "delta_rmse": 2.166844367980957
+    },
+    {
+      "profile": "NN",
+      "rmse_before": 6.245992660522461,
+      "rmse_after_legacy_bn_forward": 13.666367530822754,
+      "rmse_after_frozen_stats_forward": 6.245992660522461,
+      "delta_rmse": 7.420374870300293
+    }
+  ],
+  "bn_buffer_drift_summary": {
+    "legacy": {
+      "target_bn_mode": "legacy",
+      "bn_buffer_drift": {
+        "layers": {
+          "stage1.0.net.1": {
+            "running_mean_max_abs_change": 1.6818875074386597,
+            "running_var_max_abs_change": 0.04824719950556755,
+            "num_batches_tracked_change": 35
+          },
+          "stage1.0.net.4": {
+            "running_mean_max_abs_change": 0.04296499490737915,
+            "running_var_max_abs_change": 0.10293461382389069,
+            "num_batches_tracked_change": 35
+          },
+          "stage1.1.main.0.net.1": {
+            "running_mean_max_abs_change": 0.05200234055519104,
+            "running_var_max_abs_change": 0.0695173442363739,
+            "num_batches_tracked_change": 35
+          },
+          "stage1.1.main.0.net.4": {
+            "running_mean_max_abs_change": 0.021385669708251953,
+            "running_var_max_abs_change": 0.15743091702461243,
+            "num_batches_tracked_change": 35
+          },
+          "stage1.1.main.1.net.1": {
+            "running_mean_max_abs_change": 0.08953351527452469,
+            "running_var_max_abs_change": 0.1702612340450287,
+            "num_batches_tracked_change": 35
+          },
+          "stage1.1.main.1.net.4": {
+            "running_mean_max_abs_change": 0.04168601706624031,
+            "running_var_max_abs_change": 0.33424973487854004,
+            "num_batches_tracked_change": 35
+          },
+          "stage2.0.main.0.net.1": {
+            "running_mean_max_abs_change": 0.12480765581130981,
+            "running_var_max_abs_change": 0.47715631127357483,
+            "num_batches_tracked_change": 35
+          },
+          "stage2.0.main.0.net.4": {
+            "running_mean_max_abs_change": 0.06602436304092407,
+            "running_var_max_abs_change": 0.13241206109523773,
+            "num_batches_tracked_change": 35
+          },
+          "stage2.0.main.1.net.1": {
+            "running_mean_max_abs_change": 0.07045774161815643,
+            "running_var_max_abs_change": 0.15099097788333893,
+            "num_batches_tracked_change": 35
+          },
+          "stage2.0.main.1.net.4": {
+            "running_mean_max_abs_change": 0.08476659655570984,
+            "running_var_max_abs_change": 0.13579148054122925,
+            "num_batches_tracked_change": 35
+          },
+          "stage2.0.shortcut.1": {
+            "running_mean_max_abs_change": 0.08332067728042603,
+            "running_var_max_abs_change": 0.2322344034910202,
+            "num_batches_tracked_change": 35
+          },
+          "stage2.1.main.0.net.1": {
+            "running_mean_max_abs_change": 0.12051883339881897,
+            "running_var_max_abs_change": 0.28232985734939575,
+            "num_batches_tracked_change": 35
+          },
+          "stage2.1.main.0.net.4": {
+            "running_mean_max_abs_change": 0.057999469339847565,
+            "running_var_max_abs_change": 0.16772198677062988,
+            "num_batches_tracked_change": 35
+          },
+          "stage2.1.main.1.net.1": {
+            "running_mean_max_abs_change": 0.027321835979819298,
+            "running_var_max_abs_change": 0.060294248163700104,
+            "num_batches_tracked_change": 35
+          },
+          "stage2.1.main.1.net.4": {
+            "running_mean_max_abs_change": 0.04084441065788269,
+            "running_var_max_abs_change": 0.12669996917247772,
+            "num_batches_tracked_change": 35
+          },
+          "stage3.0.main.0.net.1": {
+            "running_mean_max_abs_change": 0.18652649223804474,
+            "running_var_max_abs_change": 0.6701087951660156,
+            "num_batches_tracked_change": 35
+          },
+          "stage3.0.main.0.net.4": {
+            "running_mean_max_abs_change": 0.03826144337654114,
+            "running_var_max_abs_change": 0.11175432801246643,
+            "num_batches_tracked_change": 35
+          },
+          "stage3.0.main.1.net.1": {
+            "running_mean_max_abs_change": 0.08784127235412598,
+            "running_var_max_abs_change": 0.2428818941116333,
+            "num_batches_tracked_change": 35
+          },
+          "stage3.0.main.1.net.4": {
+            "running_mean_max_abs_change": 0.07238757610321045,
+            "running_var_max_abs_change": 0.2747091054916382,
+            "num_batches_tracked_change": 35
+          },
+          "stage3.0.shortcut.1": {
+            "running_mean_max_abs_change": 0.24028754234313965,
+            "running_var_max_abs_change": 0.8367859721183777,
+            "num_batches_tracked_change": 35
+          },
+          "stage3.1.main.0.net.1": {
+            "running_mean_max_abs_change": 0.2566366195678711,
+            "running_var_max_abs_change": 0.6285016536712646,
+            "num_batches_tracked_change": 35
+          },
+          "stage3.1.main.0.net.4": {
+            "running_mean_max_abs_change": 0.04698663949966431,
+            "running_var_max_abs_change": 0.23519805073738098,
+            "num_batches_tracked_change": 35
+          },
+          "stage3.1.main.1.net.1": {
+            "running_mean_max_abs_change": 0.10740229487419128,
+            "running_var_max_abs_change": 0.10631704330444336,
+            "num_batches_tracked_change": 35
+          },
+          "stage3.1.main.1.net.4": {
+            "running_mean_max_abs_change": 0.05134987086057663,
+            "running_var_max_abs_change": 0.2088187336921692,
+            "num_batches_tracked_change": 35
+          },
+          "stage4.0.main.0.net.1": {
+            "running_mean_max_abs_change": 0.19940435886383057,
+            "running_var_max_abs_change": 0.614522397518158,
+            "num_batches_tracked_change": 35
+          },
+          "stage4.0.main.0.net.4": {
+            "running_mean_max_abs_change": 0.03484773635864258,
+            "running_var_max_abs_change": 0.2902917265892029,
+            "num_batches_tracked_change": 35
+          },
+          "stage4.0.main.1.net.1": {
+            "running_mean_max_abs_change": 0.036346182227134705,
+            "running_var_max_abs_change": 0.16721415519714355,
+            "num_batches_tracked_change": 35
+          },
+          "stage4.0.main.1.net.4": {
+            "running_mean_max_abs_change": 0.04382741451263428,
+            "running_var_max_abs_change": 0.40835040807724,
+            "num_batches_tracked_change": 35
+          },
+          "stage4.0.shortcut.1": {
+            "running_mean_max_abs_change": 0.19929194450378418,
+            "running_var_max_abs_change": 3.367605209350586,
+            "num_batches_tracked_change": 35
+          },
+          "stage4.1.main.0.net.1": {
+            "running_mean_max_abs_change": 0.14439809322357178,
+            "running_var_max_abs_change": 0.6024608612060547,
+            "num_batches_tracked_change": 35
+          },
+          "stage4.1.main.0.net.4": {
+            "running_mean_max_abs_change": 0.0705316960811615,
+            "running_var_max_abs_change": 0.38428473472595215,
+            "num_batches_tracked_change": 35
+          },
+          "stage4.1.main.1.net.1": {
+            "running_mean_max_abs_change": 0.06503574550151825,
+            "running_var_max_abs_change": 0.14787647128105164,
+            "num_batches_tracked_change": 35
+          },
+          "stage4.1.main.1.net.4": {
+            "running_mean_max_abs_change": 0.028516829013824463,
+            "running_var_max_abs_change": 0.14297080039978027,
+            "num_batches_tracked_change": 35
+          }
+        },
+        "max_running_mean_abs_change": 1.6818875074386597,
+        "max_running_var_abs_change": 3.367605209350586,
+        "max_num_batches_tracked_change": 35
+      },
+      "parameter_drift": {
+        "all_unchanged": true,
+        "changed_parameter_count": 0,
+        "max_abs_change": 0.0
+      }
+    },
+    "frozen_stats": {
+      "target_bn_mode": "frozen_stats",
+      "bn_buffer_drift": {
+        "layers": {
+          "stage1.0.net.1": {
+            "running_mean_max_abs_change": 0.0,
+            "running_var_max_abs_change": 0.0,
+            "num_batches_tracked_change": 0
+          },
+          "stage1.0.net.4": {
+            "running_mean_max_abs_change": 0.0,
+            "running_var_max_abs_change": 0.0,
+            "num_batches_tracked_change": 0
+          },
+          "stage1.1.main.0.net.1": {
+            "running_mean_max_abs_change": 0.0,
+            "running_var_max_abs_change": 0.0,
+            "num_batches_tracked_change": 0
+          },
+          "stage1.1.main.0.net.4": {
+            "running_mean_max_abs_change": 0.0,
+            "running_var_max_abs_change": 0.0,
+            "num_batches_tracked_change": 0
+          },
+          "stage1.1.main.1.net.1": {
+            "running_mean_max_abs_change": 0.0,
+            "running_var_max_abs_change": 0.0,
+            "num_batches_tracked_change": 0
+          },
+          "stage1.1.main.1.net.4": {
+            "running_mean_max_abs_change": 0.0,
+            "running_var_max_abs_change": 0.0,
+            "num_batches_tracked_change": 0
+          },
+          "stage2.0.main.0.net.1": {
+            "running_mean_max_abs_change": 0.0,
+            "running_var_max_abs_change": 0.0,
+            "num_batches_tracked_change": 0
+          },
+          "stage2.0.main.0.net.4": {
+            "running_mean_max_abs_change": 0.0,
+            "running_var_max_abs_change": 0.0,
+            "num_batches_tracked_change": 0
+          },
+          "stage2.0.main.1.net.1": {
+            "running_mean_max_abs_change": 0.0,
+            "running_var_max_abs_change": 0.0,
+            "num_batches_tracked_change": 0
+          },
+          "stage2.0.main.1.net.4": {
+            "running_mean_max_abs_change": 0.0,
+            "running_var_max_abs_change": 0.0,
+            "num_batches_tracked_change": 0
+          },
+          "stage2.0.shortcut.1": {
+            "running_mean_max_abs_change": 0.0,
+            "running_var_max_abs_change": 0.0,
+            "num_batches_tracked_change": 0
+          },
+          "stage2.1.main.0.net.1": {
+            "running_mean_max_abs_change": 0.0,
+            "running_var_max_abs_change": 0.0,
+            "num_batches_tracked_change": 0
+          },
+          "stage2.1.main.0.net.4": {
+            "running_mean_max_abs_change": 0.0,
+            "running_var_max_abs_change": 0.0,
+            "num_batches_tracked_change": 0
+          },
+          "stage2.1.main.1.net.1": {
+            "running_mean_max_abs_change": 0.0,
+            "running_var_max_abs_change": 0.0,
+            "num_batches_tracked_change": 0
+          },
+          "stage2.1.main.1.net.4": {
+            "running_mean_max_abs_change": 0.0,
+            "running_var_max_abs_change": 0.0,
+            "num_batches_tracked_change": 0
+          },
+          "stage3.0.main.0.net.1": {
+            "running_mean_max_abs_change": 0.0,
+            "running_var_max_abs_change": 0.0,
+            "num_batches_tracked_change": 0
+          },
+          "stage3.0.main.0.net.4": {
+            "running_mean_max_abs_change": 0.0,
+            "running_var_max_abs_change": 0.0,
+            "num_batches_tracked_change": 0
+          },
+          "stage3.0.main.1.net.1": {
+            "running_mean_max_abs_change": 0.0,
+            "running_var_max_abs_change": 0.0,
+            "num_batches_tracked_change": 0
+          },
+          "stage3.0.main.1.net.4": {
+            "running_mean_max_abs_change": 0.0,
+            "running_var_max_abs_change": 0.0,
+            "num_batches_tracked_change": 0
+          },
+          "stage3.0.shortcut.1": {
+            "running_mean_max_abs_change": 0.0,
+            "running_var_max_abs_change": 0.0,
+            "num_batches_tracked_change": 0
+          },
+          "stage3.1.main.0.net.1": {
+            "running_mean_max_abs_change": 0.0,
+            "running_var_max_abs_change": 0.0,
+            "num_batches_tracked_change": 0
+          },
+          "stage3.1.main.0.net.4": {
+            "running_mean_max_abs_change": 0.0,
+            "running_var_max_abs_change": 0.0,
+            "num_batches_tracked_change": 0
+          },
+          "stage3.1.main.1.net.1": {
+            "running_mean_max_abs_change": 0.0,
+            "running_var_max_abs_change": 0.0,
+            "num_batches_tracked_change": 0
+          },
+          "stage3.1.main.1.net.4": {
+            "running_mean_max_abs_change": 0.0,
+            "running_var_max_abs_change": 0.0,
+            "num_batches_tracked_change": 0
+          },
+          "stage4.0.main.0.net.1": {
+            "running_mean_max_abs_change": 0.0,
+            "running_var_max_abs_change": 0.0,
+            "num_batches_tracked_change": 0
+          },
+          "stage4.0.main.0.net.4": {
+            "running_mean_max_abs_change": 0.0,
+            "running_var_max_abs_change": 0.0,
+            "num_batches_tracked_change": 0
+          },
+          "stage4.0.main.1.net.1": {
+            "running_mean_max_abs_change": 0.0,
+            "running_var_max_abs_change": 0.0,
+            "num_batches_tracked_change": 0
+          },
+          "stage4.0.main.1.net.4": {
+            "running_mean_max_abs_change": 0.0,
+            "running_var_max_abs_change": 0.0,
+            "num_batches_tracked_change": 0
+          },
+          "stage4.0.shortcut.1": {
+            "running_mean_max_abs_change": 0.0,
+            "running_var_max_abs_change": 0.0,
+            "num_batches_tracked_change": 0
+          },
+          "stage4.1.main.0.net.1": {
+            "running_mean_max_abs_change": 0.0,
+            "running_var_max_abs_change": 0.0,
+            "num_batches_tracked_change": 0
+          },
+          "stage4.1.main.0.net.4": {
+            "running_mean_max_abs_change": 0.0,
+            "running_var_max_abs_change": 0.0,
+            "num_batches_tracked_change": 0
+          },
+          "stage4.1.main.1.net.1": {
+            "running_mean_max_abs_change": 0.0,
+            "running_var_max_abs_change": 0.0,
+            "num_batches_tracked_change": 0
+          },
+          "stage4.1.main.1.net.4": {
+            "running_mean_max_abs_change": 0.0,
+            "running_var_max_abs_change": 0.0,
+            "num_batches_tracked_change": 0
+          }
+        },
+        "max_running_mean_abs_change": 0.0,
+        "max_running_var_abs_change": 0.0,
+        "max_num_batches_tracked_change": 0
+      },
+      "parameter_drift": {
+        "all_unchanged": true,
+        "changed_parameter_count": 0,
+        "max_abs_change": 0.0
+      }
+    }
+  },
+  "parameter_drift_summary": {
+    "legacy": {
+      "all_unchanged": true,
+      "changed_parameter_count": 0,
+      "max_abs_change": 0.0
+    },
+    "frozen_stats": {
+      "all_unchanged": true,
+      "changed_parameter_count": 0,
+      "max_abs_change": 0.0
+    }
+  }
+}

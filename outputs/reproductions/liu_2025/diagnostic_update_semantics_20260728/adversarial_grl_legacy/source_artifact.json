@@ -1,0 +1,23 @@
+{
+  "paper": "Liu et al. 2025, doi:10.1109/TTE.2024.3483973",
+  "source_domain": "panasonic_25c",
+  "source_manifest": "/content/battery-soc-transfer-benchmark/data/manifests/liu_2025/panasonic_25c_to_0c.csv",
+  "source_manifest_sha256": "17e8c410ce8a16db9c8f4b3df9a1d213c7982d93fa70a340865634169d2fdc08",
+  "feature_order": [
+    "current",
+    "voltage",
+    "temperature"
+  ],
+  "sampling_hz": 1.0,
+  "window_length": 40,
+  "window_stride": 1,
+  "source_epochs": 500,
+  "source_learning_rate": 0.001,
+  "batch_size": 256,
+  "seed": 42,
+  "source_windows": 44352,
+  "git_commit": "7d6704939079ea67c59b3ce24d9c43eda862f892",
+  "git_dirty": false,
+  "artifact": "/private/tmp/liu_2025_formal_paper_ivt_source_artifact.pt",
+  "artifact_sha256": "bb230ec9264e62befbb7de3e162d46184eb41aa27a7bb350ab5b0763946f6bfa"
+}

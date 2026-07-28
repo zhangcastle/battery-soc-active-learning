@@ -48,7 +48,17 @@ The paper does not publish code or fully specify the following details:
 - Attention scoring: learned scalar softmax over the five latent steps.
 - MK-MMD bandwidths: median distance multiplied by `[0.5, 1, 2, 4]`.
 - Adversarial sign: gradient reversal.
-- Early-stopping monitor: current-stage training loss.
+- Target BatchNorm defaults to `legacy` (running statistics and affine
+  parameters update). `frozen_stats` freezes running statistics only, and
+  `fully_frozen` also freezes affine parameters.
+- Adversarial update defaults to `grl_joint`. `alternating_flipped` separates
+  the discriminator and target-encoder steps; `eq12_joint` is a diagnostic
+  literal reading of Eq. 12 and is never presented as the recommended method.
+- Adaptation outputs use the last checkpoint. Lowest total loss is retained
+  only as a proxy checkpoint because GRL is not a joint minimization objective.
+- Target-label checkpoint comparisons are post-hoc diagnostic oracles and
+  never participate in optimization, early stopping, or formal selection.
+- Early-stopping monitor: current-stage training-loss proxy.
 - Min-max normalisation scope: the baseline fits source Cycle 1-4 only. The
   paper states that measurements are transformed to `[0, 1]` but does not
   identify the fitting scope; `--target-normalization target_adapt` diagnoses
