@@ -1,5 +1,7 @@
+import random
 import sys
 
+import numpy as np
 import torch
 from scripts.reproductions.liu_2025.run_reproduction import (
     _load_adaptation_state,
@@ -21,6 +23,9 @@ def test_new_cli_modes_default_to_historical_behavior(monkeypatch):
 
 
 def test_adaptation_checkpoint_saves_and_restores_modes(tmp_path):
+    random.seed(42)
+    np.random.seed(42)
+    torch.manual_seed(42)
     model = DARM()
     model.initialize_target()
     model.set_target_bn_mode("frozen_stats")
@@ -39,6 +44,9 @@ def test_adaptation_checkpoint_saves_and_restores_modes(tmp_path):
         target_bn_mode="frozen_stats",
         adversarial_update="grl_joint",
     )
+    expected_python = random.random()
+    expected_numpy = np.random.rand()
+    expected_torch = torch.rand(1)
     with torch.no_grad():
         next(model.target_encoder.parameters()).add_(1)
 
@@ -62,3 +70,6 @@ def test_adaptation_checkpoint_saves_and_restores_modes(tmp_path):
         torch.equal(parameter, expected[name]) for name, parameter in model.named_parameters()
     )
     assert model.target_bn_mode == "frozen_stats"
+    assert random.random() == expected_python
+    assert np.random.rand() == expected_numpy
+    assert torch.equal(torch.rand(1), expected_torch)

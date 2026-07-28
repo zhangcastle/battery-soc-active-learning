@@ -199,6 +199,12 @@ def _save_adaptation_state(
             "optimizer_state_dicts": {
                 name: optimizer.state_dict() for name, optimizer in optimizers.items()
             },
+            "rng_state": {
+                "python": random.getstate(),
+                "numpy": np.random.get_state(),
+                "torch": torch.get_rng_state(),
+                "cuda": torch.cuda.get_rng_state_all() if torch.cuda.is_available() else None,
+            },
             "epoch": epoch,
             "lowest_total_loss": lowest_total_loss,
             "stale_epochs": stale_epochs,
@@ -236,6 +242,12 @@ def _load_adaptation_state(
         optimizer_states = {"joint": state["optimizer_state_dict"]}
     for name, optimizer in optimizers.items():
         optimizer.load_state_dict(optimizer_states[name])
+    if rng_state := state.get("rng_state"):
+        random.setstate(rng_state["python"])
+        np.random.set_state(rng_state["numpy"])
+        torch.set_rng_state(rng_state["torch"].cpu())
+        if rng_state["cuda"] is not None and torch.cuda.is_available():
+            torch.cuda.set_rng_state_all([state.cpu() for state in rng_state["cuda"]])
     model.set_target_bn_mode(target_bn_mode)
     return state
 
