@@ -337,6 +337,7 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument("--max-windows", type=int)
     parser.add_argument("--source-artifact", type=Path)
+    parser.add_argument("--compare-source-checkpoints", action="store_true")
     parser.add_argument("--diagnose-adaptation", action="store_true")
     parser.add_argument(
         "--target-normalization",
@@ -352,6 +353,8 @@ def parse_args() -> argparse.Namespace:
 
 def main() -> None:
     args = parse_args()
+    if args.compare_source_checkpoints and not args.source_artifact:
+        raise ValueError("--compare-source-checkpoints requires --source-artifact")
     if args.smoke:
         args.source_epochs = args.transfer_epochs = 1
         args.max_windows = args.max_windows or 512
@@ -542,6 +545,48 @@ def main() -> None:
         profile: evaluate(model, test_loader, device)
         for profile, test_loader in target_test_loaders.items()
     }
+    if args.compare_source_checkpoints:
+        comparison = {
+            "source_artifact": {
+                "path": str(source_artifact_path),
+                "sha256": source_artifact_sha256,
+                "source_test": source_test,
+                "target_source_only": target_source_only,
+            }
+        }
+        for filename in ("source_best.pt", "source_last.pt"):
+            checkpoint_path = source_artifact_path.parent / filename
+            if not checkpoint_path.is_file():
+                raise FileNotFoundError(f"Missing source checkpoint: {checkpoint_path}")
+            checkpoint = torch.load(checkpoint_path, map_location=device, weights_only=False)
+            model.load_state_dict(checkpoint["model_state_dict"])
+            model.initialize_target()
+            comparison[checkpoint_path.stem] = {
+                "path": str(checkpoint_path),
+                "sha256": sha256_file(checkpoint_path),
+                "training": checkpoint["metrics"],
+                "source_test": {
+                    profile: evaluate(model, loader, device)
+                    for profile, loader in source_test_loaders.items()
+                },
+                "target_source_only": {
+                    profile: evaluate(model, loader, device)
+                    for profile, loader in target_test_loaders.items()
+                },
+            }
+        comparison_result = {
+            "paper": "Liu et al. 2025, doi:10.1109/TTE.2024.3483973",
+            "manifest_sha256": sha256_file(args.manifest),
+            "feature_order": list(feature_order),
+            "source_artifact": str(source_artifact_path),
+            "checkpoints": comparison,
+        }
+        (args.output / "source_checkpoint_comparison.json").write_text(
+            json.dumps(comparison_result, indent=2),
+            encoding="utf-8",
+        )
+        print(json.dumps(comparison_result, indent=2))
+        return
     target_training, adaptation_diagnostics = adapt(
         model,
         source_loader,

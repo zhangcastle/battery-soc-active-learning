@@ -86,6 +86,7 @@ outputs/liu_2025/25c_to_0c/
 ├── smoke/
 ├── formal/
 ├── formal_paper_ivt/
+├── diagnostic_source_checkpoints/
 ├── diagnostic_bn_frozen/
 ├── diagnostic_clip/
 ├── diagnostic_no_reconstruction/
@@ -107,6 +108,8 @@ unlabelled target Cycle 1.
 scaler sees all 0 C input covariates, but no target SOC labels.
 `formal_paper_ivt/` is a separate full run using the paper's stated
 `[current, voltage, temperature]` channel order.
+`diagnostic_source_checkpoints/` compares the paper-order source artifact,
+best checkpoint, and last checkpoint without retraining.
 
 ### Current canonical Panasonic source bundle
 
