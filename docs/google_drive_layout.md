@@ -85,11 +85,15 @@ The current Panasonic `25 C -> 0 C` notebook writes to:
 outputs/liu_2025/25c_to_0c/
 ├── smoke/
 ├── formal/
-└── diagnostic_bn_frozen/
+├── diagnostic_bn_frozen/
+├── diagnostic_clip/
+└── diagnostic_no_reconstruction/
 ```
 
-`diagnostic_bn_frozen/` reuses `formal/source_artifact.pt`; it does not retrain
-or overwrite the formal source model.
+All three `diagnostic_*` directories reuse `formal/source_artifact.pt`; they
+do not retrain or overwrite the formal source model. `diagnostic_clip/` clips
+source-normalized inputs to `[0, 1]`, while `diagnostic_no_reconstruction/`
+sets the adaptation reconstruction weight to zero.
 
 ### Current canonical Panasonic source bundle
 

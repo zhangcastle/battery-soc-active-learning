@@ -218,7 +218,12 @@ def adapt(
 
     progress = tqdm(range(start, epochs), desc="Target adaptation", initial=start, total=epochs)
     diagnostic_epochs = {1, 2, 5, 10, 20, 50, epochs}
-    diagnostics: list[dict[str, object]] = []
+    diagnostics_path = output / "adaptation_diagnostics.json"
+    diagnostics: list[dict[str, object]] = (
+        json.loads(diagnostics_path.read_text(encoding="utf-8"))
+        if resume and diagnostics_path.is_file()
+        else []
+    )
     model.train()
     for epoch in progress:
         batches = []
@@ -252,6 +257,7 @@ def adapt(
                     },
                 }
             )
+            diagnostics_path.write_text(json.dumps(diagnostics, indent=2), encoding="utf-8")
             model.train()
         progress.set_postfix(total=f"{epoch_loss:.6f}")
         if patience and stale >= patience:
@@ -311,6 +317,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--max-windows", type=int)
     parser.add_argument("--source-artifact", type=Path)
     parser.add_argument("--diagnose-adaptation", action="store_true")
+    parser.add_argument("--clip-normalized-inputs", action="store_true")
     parser.add_argument("--smoke", action="store_true")
     parser.add_argument("--resume", action="store_true")
     parser.add_argument("--verify-hashes", action="store_true")
@@ -385,6 +392,28 @@ def main() -> None:
         profile: (normalizer.transform(x).astype(np.float32), y)
         for profile, (x, y) in target_test_arrays.items()
     }
+    normalized_feature_ranges_before_clipping = None
+    if args.clip_normalized_inputs:
+        normalized_feature_ranges_before_clipping = {
+            "source_train": feature_ranges(source_x),
+            "source_test": {
+                profile: feature_ranges(x) for profile, (x, _) in source_test_arrays.items()
+            },
+            "target_adapt": feature_ranges(target_x),
+            "target_test": {
+                profile: feature_ranges(x) for profile, (x, _) in target_test_arrays.items()
+            },
+        }
+        source_x = np.clip(source_x, 0.0, 1.0)
+        target_x = np.clip(target_x, 0.0, 1.0)
+        source_test_arrays = {
+            profile: (np.clip(x, 0.0, 1.0), y)
+            for profile, (x, y) in source_test_arrays.items()
+        }
+        target_test_arrays = {
+            profile: (np.clip(x, 0.0, 1.0), y)
+            for profile, (x, y) in target_test_arrays.items()
+        }
     normalized_feature_ranges = {
         "source_train": feature_ranges(source_x),
         "source_test": {
@@ -491,6 +520,8 @@ def main() -> None:
         "source_training": source_training,
         "target_training": target_training,
         "adaptation_diagnostics": adaptation_diagnostics,
+        "clip_normalized_inputs": args.clip_normalized_inputs,
+        "normalized_feature_ranges_before_clipping": normalized_feature_ranges_before_clipping,
         "normalized_feature_ranges": normalized_feature_ranges,
         "source_test": source_test,
         "target_source_only": target_source_only,
