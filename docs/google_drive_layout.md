@@ -96,6 +96,7 @@ outputs/liu_2025/25c_to_0c/
 │   ├── adversarial_eq12_frozen_stats/
 │   ├── mmd_legacy/
 │   └── mmd_frozen_stats/
+├── diagnostic_frozen_stats_grl_full_loss_10ep/
 ├── diagnostic_bn_frozen/
 ├── diagnostic_clip/
 ├── diagnostic_no_reconstruction/
@@ -125,6 +126,9 @@ source-scaler range violations without retraining.
 the three adversarial update semantics using the same paper-order source
 artifact, seed, data order, and one adaptation epoch. It does not replace any
 formal run.
+`diagnostic_frozen_stats_grl_full_loss_10ep/` reuses that paper-order source
+artifact for a ten-epoch full-loss run with frozen target BN statistics and
+joint GRL updates.
 
 ### Current canonical Panasonic source bundle
 
