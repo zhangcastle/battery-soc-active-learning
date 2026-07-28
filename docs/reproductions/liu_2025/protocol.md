@@ -28,7 +28,7 @@ The authoritative file assignment and hashes are in
 
 ## Paper settings
 
-- Input: voltage, current, cell temperature
+- Input: current, voltage, cell temperature (`paper_ivt`)
 - Sampling: 1 Hz
 - Window: 40 time steps, reconstructed stride 1
 - Source training: Adam, learning rate 0.001, up to 500 epochs
@@ -55,6 +55,10 @@ The paper does not publish code or fully specify the following details:
   a separate scaler fitted only on unlabeled target Cycle 1, while
   `target_domain` diagnoses normalization over all target input covariates
   without using target SOC labels.
+- Feature order: the original reconstruction used
+  `[voltage, current, temperature]`; `--feature-order paper_ivt` follows the
+  paper's explicit `[current, voltage, temperature]` definition and requires a
+  separately trained source artifact.
 
 These assumptions must remain visible when comparing against the paper.
 

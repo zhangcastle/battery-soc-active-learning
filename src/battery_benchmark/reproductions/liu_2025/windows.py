@@ -12,12 +12,13 @@ def build_liu_windows(
     *,
     length: int = 40,
     require_labels: bool,
+    feature_order: tuple[str, str, str] = ("voltage", "current", "temperature"),
 ) -> tuple[np.ndarray, np.ndarray | None]:
     """Build stride-one windows without crossing record boundaries."""
     feature_windows: list[np.ndarray] = []
     targets: list[float] = []
     for record in records:
-        values = record.data[["voltage", "current", "temperature"]].to_numpy(np.float32)
+        values = record.data[list(feature_order)].to_numpy(np.float32)
         for start in range(len(values) - length + 1):
             feature_windows.append(values[start : start + length])
             if require_labels:

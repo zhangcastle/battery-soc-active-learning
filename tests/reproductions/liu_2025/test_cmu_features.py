@@ -38,6 +38,13 @@ def test_cmu_uda_path_has_no_labels_and_builds_liu_windows():
     assert x.shape == (6, 40, 3)
     assert y is None
 
+    paper_x, _ = build_liu_windows(
+        result.records,
+        require_labels=False,
+        feature_order=("current", "voltage", "temperature"),
+    )
+    assert np.allclose(paper_x[0, 0], [-10.0, 4.2, 35.0])
+
 
 def test_cmu_uda_loader_reads_only_feature_columns(monkeypatch):
     requested = []

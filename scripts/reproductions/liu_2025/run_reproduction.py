@@ -32,6 +32,11 @@ from battery_benchmark.utils.device import get_device
 from battery_benchmark.utils.git_info import get_full_commit_hash, is_dirty
 from battery_benchmark.utils.hashing import sha256_file
 
+FEATURE_ORDERS = {
+    "legacy_vit": ("voltage", "current", "temperature"),
+    "paper_ivt": ("current", "voltage", "temperature"),
+}
+
 
 def load_record(row) -> VidalV2Record:
     """Load one manifest row without creating forbidden target-adaptation SOC."""
@@ -104,7 +109,10 @@ def unlabelled_loader(x: np.ndarray, batch_size: int) -> DataLoader:
     )
 
 
-def feature_ranges(x: np.ndarray) -> dict[str, dict[str, float]]:
+def feature_ranges(
+    x: np.ndarray,
+    feature_order: tuple[str, str, str],
+) -> dict[str, dict[str, float]]:
     return {
         name: {
             "min": float(x[..., index].min()),
@@ -113,7 +121,7 @@ def feature_ranges(x: np.ndarray) -> dict[str, dict[str, float]]:
                 np.mean((x[..., index] < 0.0) | (x[..., index] > 1.0))
             ),
         }
-        for index, name in enumerate(("voltage", "current", "temperature"))
+        for index, name in enumerate(feature_order)
     }
 
 
@@ -322,6 +330,11 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--patience", type=int, default=20)
     parser.add_argument("--seed", type=int, default=42)
     parser.add_argument("--device", default="auto")
+    parser.add_argument(
+        "--feature-order",
+        choices=tuple(FEATURE_ORDERS),
+        default="legacy_vit",
+    )
     parser.add_argument("--max-windows", type=int)
     parser.add_argument("--source-artifact", type=Path)
     parser.add_argument("--diagnose-adaptation", action="store_true")
@@ -352,6 +365,7 @@ def main() -> None:
     manifest = load_experiment_manifest(
         args.manifest, args.data_root, verify_hashes=args.verify_hashes
     )
+    feature_order = FEATURE_ORDERS[args.feature_order]
 
     source_records = [
         load_record(row)
@@ -365,18 +379,34 @@ def main() -> None:
     target_tests = _group_records(manifest, "target_test")
 
     source_x, source_y = evenly_limit(
-        *build_liu_windows(source_records, require_labels=True), args.max_windows
+        *build_liu_windows(
+            source_records, require_labels=True, feature_order=feature_order
+        ),
+        args.max_windows,
     )
     target_x, target_y = evenly_limit(
-        *build_liu_windows(target_records, require_labels=False), args.max_windows
+        *build_liu_windows(
+            target_records, require_labels=False, feature_order=feature_order
+        ),
+        args.max_windows,
     )
     assert source_y is not None and target_y is None
     source_test_arrays = {
-        profile: evenly_limit(*build_liu_windows(records, require_labels=True), args.max_windows)
+        profile: evenly_limit(
+            *build_liu_windows(
+                records, require_labels=True, feature_order=feature_order
+            ),
+            args.max_windows,
+        )
         for profile, records in source_tests.items()
     }
     target_test_arrays = {
-        profile: evenly_limit(*build_liu_windows(records, require_labels=True), args.max_windows)
+        profile: evenly_limit(
+            *build_liu_windows(
+                records, require_labels=True, feature_order=feature_order
+            ),
+            args.max_windows,
+        )
         for profile, records in target_tests.items()
     }
 
@@ -390,6 +420,8 @@ def main() -> None:
         )
         if source_artifact_metadata.get("source_manifest_sha256") != sha256_file(args.manifest):
             raise ValueError("Source artifact manifest hash does not match --manifest")
+        if source_artifact_metadata.get("feature_order") != list(feature_order):
+            raise ValueError("Source artifact feature order does not match --feature-order")
         source_training: dict[str, object] = {"reused": True}
     else:
         source_artifact_path = args.output / "source_artifact.pt"
@@ -415,13 +447,15 @@ def main() -> None:
     normalized_feature_ranges_before_clipping = None
     if args.clip_normalized_inputs:
         normalized_feature_ranges_before_clipping = {
-            "source_train": feature_ranges(source_x),
+            "source_train": feature_ranges(source_x, feature_order),
             "source_test": {
-                profile: feature_ranges(x) for profile, (x, _) in source_test_arrays.items()
+                profile: feature_ranges(x, feature_order)
+                for profile, (x, _) in source_test_arrays.items()
             },
-            "target_adapt": feature_ranges(target_x),
+            "target_adapt": feature_ranges(target_x, feature_order),
             "target_test": {
-                profile: feature_ranges(x) for profile, (x, _) in target_test_arrays.items()
+                profile: feature_ranges(x, feature_order)
+                for profile, (x, _) in target_test_arrays.items()
             },
         }
         source_x = np.clip(source_x, 0.0, 1.0)
@@ -435,13 +469,15 @@ def main() -> None:
             for profile, (x, y) in target_test_arrays.items()
         }
     normalized_feature_ranges = {
-        "source_train": feature_ranges(source_x),
+        "source_train": feature_ranges(source_x, feature_order),
         "source_test": {
-            profile: feature_ranges(x) for profile, (x, _) in source_test_arrays.items()
+            profile: feature_ranges(x, feature_order)
+            for profile, (x, _) in source_test_arrays.items()
         },
-        "target_adapt": feature_ranges(target_x),
+        "target_adapt": feature_ranges(target_x, feature_order),
         "target_test": {
-            profile: feature_ranges(x) for profile, (x, _) in target_test_arrays.items()
+            profile: feature_ranges(x, feature_order)
+            for profile, (x, _) in target_test_arrays.items()
         },
     }
 
@@ -472,7 +508,7 @@ def main() -> None:
             "source_domain": "panasonic_25c",
             "source_manifest": str(args.manifest),
             "source_manifest_sha256": sha256_file(args.manifest),
-            "feature_order": ["voltage", "current", "temperature"],
+            "feature_order": list(feature_order),
             "sampling_hz": 1.0,
             "window_length": 40,
             "window_stride": 1,
@@ -536,6 +572,7 @@ def main() -> None:
         "source_artifact": str(source_artifact_path),
         "source_artifact_sha256": source_artifact_sha256,
         "window_length": 40,
+        "feature_order": list(feature_order),
         "source_windows": len(source_x),
         "target_adaptation_windows": len(target_x),
         "source_training": source_training,
