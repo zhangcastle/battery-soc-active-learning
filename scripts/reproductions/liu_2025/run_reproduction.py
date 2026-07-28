@@ -196,6 +196,7 @@ def adapt(
     target: DataLoader,
     epochs: int,
     learning_rate: float,
+    adversarial_weight: float,
     alpha: float,
     beta: float,
     patience: int,
@@ -232,7 +233,13 @@ def adapt(
             source_x, _ = next(source_iterator)
             source_x, target_x = source_x.to(device), target_x.to(device)
             optimizer.zero_grad()
-            loss, parts = model.adaptation_loss(source_x, target_x, alpha=alpha, beta=beta)
+            loss, parts = model.adaptation_loss(
+                source_x,
+                target_x,
+                adversarial_weight=adversarial_weight,
+                alpha=alpha,
+                beta=beta,
+            )
             loss.backward()
             optimizer.step()
             batches.append(parts)
@@ -309,6 +316,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--batch-size", type=int, default=256)
     parser.add_argument("--source-lr", type=float, default=1e-3)
     parser.add_argument("--transfer-lr", type=float, default=1e-4)
+    parser.add_argument("--adversarial-weight", type=float, default=1.0)
     parser.add_argument("--alpha", type=float, default=10.0)
     parser.add_argument("--beta", type=float, default=1.0)
     parser.add_argument("--patience", type=int, default=20)
@@ -492,6 +500,7 @@ def main() -> None:
         target_loader,
         args.transfer_epochs,
         args.transfer_lr,
+        args.adversarial_weight,
         args.alpha,
         args.beta,
         args.patience,
@@ -519,6 +528,11 @@ def main() -> None:
         "target_adaptation_windows": len(target_x),
         "source_training": source_training,
         "target_training": target_training,
+        "adaptation_loss_weights": {
+            "adversarial": args.adversarial_weight,
+            "reconstruction": args.alpha,
+            "mmd": args.beta,
+        },
         "adaptation_diagnostics": adaptation_diagnostics,
         "clip_normalized_inputs": args.clip_normalized_inputs,
         "normalized_feature_ranges_before_clipping": normalized_feature_ranges_before_clipping,

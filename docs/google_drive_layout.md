@@ -87,13 +87,17 @@ outputs/liu_2025/25c_to_0c/
 ├── formal/
 ├── diagnostic_bn_frozen/
 ├── diagnostic_clip/
-└── diagnostic_no_reconstruction/
+├── diagnostic_no_reconstruction/
+├── diagnostic_adversarial_only/
+└── diagnostic_mmd_only/
 ```
 
-All three `diagnostic_*` directories reuse `formal/source_artifact.pt`; they
+All `diagnostic_*` directories reuse `formal/source_artifact.pt`; they
 do not retrain or overwrite the formal source model. `diagnostic_clip/` clips
 source-normalized inputs to `[0, 1]`, while `diagnostic_no_reconstruction/`
 sets the adaptation reconstruction weight to zero.
+`diagnostic_adversarial_only/` and `diagnostic_mmd_only/` isolate the two
+remaining alignment losses.
 
 ### Current canonical Panasonic source bundle
 

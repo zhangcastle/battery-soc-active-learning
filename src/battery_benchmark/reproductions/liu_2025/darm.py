@@ -215,6 +215,7 @@ class DARM(BaseSOCModel):
         source_x: torch.Tensor,
         target_x: torch.Tensor,
         *,
+        adversarial_weight: float = 1.0,
         alpha: float = 10.0,
         beta: float = 1.0,
     ) -> tuple[torch.Tensor, dict[str, float]]:
@@ -235,7 +236,7 @@ class DARM(BaseSOCModel):
         adversarial = F.cross_entropy(domain_logits, domain_labels)
         reconstruction = F.mse_loss(self.decoder(target_features, skips), target_x)
         mmd = multi_kernel_mmd(source_features, target_features)
-        total = adversarial + alpha * reconstruction + beta * mmd
+        total = adversarial_weight * adversarial + alpha * reconstruction + beta * mmd
         return total, {
             "adversarial": float(adversarial.detach()),
             "reconstruction": float(reconstruction.detach()),

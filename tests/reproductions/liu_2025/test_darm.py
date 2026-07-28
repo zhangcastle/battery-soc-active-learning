@@ -21,6 +21,11 @@ def test_darm_shapes_and_losses_are_runnable():
     assert any(parameter.grad is not None for parameter in model.target_encoder.parameters())
     assert all(parameter.grad is None for parameter in model.source_encoder.parameters())
 
+    mmd_only, isolated_parts = model.adaptation_loss(
+        source, target, adversarial_weight=0.0, alpha=0.0, beta=1.0
+    )
+    assert torch.allclose(mmd_only, torch.tensor(isolated_parts["mmd"]))
+
 
 def test_mmd_is_zero_for_identical_batches():
     features = torch.rand(8, 64, 5)
