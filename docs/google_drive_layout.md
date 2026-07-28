@@ -77,6 +77,20 @@ refer to their exact paths. Readers may discover both layouts, but a
 checkpoint, scaler, and resolved config must always come from the same run
 directory.
 
+## Liu 2025 reproduction
+
+The current Panasonic `25 C -> 0 C` notebook writes to:
+
+```text
+outputs/liu_2025/25c_to_0c/
+├── smoke/
+├── formal/
+└── diagnostic_bn_frozen/
+```
+
+`diagnostic_bn_frozen/` reuses `formal/source_artifact.pt`; it does not retrain
+or overwrite the formal source model.
+
 ### Current canonical Panasonic source bundle
 
 ```text

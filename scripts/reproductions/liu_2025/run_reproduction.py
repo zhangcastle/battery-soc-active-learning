@@ -21,7 +21,10 @@ from battery_benchmark.labels.soc_calculator import compute_vidal_drive_soc
 from battery_benchmark.preprocessing.normalization import MinMaxNormalizer
 from battery_benchmark.reproductions.liu_2025.darm import DARM
 from battery_benchmark.reproductions.liu_2025.protocol import load_experiment_manifest
-from battery_benchmark.reproductions.liu_2025.source_artifact import save_source_artifact
+from battery_benchmark.reproductions.liu_2025.source_artifact import (
+    load_source_artifact,
+    save_source_artifact,
+)
 from battery_benchmark.reproductions.liu_2025.windows import build_liu_windows
 from battery_benchmark.reproductions.vidal_2019.resampling import resample_vidal_record
 from battery_benchmark.reproductions.vidal_2019.sequence_v2 import VidalV2Record
@@ -99,6 +102,19 @@ def unlabelled_loader(x: np.ndarray, batch_size: int) -> DataLoader:
         batch_size=min(batch_size, len(x)),
         shuffle=True,
     )
+
+
+def feature_ranges(x: np.ndarray) -> dict[str, dict[str, float]]:
+    return {
+        name: {
+            "min": float(x[..., index].min()),
+            "max": float(x[..., index].max()),
+            "outside_0_1_fraction": float(
+                np.mean((x[..., index] < 0.0) | (x[..., index] > 1.0))
+            ),
+        }
+        for index, name in enumerate(("voltage", "current", "temperature"))
+    }
 
 
 def _save_training_state(
@@ -186,7 +202,8 @@ def adapt(
     device: torch.device,
     output: Path,
     resume: bool,
-) -> dict[str, float]:
+    diagnostic_loaders: dict[str, DataLoader] | None = None,
+) -> tuple[dict[str, float], list[dict[str, object]]]:
     optimizer = torch.optim.Adam(model.adaptation_parameters(), lr=learning_rate)
     last_path, best_path = output / "adapt_last.pt", output / "adapt_best.pt"
     start, best_loss, stale, last_metrics = 0, float("inf"), 0, {}
@@ -200,6 +217,8 @@ def adapt(
         last_metrics = state["metrics"]
 
     progress = tqdm(range(start, epochs), desc="Target adaptation", initial=start, total=epochs)
+    diagnostic_epochs = {1, 2, 5, 10, 20, 50, epochs}
+    diagnostics: list[dict[str, object]] = []
     model.train()
     for epoch in progress:
         batches = []
@@ -222,6 +241,18 @@ def adapt(
         _save_training_state(last_path, model, optimizer, epoch, best_loss, stale, last_metrics)
         if improved:
             _save_training_state(best_path, model, optimizer, epoch, best_loss, stale, last_metrics)
+        if diagnostic_loaders and epoch + 1 in diagnostic_epochs:
+            diagnostics.append(
+                {
+                    "epoch": epoch + 1,
+                    "training": dict(last_metrics),
+                    "target_test": {
+                        profile: evaluate(model, loader, device)
+                        for profile, loader in diagnostic_loaders.items()
+                    },
+                }
+            )
+            model.train()
         progress.set_postfix(total=f"{epoch_loss:.6f}")
         if patience and stale >= patience:
             break
@@ -230,7 +261,7 @@ def adapt(
         raise RuntimeError("Target adaptation produced no checkpoint")
     best = torch.load(best_path, map_location=device, weights_only=False)
     model.load_state_dict(best["model_state_dict"])
-    return {**last_metrics, "best_total": float(best["best_loss"])}
+    return {**last_metrics, "best_total": float(best["best_loss"])}, diagnostics
 
 
 @torch.no_grad()
@@ -278,6 +309,8 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--seed", type=int, default=42)
     parser.add_argument("--device", default="auto")
     parser.add_argument("--max-windows", type=int)
+    parser.add_argument("--source-artifact", type=Path)
+    parser.add_argument("--diagnose-adaptation", action="store_true")
     parser.add_argument("--smoke", action="store_true")
     parser.add_argument("--resume", action="store_true")
     parser.add_argument("--verify-hashes", action="store_true")
@@ -327,8 +360,22 @@ def main() -> None:
         for profile, records in target_tests.items()
     }
 
+    model = DARM().to(device)
     normalizer = MinMaxNormalizer()
-    source_x = normalizer.fit_transform(source_x).astype(np.float32)
+    source_artifact_metadata: dict[str, object]
+    if args.source_artifact:
+        source_artifact_path = args.source_artifact
+        source_artifact_metadata = load_source_artifact(
+            source_artifact_path, model, normalizer, device=device
+        )
+        if source_artifact_metadata.get("source_manifest_sha256") != sha256_file(args.manifest):
+            raise ValueError("Source artifact manifest hash does not match --manifest")
+        source_training: dict[str, object] = {"reused": True}
+    else:
+        source_artifact_path = args.output / "source_artifact.pt"
+        normalizer.fit(source_x)
+
+    source_x = normalizer.transform(source_x).astype(np.float32)
     target_x = normalizer.transform(target_x).astype(np.float32)
     source_test_arrays = {
         profile: (normalizer.transform(x).astype(np.float32), y)
@@ -337,6 +384,16 @@ def main() -> None:
     target_test_arrays = {
         profile: (normalizer.transform(x).astype(np.float32), y)
         for profile, (x, y) in target_test_arrays.items()
+    }
+    normalized_feature_ranges = {
+        "source_train": feature_ranges(source_x),
+        "source_test": {
+            profile: feature_ranges(x) for profile, (x, _) in source_test_arrays.items()
+        },
+        "target_adapt": feature_ranges(target_x),
+        "target_test": {
+            profile: feature_ranges(x) for profile, (x, _) in target_test_arrays.items()
+        },
     }
 
     source_loader = supervised_loader(source_x, source_y, args.batch_size, True)
@@ -350,41 +407,37 @@ def main() -> None:
         for profile, (x, y) in target_test_arrays.items()
     }
 
-    model = DARM().to(device)
-    source_training = train_source(
-        model,
-        source_loader,
-        args.source_epochs,
-        args.source_lr,
-        args.patience,
-        device,
-        args.output,
-        args.resume,
-    )
-    source_artifact_path = args.output / "source_artifact.pt"
-    source_artifact_metadata = {
-        "paper": "Liu et al. 2025, doi:10.1109/TTE.2024.3483973",
-        "source_domain": "panasonic_25c",
-        "source_manifest": str(args.manifest),
-        "source_manifest_sha256": sha256_file(args.manifest),
-        "feature_order": ["voltage", "current", "temperature"],
-        "sampling_hz": 1.0,
-        "window_length": 40,
-        "window_stride": 1,
-        "source_epochs": args.source_epochs,
-        "source_learning_rate": args.source_lr,
-        "batch_size": args.batch_size,
-        "seed": args.seed,
-        "source_windows": len(source_x),
-        "git_commit": get_full_commit_hash(Path.cwd()),
-        "git_dirty": is_dirty(Path.cwd()),
-    }
-    source_artifact_sha256 = save_source_artifact(
-        source_artifact_path,
-        model,
-        normalizer,
-        source_artifact_metadata,
-    )
+    if not args.source_artifact:
+        source_training = train_source(
+            model,
+            source_loader,
+            args.source_epochs,
+            args.source_lr,
+            args.patience,
+            device,
+            args.output,
+            args.resume,
+        )
+        source_artifact_metadata = {
+            "paper": "Liu et al. 2025, doi:10.1109/TTE.2024.3483973",
+            "source_domain": "panasonic_25c",
+            "source_manifest": str(args.manifest),
+            "source_manifest_sha256": sha256_file(args.manifest),
+            "feature_order": ["voltage", "current", "temperature"],
+            "sampling_hz": 1.0,
+            "window_length": 40,
+            "window_stride": 1,
+            "source_epochs": args.source_epochs,
+            "source_learning_rate": args.source_lr,
+            "batch_size": args.batch_size,
+            "seed": args.seed,
+            "source_windows": len(source_x),
+            "git_commit": get_full_commit_hash(Path.cwd()),
+            "git_dirty": is_dirty(Path.cwd()),
+        }
+        save_source_artifact(source_artifact_path, model, normalizer, source_artifact_metadata)
+        model.initialize_target()
+    source_artifact_sha256 = sha256_file(source_artifact_path)
     (args.output / "source_artifact.json").write_text(
         json.dumps(
             {
@@ -396,7 +449,6 @@ def main() -> None:
         ),
         encoding="utf-8",
     )
-    model.initialize_target()
     source_test = {
         profile: evaluate(model, test_loader, device)
         for profile, test_loader in source_test_loaders.items()
@@ -405,7 +457,7 @@ def main() -> None:
         profile: evaluate(model, test_loader, device)
         for profile, test_loader in target_test_loaders.items()
     }
-    target_training = adapt(
+    target_training, adaptation_diagnostics = adapt(
         model,
         source_loader,
         target_loader,
@@ -417,6 +469,7 @@ def main() -> None:
         device,
         args.output,
         args.resume,
+        target_test_loaders if args.diagnose_adaptation else None,
     )
     target_darm = {
         profile: evaluate(model, test_loader, device)
@@ -437,12 +490,20 @@ def main() -> None:
         "target_adaptation_windows": len(target_x),
         "source_training": source_training,
         "target_training": target_training,
+        "adaptation_diagnostics": adaptation_diagnostics,
+        "normalized_feature_ranges": normalized_feature_ranges,
         "source_test": source_test,
         "target_source_only": target_source_only,
         "target_darm": target_darm,
         "known_reconstruction": {
             "soc_label": "per-file cycler Ah normalization; paper formula unspecified",
             "normalization": "fit on source Cycle 1-4 only",
+            "diagnostic_target_labels": (
+                "post-epoch evaluation only; never used for optimization, early stopping, "
+                "or checkpoint selection"
+                if args.diagnose_adaptation
+                else "not used"
+            ),
             "window_stride": 1,
             "mk_mmd_bandwidth": "median x [0.5, 1, 2, 4]; paper unspecified",
             "adversarial_gradient": "gradient reversal; paper pseudocode omits sign detail",

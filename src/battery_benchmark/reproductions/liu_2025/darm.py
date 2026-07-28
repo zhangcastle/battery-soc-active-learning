@@ -187,6 +187,18 @@ class DARM(BaseSOCModel):
         self.target_encoder.load_state_dict(self.source_encoder.state_dict())
         for parameter in (*self.source_encoder.parameters(), *self.predictor.parameters()):
             parameter.requires_grad_(False)
+        self.source_encoder.eval()
+        self.predictor.eval()
+
+    def train(self, mode: bool = True):
+        super().train(mode)
+        frozen = not any(
+            parameter.requires_grad for parameter in self.source_encoder.parameters()
+        )
+        if mode and frozen:
+            self.source_encoder.eval()
+            self.predictor.eval()
+        return self
 
     def source_parameters(self):
         return list(self.source_encoder.parameters()) + list(self.predictor.parameters())

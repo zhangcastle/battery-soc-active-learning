@@ -25,3 +25,21 @@ def test_darm_shapes_and_losses_are_runnable():
 def test_mmd_is_zero_for_identical_batches():
     features = torch.rand(8, 64, 5)
     assert torch.allclose(multi_kernel_mmd(features, features), torch.tensor(0.0), atol=1e-6)
+
+
+def test_frozen_source_batchnorm_state_does_not_update_during_adaptation():
+    model = DARM()
+    model.initialize_target()
+    model.train()
+    batch_norm = next(
+        module
+        for module in model.source_encoder.modules()
+        if isinstance(module, torch.nn.BatchNorm1d)
+    )
+    before = batch_norm.running_mean.clone()
+
+    model.adaptation_loss(torch.rand(4, 40, 3), torch.rand(4, 40, 3))
+
+    assert not model.source_encoder.training
+    assert not model.predictor.training
+    assert torch.equal(batch_norm.running_mean, before)
