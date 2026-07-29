@@ -22,7 +22,9 @@ change personal storage paths.
 ```text
 /content/drive/MyDrive/battery_soc_benchmark/
 ├── data/
-│   ├── raw/                         Optional immutable raw datasets
+│   ├── raw/
+│   │   └── Panasonic_18650PF/       25degC, 10degC, 0degC, -10degC,
+│   │                                -20degC, -20degC Trise, 10degC Trise
 │   ├── processed/                   Generated dataset artifacts
 │   ├── labelled/
 │   │   └── vidal_sequence_v2/       Vidal sequence-v2 training input
