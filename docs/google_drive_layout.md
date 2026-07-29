@@ -89,6 +89,7 @@ outputs/liu_2025/25c_to_0c/
 ├── formal_paper_protocol_v2_source_only/
 ├── formal_paper_protocol_v2_grl_frozen_stats_50ep/
 ├── formal_paper_protocol_v2_grl_strength_0p1_50ep/
+├── formal_paper_protocol_v2_grl_0p1_patience20/
 ├── diagnostic_source_protocol_v2_milestones/
 ├── diagnostic_paper_protocol_v2_alternating_10ep/
 ├── diagnostic_paper_protocol_v2_grl_10ep/
@@ -142,6 +143,9 @@ frozen target-BN running statistics.
 `formal_paper_protocol_v2_grl_strength_0p1_50ep/` is a fresh matched run that
 keeps full discriminator training but reduces only the reversed gradient
 reaching the target encoder to 0.1.
+`formal_paper_protocol_v2_grl_0p1_patience20/` adds the paper's maximum of 100
+transfer epochs and patience of 20, monitoring only the unlabeled adaptation
+total-loss proxy.
 `diagnostic_source_protocol_v2_milestones/` repeats that source optimization
 through epoch 200 and saves only fixed milestone checkpoints. Source-test
 labels are evaluated post-hoc and never select a checkpoint.
