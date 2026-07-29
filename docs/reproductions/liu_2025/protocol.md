@@ -2,18 +2,31 @@
 
 ## Current scope
 
-This phase implements one fixed-temperature task: Panasonic 18650PF
-`25 C -> 0 C`.
+The source estimator is trained once at 25 C and reused for six Panasonic
+target conditions: `10 C`, `0 C`, `-10 C`, `-20 C`, `S_-20 C`, and `S_10 C`.
+The `S_` conditions are measured temperature-rise experiments, not synthetic
+mixtures of fixed-temperature records.
 
 | Role | Files | Labels |
 |---|---|---|
 | `source_train` | 25 C Cycle 1-4 | Used to train the source encoder and SOC predictor |
 | `source_test` | 25 C LA92, UDDS, US06, HWFET, NN | Evaluation only |
-| `target_adapt` | 0 C Cycle 1 | Forbidden; the adaptation loader contains no SOC tensor |
-| `target_test` | 0 C LA92, UDDS, US06, HWFET, NN | Evaluation only |
+| `target_adapt` | Target Cycle 1 | Forbidden; the adaptation loader contains no SOC tensor |
+| `target_test` | Target LA92, UDDS, US06, HWFET, NN where available | Evaluation only |
 
-The authoritative file assignment and hashes are in
-`data/manifests/liu_2025/panasonic_25c_to_0c.csv`.
+The authoritative file assignments and hashes are in
+`data/manifests/liu_2025/panasonic_25c_to_*.csv`.
+
+The public `S_10 C` directory contains a combined HWFET/UDDS/LA92/NN file but
+no US06 file. Its NN portion contains a large logging discontinuity, matching
+the paper's note that the relative raw NN data was not found. The reproduction
+therefore reports HWFET, UDDS, and LA92 only and leaves US06 and NN blank. This
+does not match Table V, which reports US06 but leaves NN blank; no profile is
+relabelled to hide that source-data discrepancy.
+
+The four profiles stored together in each temperature-rise file are sliced at
+the raw Ah-counter resets. The slice bounds are recorded directly in the
+manifests as `sample_start` and `sample_stop`.
 
 The public 25 C data contains two separate HWFET sessions. The paper reports
 and plots one approximately 7000-second HWFET sequence, so this protocol uses
@@ -30,6 +43,7 @@ an explicit reconstruction assumption.
 | Manifest validation | `src/battery_benchmark/reproductions/liu_2025/protocol.py` |
 | Training entry point | `scripts/reproductions/liu_2025/run_reproduction.py` |
 | Colab entry point | `notebooks/reproductions/liu_2025/20_liu_2025_darm_25c_to_0c.ipynb` |
+| Six-target runner | `scripts/reproductions/liu_2025/run_temperature_suite.py` |
 | Protocol and assumptions | `docs/reproductions/liu_2025/protocol.md` |
 
 ## Paper settings
@@ -42,6 +56,18 @@ an explicit reconstruction assumption.
 - Batch size: 256
 - Loss: `L_adv + 10 * L_rec + L_mmd`
 - Early stopping patience: 20
+
+The paper does not state the early-stopping monitor, target BatchNorm handling,
+adversarial implementation, or gradient-reversal strength. The six-target
+suite uses the diagnosed stable reconstruction settings: `frozen_stats`,
+`grl_joint`, and target-encoder GRL strength `0.1`. These are explicit
+reconstruction assumptions, not paper-declared hyperparameters.
+
+For the Table V supervised baseline, fine-tuning starts from the same source
+artifact and trains the target encoder and SOC predictor on labelled target
+Cycle 1 with the paper's transfer learning rate, epoch limit, batch size, and
+patience. Its checkpoint is selected by Cycle 1 training loss only. This
+labelled loader is separate from DARM's target-adaptation loader.
 
 ## Reconstruction assumptions
 

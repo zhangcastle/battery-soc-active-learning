@@ -29,7 +29,10 @@ from battery_benchmark.reproductions.liu_2025.darm import (
     target_bn_buffer_drift,
     target_bn_buffer_snapshot,
 )
-from battery_benchmark.reproductions.liu_2025.protocol import load_experiment_manifest
+from battery_benchmark.reproductions.liu_2025.protocol import (
+    load_experiment_manifest,
+    source_protocol_sha256,
+)
 from battery_benchmark.reproductions.liu_2025.source_artifact import (
     load_source_artifact,
     save_source_artifact,
@@ -60,11 +63,11 @@ def scheduled_adversarial_weight(
     return weight * (2.0 / (1.0 + math.exp(-10.0 * progress)) - 1.0)
 
 
-def load_record(row) -> VidalV2Record:
+def load_record(row, *, force_labels: bool = False) -> VidalV2Record:
     """Load one manifest row without creating forbidden target-adaptation SOC."""
     measurements = load_mat_file(row.path).measurements
     required = ["Time", "Voltage", "Current", "Battery_Temp_degC"]
-    labelled = bool(row.label_available)
+    labelled = bool(row.label_available) or force_labels
     if labelled:
         required.append("Ah")
     missing = set(required) - set(measurements)
@@ -72,13 +75,25 @@ def load_record(row) -> VidalV2Record:
         raise ValueError(f"{row.record_id} missing fields: {sorted(missing)}")
 
     size = min(len(measurements[name]) for name in required)
+    start_value = getattr(row, "sample_start", "")
+    stop_value = getattr(row, "sample_stop", "")
+    start = int(start_value) if start_value != "" else 0
+    stop = int(stop_value) if stop_value != "" else size
+    if not 0 <= start < stop <= size:
+        raise ValueError(f"{row.record_id}: invalid sample slice [{start}:{stop}] for size {size}")
     frame = pd.DataFrame(
         {
-            "timestamp": np.asarray(measurements["Time"][:size], dtype=float),
-            "voltage": np.asarray(measurements["Voltage"][:size], dtype=float),
-            "current": np.asarray(measurements["Current"][:size], dtype=float),
-            "temperature": np.asarray(measurements["Battery_Temp_degC"][:size], dtype=float),
-            **({"ah": np.asarray(measurements["Ah"][:size], dtype=float)} if labelled else {}),
+            "timestamp": np.asarray(measurements["Time"][start:stop], dtype=float),
+            "voltage": np.asarray(measurements["Voltage"][start:stop], dtype=float),
+            "current": np.asarray(measurements["Current"][start:stop], dtype=float),
+            "temperature": np.asarray(
+                measurements["Battery_Temp_degC"][start:stop], dtype=float
+            ),
+            **(
+                {"ah": np.asarray(measurements["Ah"][start:stop], dtype=float)}
+                if labelled
+                else {}
+            ),
         }
     ).dropna()
     frame = frame.sort_values("timestamp", kind="stable").reset_index(drop=True)
@@ -86,7 +101,9 @@ def load_record(row) -> VidalV2Record:
         "record_id": row.record_id,
         "profile": row.profile,
         "role": row.role,
-        "label_usage": row.label_usage,
+        "label_usage": "fine_tuning_train" if force_labels else row.label_usage,
+        "sample_start": start,
+        "sample_stop": stop,
     }
     if labelled:
         ah = frame["ah"].to_numpy()
@@ -379,6 +396,73 @@ def train_source(
     best = torch.load(best_path, map_location=device, weights_only=False)
     model.load_state_dict(best["model_state_dict"])
     return {**last_metrics, "best_mse": float(best["best_loss"])}
+
+
+def fine_tune(
+    model: DARM,
+    data: DataLoader,
+    epochs: int,
+    learning_rate: float,
+    patience: int,
+    device: torch.device,
+    output: Path,
+    resume: bool,
+    target_bn_mode: str,
+) -> dict[str, float]:
+    """Supervised target Cycle 1 baseline from the frozen source artifact."""
+    output.mkdir(parents=True, exist_ok=True)
+    for parameter in (*model.target_encoder.parameters(), *model.predictor.parameters()):
+        parameter.requires_grad_(True)
+    model.set_target_bn_mode(target_bn_mode)
+    parameters = [
+        parameter
+        for parameter in (*model.target_encoder.parameters(), *model.predictor.parameters())
+        if parameter.requires_grad
+    ]
+    optimizer = torch.optim.Adam(parameters, lr=learning_rate)
+    last_path, best_path = output / "fine_tune_last.pt", output / "fine_tune_best.pt"
+    start, best_loss, stale, last_metrics = 0, float("inf"), 0, {}
+    if resume and last_path.is_file():
+        state = torch.load(last_path, map_location=device, weights_only=False)
+        model.load_state_dict(state["model_state_dict"])
+        optimizer.load_state_dict(state["optimizer_state_dict"])
+        start = int(state["epoch"]) + 1
+        best_loss = float(state["best_loss"])
+        stale = int(state["stale_epochs"])
+        last_metrics = state["metrics"]
+
+    progress = tqdm(range(start, epochs), desc="Supervised fine-tuning", initial=start, total=epochs)
+    for epoch in progress:
+        model.train()
+        model.predictor.train()
+        losses = []
+        for x, y in data:
+            x, y = x.to(device), y.to(device)
+            optimizer.zero_grad()
+            loss = F.mse_loss(model(x), y)
+            loss.backward()
+            optimizer.step()
+            losses.append(float(loss.detach()))
+        epoch_loss = float(np.mean(losses))
+        last_metrics = {"mse": epoch_loss, "epoch": epoch + 1}
+        improved = epoch_loss < best_loss
+        best_loss, stale = (epoch_loss, 0) if improved else (best_loss, stale + 1)
+        _save_training_state(last_path, model, optimizer, epoch, best_loss, stale, last_metrics)
+        if improved:
+            _save_training_state(best_path, model, optimizer, epoch, best_loss, stale, last_metrics)
+        progress.set_postfix(mse=f"{epoch_loss:.6f}")
+        if patience and stale >= patience:
+            break
+
+    if not best_path.is_file():
+        raise RuntimeError("Fine-tuning produced no checkpoint")
+    best = torch.load(best_path, map_location=device, weights_only=False)
+    model.load_state_dict(best["model_state_dict"])
+    return {
+        **last_metrics,
+        "best_mse": float(best["best_loss"]),
+        "best_epoch": int(best["epoch"]) + 1,
+    }
 
 
 def adapt(
@@ -725,6 +809,18 @@ def _group_records(manifest: pd.DataFrame, role: str) -> dict[str, list[VidalV2R
     return grouped
 
 
+def _legacy_source_protocol_sha256(
+    metadata: dict[str, object],
+    manifest_path: Path,
+) -> str | None:
+    legacy_hash = metadata.get("source_manifest_sha256")
+    legacy_path = Path(str(metadata.get("source_manifest", "")))
+    for candidate in (legacy_path, manifest_path.parent / legacy_path.name):
+        if candidate.is_file() and sha256_file(candidate) == legacy_hash:
+            return source_protocol_sha256(pd.read_csv(candidate, keep_default_na=False))
+    return None
+
+
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser()
     parser.add_argument(
@@ -761,6 +857,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--max-windows", type=int)
     parser.add_argument("--source-artifact", type=Path)
     parser.add_argument("--source-only", action="store_true")
+    parser.add_argument("--include-fine-tuning", action="store_true")
     parser.add_argument("--compare-source-checkpoints", action="store_true")
     parser.add_argument("--audit-preprocessing", action="store_true")
     parser.add_argument("--audit-target-bn-forward", action="store_true")
@@ -821,6 +918,14 @@ def main() -> None:
         load_record(row)
         for row in manifest.loc[manifest["role"] == "target_adapt"].itertuples(index=False)
     ]
+    fine_tuning_records = (
+        [
+            load_record(row, force_labels=True)
+            for row in manifest.loc[manifest["role"] == "target_adapt"].itertuples(index=False)
+        ]
+        if args.include_fine_tuning
+        else []
+    )
     source_tests = _group_records(manifest, "source_test")
     target_tests = _group_records(manifest, "target_test")
 
@@ -833,6 +938,16 @@ def main() -> None:
         args.max_windows,
     )
     assert source_y is not None and target_y is None
+    fine_tuning_x, fine_tuning_y = (None, None)
+    if fine_tuning_records:
+        fine_tuning_x, fine_tuning_y = evenly_limit(
+            *build_liu_windows(
+                fine_tuning_records,
+                require_labels=True,
+                feature_order=feature_order,
+            ),
+            args.max_windows,
+        )
     source_test_arrays = {
         profile: evenly_limit(
             *build_liu_windows(records, require_labels=True, feature_order=feature_order),
@@ -856,8 +971,14 @@ def main() -> None:
         source_artifact_metadata = load_source_artifact(
             source_artifact_path, model, normalizer, device=device
         )
-        if source_artifact_metadata.get("source_manifest_sha256") != sha256_file(args.manifest):
-            raise ValueError("Source artifact manifest hash does not match --manifest")
+        expected_source_protocol = source_protocol_sha256(manifest)
+        artifact_source_protocol = source_artifact_metadata.get("source_protocol_sha256")
+        if artifact_source_protocol is None:
+            artifact_source_protocol = _legacy_source_protocol_sha256(
+                source_artifact_metadata, args.manifest
+            )
+        if artifact_source_protocol != expected_source_protocol:
+            raise ValueError("Source artifact protocol does not match --manifest source rows")
         if source_artifact_metadata.get("feature_order") != list(feature_order):
             raise ValueError("Source artifact feature order does not match --feature-order")
         if source_artifact_metadata.get("source_normalization", "source_train") != (
@@ -885,6 +1006,8 @@ def main() -> None:
         )
     source_x = normalizer.transform(source_x).astype(np.float32)
     target_x = target_normalizer.transform(target_x).astype(np.float32)
+    if fine_tuning_x is not None:
+        fine_tuning_x = target_normalizer.transform(fine_tuning_x).astype(np.float32)
     source_test_arrays = {
         profile: (normalizer.transform(x).astype(np.float32), y)
         for profile, (x, y) in source_test_arrays.items()
@@ -909,6 +1032,8 @@ def main() -> None:
         }
         source_x = np.clip(source_x, 0.0, 1.0)
         target_x = np.clip(target_x, 0.0, 1.0)
+        if fine_tuning_x is not None:
+            fine_tuning_x = np.clip(fine_tuning_x, 0.0, 1.0)
         source_test_arrays = {
             profile: (np.clip(x, 0.0, 1.0), y) for profile, (x, y) in source_test_arrays.items()
         }
@@ -1001,6 +1126,7 @@ def main() -> None:
             "source_domain": "panasonic_25c",
             "source_manifest": str(args.manifest),
             "source_manifest_sha256": sha256_file(args.manifest),
+            "source_protocol_sha256": source_protocol_sha256(manifest),
             "feature_order": list(feature_order),
             "sampling_hz": 1.0,
             "window_length": 40,
@@ -1147,6 +1273,25 @@ def main() -> None:
             args.output,
         )
         return
+    fine_tuning_training = None
+    target_fine_tuning = None
+    if fine_tuning_x is not None and fine_tuning_y is not None:
+        fine_tuning_model = deepcopy(model)
+        fine_tuning_training = fine_tune(
+            fine_tuning_model,
+            supervised_loader(fine_tuning_x, fine_tuning_y, args.batch_size, True),
+            args.transfer_epochs,
+            args.transfer_lr,
+            args.patience,
+            device,
+            args.output / "fine_tuning",
+            args.resume,
+            args.target_bn_mode,
+        )
+        target_fine_tuning = {
+            profile: evaluate(fine_tuning_model, test_loader, device)
+            for profile, test_loader in target_test_loaders.items()
+        }
     target_training, adaptation_diagnostics = adapt(
         model,
         source_loader,
@@ -1173,7 +1318,10 @@ def main() -> None:
 
     result = {
         "paper": "Liu et al. 2025, doi:10.1109/TTE.2024.3483973",
-        "protocol": "Panasonic 25C -> 0C",
+        "protocol": (
+            f"Panasonic 25C -> "
+            f"{manifest.loc[manifest['role'] == 'target_adapt', 'domain_id'].iloc[0]}"
+        ),
         "device": str(device),
         "run_mode": "smoke" if args.smoke else "formal",
         "manifest": str(args.manifest),
@@ -1186,6 +1334,7 @@ def main() -> None:
         "source_windows": len(source_x),
         "target_adaptation_windows": len(target_x),
         "source_training": source_training,
+        "fine_tuning_training": fine_tuning_training,
         "target_training": target_training,
         "target_bn_mode": args.target_bn_mode,
         "adversarial_update": args.adversarial_update,
@@ -1206,9 +1355,16 @@ def main() -> None:
         "normalized_feature_ranges": normalized_feature_ranges,
         "source_test": source_test,
         "target_source_only": target_source_only,
+        "target_fine_tuning": target_fine_tuning,
         "target_darm": target_darm,
         "known_reconstruction": {
             "soc_label": "per-file cycler Ah normalization; paper formula unspecified",
+            "fine_tuning": (
+                "target Cycle 1 SOC labels train target encoder and predictor; "
+                "checkpoint selected by Cycle 1 training loss"
+                if args.include_fine_tuning
+                else None
+            ),
             "normalization": (
                 "source scaler: source Cycle 1-4; target scaler: target Cycle 1"
                 if args.target_normalization == "target_adapt"

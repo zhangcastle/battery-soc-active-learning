@@ -3,7 +3,10 @@ from pathlib import Path
 import pandas as pd
 import pytest
 
-from battery_benchmark.reproductions.liu_2025.protocol import load_experiment_manifest
+from battery_benchmark.reproductions.liu_2025.protocol import (
+    load_experiment_manifest,
+    source_protocol_sha256,
+)
 
 REPO_ROOT = Path(__file__).resolve().parents[3]
 MANIFEST = REPO_ROOT / "data/manifests/liu_2025/panasonic_25c_to_0c.csv"
@@ -43,3 +46,22 @@ def test_manifest_rejects_duplicate_test_profiles(tmp_path):
 
     with pytest.raises(ValueError, match="one file per profile"):
         load_experiment_manifest(path, DATA_ROOT)
+
+
+def test_source_protocol_hash_ignores_target_rows():
+    manifest = pd.read_csv(MANIFEST, keep_default_na=False)
+    changed = manifest.copy()
+    changed.loc[changed["role"].str.startswith("target"), "domain_id"] = "another_target"
+
+    assert source_protocol_sha256(changed) == source_protocol_sha256(manifest)
+
+
+def test_target_test_may_omit_an_unavailable_profile(tmp_path):
+    manifest = pd.read_csv(MANIFEST, keep_default_na=False)
+    manifest = manifest.loc[manifest["record_id"] != "target_test_us06"]
+    path = tmp_path / "missing_us06.csv"
+    manifest.to_csv(path, index=False)
+
+    loaded = load_experiment_manifest(path, DATA_ROOT)
+
+    assert "US06" not in set(loaded.loc[loaded["role"] == "target_test", "profile"])

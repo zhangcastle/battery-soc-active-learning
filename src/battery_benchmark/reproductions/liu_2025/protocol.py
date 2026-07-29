@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import hashlib
+import json
 from pathlib import Path
 
 import pandas as pd
@@ -28,6 +30,23 @@ ROLE_LABEL_POLICY = {
     "target_test": (True, "evaluation_only"),
 }
 TEST_PROFILES = {"LA92", "UDDS", "US06", "HWFET", "NN"}
+SOURCE_ROLES = {"source_train", "source_test"}
+
+
+def source_protocol_sha256(manifest: pd.DataFrame) -> str:
+    """Hash only source rows so one source artifact can serve every target domain."""
+    columns = sorted(REQUIRED_COLUMNS | {"sample_start", "sample_stop"})
+    rows = manifest.loc[manifest["role"].isin(SOURCE_ROLES)].copy()
+    for column in columns:
+        if column not in rows:
+            rows[column] = ""
+    rows["label_available"] = rows["label_available"].map(
+        lambda value: str(value).lower()
+    )
+    payload = rows[columns].sort_values("record_id").to_dict(orient="records")
+    return hashlib.sha256(
+        json.dumps(payload, sort_keys=True, separators=(",", ":")).encode()
+    ).hexdigest()
 
 
 def load_experiment_manifest(
@@ -71,9 +90,14 @@ def load_experiment_manifest(
     for role in ("source_test", "target_test"):
         rows = manifest.loc[manifest["role"] == role]
         profiles = set(rows["profile"])
-        if profiles != TEST_PROFILES:
+        if role == "source_test" and profiles != TEST_PROFILES:
             raise ValueError(
                 f"{role} profiles must be {sorted(TEST_PROFILES)}, got {sorted(profiles)}"
+            )
+        if role == "target_test" and (not profiles or not profiles <= TEST_PROFILES):
+            raise ValueError(
+                f"{role} profiles must be a non-empty subset of "
+                f"{sorted(TEST_PROFILES)}, got {sorted(profiles)}"
             )
         duplicates = sorted(rows.loc[rows["profile"].duplicated(), "profile"].unique())
         if duplicates:

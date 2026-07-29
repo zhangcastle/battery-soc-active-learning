@@ -190,6 +190,23 @@ late feature drift.
 reconstruction and MMD to test the alternating adversarial game without
 competing target-encoder losses.
 
+The six-target temperature suite writes without moving any earlier result:
+
+```text
+outputs/liu_2025/all_temperatures/paper_protocol_v2_grl_0p1/
+├── 10c/
+├── 0c/
+├── n10c/
+├── n20c/
+├── s_n20c/
+├── s_10c/
+├── table_v_reproduction.csv
+└── suite_metadata.json
+```
+
+Each target directory is resumable and reuses the same source artifact under
+`outputs/liu_2025/25c_to_0c/formal_paper_protocol_v2_source_only/`.
+
 ### Current canonical Panasonic source bundle
 
 ```text
