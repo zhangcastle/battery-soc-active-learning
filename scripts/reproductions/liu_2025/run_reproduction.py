@@ -638,14 +638,15 @@ def adapt(
         last_metrics["epoch"] = epoch + 1
         last_metrics["gradient_l2"] = first_batch_gradient_l2 or {}
         last_metrics["gradient_cosine"] = first_batch_gradient_cosine or {}
-        target_test = {
-            profile: evaluate(model, loader, device)
-            for profile, loader in diagnostic_loaders.items()
-        }
-        last_metrics["target_test"] = target_test
-        last_metrics["mean_profile_rmse_percent"] = float(
-            np.mean([metrics["rmse_percent"] for metrics in target_test.values()])
-        )
+        if diagnostic_loaders:
+            target_test = {
+                profile: evaluate(model, loader, device)
+                for profile, loader in diagnostic_loaders.items()
+            }
+            last_metrics["target_test"] = target_test
+            last_metrics["mean_profile_rmse_percent"] = float(
+                np.mean([metrics["rmse_percent"] for metrics in target_test.values()])
+            )
         last_metrics["target_feature_rms_drift"] = target_feature_drift(
             model, initial_encoder, target, device
         )
@@ -708,9 +709,13 @@ def adapt(
 
     if not last_path.is_file():
         raise RuntimeError("Target adaptation produced no checkpoint")
-    oracle = min(
-        diagnostics,
-        key=lambda row: row["training"]["mean_profile_rmse_percent"],
+    oracle = (
+        min(
+            diagnostics,
+            key=lambda row: row["training"]["mean_profile_rmse_percent"],
+        )
+        if diagnostic_loaders
+        else None
     )
     return {
         **last_metrics,
@@ -720,11 +725,17 @@ def adapt(
         "adversarial_update": adversarial_update,
         "adversarial_schedule": adversarial_schedule,
         "diagnostic": adversarial_update == "eq12_joint",
-        "diagnostic_oracle": {
-            "used_for_training_or_selection": False,
-            "epoch": oracle["epoch"],
-            "mean_profile_rmse_percent": oracle["training"]["mean_profile_rmse_percent"],
-        },
+        "diagnostic_oracle": (
+            {
+                "used_for_training_or_selection": False,
+                "epoch": oracle["epoch"],
+                "mean_profile_rmse_percent": oracle["training"][
+                    "mean_profile_rmse_percent"
+                ],
+            }
+            if oracle
+            else None
+        ),
     }, diagnostics
 
 

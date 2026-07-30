@@ -123,6 +123,21 @@ outputs/liu_2025/25c_to_0c/
 └── diagnostic_target_domain_normalized/
 ```
 
+The CMU core-seven extension writes resumable per-cell adaptation
+artifacts and its aggregate table to:
+
+```text
+outputs/liu_2025/cmu_core7/duration_matched_grl_0p1/
+├── condition_metrics.csv
+├── VAH01/
+├── VAH17/
+├── VAH27/
+├── VAH30/
+├── VAH15/
+├── VAH12/
+└── VAH11/
+```
+
 All `diagnostic_*` directories reuse `formal/source_artifact.pt`; they
 do not retrain or overwrite the formal source model. `diagnostic_clip/` clips
 source-normalized inputs to `[0, 1]`, while `diagnostic_no_reconstruction/`

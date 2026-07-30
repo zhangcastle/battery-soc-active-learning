@@ -10,10 +10,12 @@ from scripts.reproductions.liu_2025.run_reproduction import (
     _legacy_source_protocol_sha256,
     _load_adaptation_state,
     _save_adaptation_state,
+    adapt,
     fine_tune,
     parse_args,
     scheduled_adversarial_weight,
     supervised_loader,
+    unlabelled_loader,
 )
 from scripts.reproductions.liu_2025.run_temperature_suite import summarize
 
@@ -176,3 +178,34 @@ def test_adaptation_checkpoint_saves_and_restores_modes(tmp_path):
     assert random.random() == expected_python
     assert np.random.rand() == expected_numpy
     assert torch.equal(torch.rand(1), expected_torch)
+
+
+def test_adaptation_can_run_without_target_label_diagnostics(tmp_path):
+    rng = np.random.default_rng(42)
+    x = rng.normal(size=(4, 40, 3)).astype(np.float32)
+    y = np.linspace(1.0, 0.0, len(x), dtype=np.float32)
+    model = DARM()
+    model.initialize_target()
+
+    training, diagnostics = adapt(
+        model,
+        supervised_loader(x, y, batch_size=4, shuffle=False),
+        unlabelled_loader(x, batch_size=4),
+        1,
+        1e-4,
+        1.0,
+        10.0,
+        1.0,
+        0,
+        torch.device("cpu"),
+        tmp_path,
+        False,
+        "frozen_stats",
+        "grl_joint",
+        "constant",
+        0.1,
+        {},
+    )
+
+    assert training["diagnostic_oracle"] is None
+    assert "target_test" not in diagnostics[0]["training"]
