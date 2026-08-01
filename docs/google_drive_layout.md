@@ -32,6 +32,8 @@ change personal storage paths.
 └── outputs/
     ├── logs/
     ├── reproductions/
+    │   ├── shen_2023/
+    │   │   └── tatn_paper_protocol/  Resumable Table II/IV/V/VI/VII run
     │   └── vidal_2019/
     │       ├── case1/
     │       ├── case2/
@@ -49,6 +51,28 @@ Raw data should not be copied into the Git repository. The repository may
 contain compact, reviewable generated CMU outputs where explicitly allowed by
 its `.gitignore`; Drive remains the storage location for large training and
 benchmark artifacts.
+
+## Shen 2023 TATN reproduction
+
+Upload the Panasonic NCR18650PF raw dataset without renaming its directories:
+
+```text
+data/raw/Panasonic_18650PF/
+├── 25degC/
+├── 10degC/
+├── 0degC/
+├── -10degC/
+└── -20degC/
+```
+
+Each temperature must contain the nine drive profiles `Cycle_1` through
+`Cycle_4`, `NN`, `US06`, `HWFET`, `LA92`, and `UDDS`. The notebook reads
+`raw_data_root` and `output_root` from `configs/paths/colab_drive.yaml` and
+writes resumable checkpoints, fold metrics, and Tables II/IV/V/VI/VII to:
+
+```text
+outputs/reproductions/shen_2023/tatn_paper_protocol/
+```
 
 ## Vidal reproduction outputs
 
