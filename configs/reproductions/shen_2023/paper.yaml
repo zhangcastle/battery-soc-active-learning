@@ -1,0 +1,43 @@
+paper: Shen et al. 2023 TATN
+doi: 10.1109/TPEL.2022.3220760
+dataset: Panasonic NCR18650PF
+temperatures: [25, 10, 0, -10, -20]
+profiles: [Cycle_1, Cycle_2, Cycle_3, Cycle_4, NN, US06, HWFET, LA92, UDDS]
+features: [current, voltage, temperature]
+sample_interval: 10
+window: 90
+normalization: per_temperature_all_nine_profiles_minmax
+model:
+  convolution_filters: 256
+  convolution_kernel: [3, 1]
+  dropout: 0.2
+  bilstm_hidden: 64
+  released_repo_bilstm_layers: 4
+training:
+  optimizer: Adam
+  learning_rate: 0.001
+  batch_size: 64
+  epochs: 2000
+  seed: 100
+table_ii:
+  protocol: nine_fold_leave_one_cycle_out
+  reported_split: eight_training_cycles_per_fold
+transfer:
+  epochs: 2000
+  estimation_weight: 1.0
+  adversarial_weight: 1.0
+  mmd_weight: 1.0
+  pseudo_threshold: 0.08
+  pseudo_lookahead: 200
+semisupervised:
+  test_profiles_per_pair: 9
+  labeled_target_profiles_per_fold: 1
+  labeled_fraction: 0.5
+unsupervised:
+  test_profiles_per_pair: 9
+  labeled_target_profiles_per_fold: 0
+assumptions:
+  - The paper does not identify which target profile is labeled; use the first non-test profile.
+  - The paper does not specify optimization hyperparameters; use released-repository defaults.
+  - Select transfer checkpoints by training objective because target test labels are forbidden.
+  - Preserve chronological contiguous pseudo-label segments instead of joining rejected gaps.

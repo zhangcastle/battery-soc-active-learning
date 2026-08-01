@@ -130,6 +130,7 @@ See [`docs/datasets/cmu_evtol/overview.md`](docs/datasets/cmu_evtol/overview.md)
 | Pseudo-label / source-free | ⏳ Placeholder |
 | Vidal reproduction | ⚠️ Implemented reconstruction; documented assumptions remain |
 | Liu 2025 DARM (25°C → 0°C) | ⚠️ Manifest-driven reconstruction; formal run pending |
+| Shen 2023 TATN Tables II/IV/V/VI/VII | ✅ Colab-ready paper reproduction |
 | CMU transfer | ⚠️ Protocol established; formal benchmark not complete |
 
 ---
