@@ -177,6 +177,25 @@ class ShenTableSuite:
         table.to_csv(self.output_dir / "table_ii.csv")
         return table
 
+    def source_sanity_table(self) -> pd.DataFrame:
+        rows = []
+        for temperature in TEMPERATURES:
+            truth, estimate = predict(
+                self.source_model(temperature),
+                list(self.cycles(temperature).values()),
+                self.device,
+            )
+            rows.append(
+                {
+                    "temperature": _label(temperature),
+                    "MAE": float(np.mean(np.abs(truth - estimate))) * 100,
+                    "RMSE": float(np.sqrt(np.mean((truth - estimate) ** 2))) * 100,
+                }
+            )
+        table = pd.DataFrame(rows).set_index("temperature")
+        table.to_csv(self.output_dir / "source_sanity.csv")
+        return table
+
     def run_transfer(
         self,
         source_temperature: int,
@@ -194,8 +213,11 @@ class ShenTableSuite:
                 f"{scenario}_{source_temperature}C_to_{target_temperature}C_"
                 f"{profile}_e{self.transfer_epochs}.json"
             )
+            model_path = self.cache_dir / "checkpoints" / "transfer" / (
+                f"{scenario}_{source_temperature}C_to_{target_temperature}C_{profile}.pt"
+            )
             run_label = f"{scenario} {source_temperature}C->{target_temperature}C {profile}"
-            if result_path.exists():
+            if result_path.exists() and model_path.exists():
                 print(f"[{run_label}] restored")
                 result = json.loads(result_path.read_text(encoding="utf-8"))
             else:
@@ -224,6 +246,19 @@ class ShenTableSuite:
                     min_delta=self.min_delta,
                 )
                 tatn = evaluate_cycle(transferred, target_cycles[profile], self.device)
+                model_path.parent.mkdir(parents=True, exist_ok=True)
+                torch.save(
+                    {
+                        "model_state_dict": transferred.state_dict(),
+                        "history": history,
+                        "target_info": target_info,
+                        "source_temperature": source_temperature,
+                        "target_temperature": target_temperature,
+                        "scenario": scenario,
+                        "profile": profile,
+                    },
+                    model_path,
+                )
                 result = {
                     "source_temperature": source_temperature,
                     "target_temperature": target_temperature,
@@ -231,6 +266,7 @@ class ShenTableSuite:
                     "profile": profile,
                     "target_info": target_info,
                     "epochs_completed": len(history),
+                    "checkpoint": str(model_path.relative_to(self.output_dir)),
                     "final_training_loss": history[-1],
                     "records": [
                         {"method": "Source pretrained", **baseline},
