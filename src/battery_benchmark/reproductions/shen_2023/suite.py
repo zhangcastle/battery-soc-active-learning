@@ -135,12 +135,12 @@ class ShenTableSuite:
         self._sources[temperature] = model
         return model
 
-    def run_table_ii(self) -> pd.DataFrame:
+    def run_table_ii(self, *, profiles: tuple[str, ...] = PROFILES) -> pd.DataFrame:
         rows = {"MAE": [], "RMSE": []}
         for temperature in TEMPERATURES:
             fold_metrics = []
             cycles = self.cycles(temperature)
-            for held_out in PROFILES:
+            for held_out in profiles:
                 training_cycles = {p: cycles[p] for p in PROFILES if p != held_out}
                 checkpoint = (
                     self.cache_dir
@@ -296,9 +296,9 @@ class ShenTableSuite:
                 rows[(method, metric.upper())] = values + [float(np.mean(values))]
         return pd.DataFrame.from_dict(rows, orient="index", columns=columns + ["Avg"])
 
-    def tables(self) -> dict[str, pd.DataFrame]:
+    def tables(self, *, profiles: tuple[str, ...] = PROFILES) -> dict[str, pd.DataFrame]:
         tables = {
-            "II": self.run_table_ii(),
+            "II": self.run_table_ii(profiles=profiles),
             "IV": self.table_for_source(10, "semisupervised"),
             "V": self.table_for_all_sources("semisupervised"),
             "VI": self.table_for_source(10, "unsupervised"),

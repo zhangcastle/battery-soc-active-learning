@@ -37,8 +37,9 @@ def main() -> None:
         early_stopping_patience=args.early_stopping_patience,
         min_epochs=args.min_epochs,
     )
-    suite.run_all_transfers(profiles=tuple(args.profiles))
-    for name, table in suite.tables().items():
+    profiles = tuple(args.profiles)
+    suite.run_all_transfers(profiles=profiles)
+    for name, table in suite.tables(profiles=profiles).items():
         print(f"\nTable {name}\n{table.round(3).to_string()}")
 
 

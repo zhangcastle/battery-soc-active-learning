@@ -25,6 +25,13 @@ optimized_training:
   early_stopping_patience: 30
   plateau_lr_factor: 0.5
   min_learning_rate: 0.00001
+screening_training:
+  max_epochs: 150
+  min_epochs: 30
+  early_stopping_patience: 15
+  held_out_profiles: [Cycle_4, UDDS]
+  output_tables: [II, IV, V, VI, VII]
+  scientific_status: diagnostic_not_paper_reproduction
 table_ii:
   protocol: nine_fold_leave_one_cycle_out
   reported_split: eight_training_cycles_per_fold
@@ -49,3 +56,4 @@ assumptions:
   - Preserve chronological contiguous pseudo-label segments instead of joining rejected gaps.
   - The paper does not state an epoch budget; 2000 is only the released CLI default.
   - Optimized mode changes only training termination and keeps every paper table, pair, and fold.
+  - Screening mode keeps all table columns and temperature pairs but estimates them from two folds.

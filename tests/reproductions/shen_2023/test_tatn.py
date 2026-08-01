@@ -1,6 +1,7 @@
 from pathlib import Path
 
 import numpy as np
+import pandas as pd
 import torch
 
 from battery_benchmark.reproductions.shen_2023.data import (
@@ -9,6 +10,7 @@ from battery_benchmark.reproductions.shen_2023.data import (
     selected_windows,
 )
 from battery_benchmark.reproductions.shen_2023.model import TATN, gaussian_mmd
+from battery_benchmark.reproductions.shen_2023.suite import ShenTableSuite
 from battery_benchmark.reproductions.shen_2023.train import _improved
 
 
@@ -33,6 +35,18 @@ def test_relative_improvement_ignores_noise_below_threshold():
     assert _improved(0.8, float("inf"), 1e-4)
     assert _improved(0.98, 1.0, 1e-2)
     assert not _improved(0.995, 1.0, 1e-2)
+
+
+def test_table_export_respects_screening_profiles(tmp_path):
+    suite = object.__new__(ShenTableSuite)
+    suite.output_dir = tmp_path
+    observed = []
+    table = pd.DataFrame({"Avg": [1.0]})
+    suite.run_table_ii = lambda *, profiles: observed.append(profiles) or table
+    suite.table_for_source = lambda *args: table
+    suite.table_for_all_sources = lambda *args: table
+    suite.tables(profiles=("Cycle_4", "UDDS"))
+    assert observed == [("Cycle_4", "UDDS")]
 
 
 def test_pseudo_windows_do_not_cross_rejected_gap():
