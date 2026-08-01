@@ -11,7 +11,7 @@ from battery_benchmark.reproductions.shen_2023.data import (
 )
 from battery_benchmark.reproductions.shen_2023.model import TATN, gaussian_mmd
 from battery_benchmark.reproductions.shen_2023.suite import ShenTableSuite
-from battery_benchmark.reproductions.shen_2023.train import _improved
+from battery_benchmark.reproductions.shen_2023.train import _improved, target_training_windows
 
 
 def test_tatn_shapes_and_freezing():
@@ -59,6 +59,32 @@ def test_pseudo_windows_do_not_cross_rejected_gap():
     for window in x:
         source_indices = window[:, 0] // 3
         assert np.all(np.diff(source_indices) == 1)
+
+
+def test_unsupervised_fold_without_pseudo_labels_is_a_recorded_noop(monkeypatch):
+    features = np.zeros((900, 3), dtype=np.float32)
+    cycles = {
+        profile: ShenCycle(profile, 25, features, np.zeros(900, dtype=np.float32), ())
+        for profile in (
+            "Cycle_1", "Cycle_2", "Cycle_3", "Cycle_4", "NN", "US06", "HWFET", "LA92", "UDDS"
+        )
+    }
+    monkeypatch.setattr(
+        "battery_benchmark.reproductions.shen_2023.train._cycle_prediction",
+        lambda *_: np.linspace(1.0, 0.0, 900, dtype=np.float32),
+    )
+
+    x, y, info = target_training_windows(
+        TATN(), cycles, "Cycle_4", "unsupervised", torch.device("cpu")
+    )
+
+    assert len(x) == len(y) == 0
+    assert info == {
+        "labeled_profile": None,
+        "pseudo_windows": 0,
+        "total_windows": 0,
+        "status": "skipped_no_pseudo_labels",
+    }
 
 
 def test_profile_discovery_ignores_combined_files(tmp_path):

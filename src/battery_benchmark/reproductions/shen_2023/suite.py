@@ -267,7 +267,7 @@ class ShenTableSuite:
                     "target_info": target_info,
                     "epochs_completed": len(history),
                     "checkpoint": str(model_path.relative_to(self.output_dir)),
-                    "final_training_loss": history[-1],
+                    "final_training_loss": history[-1] if history else None,
                     "records": [
                         {"method": "Source pretrained", **baseline},
                         {"method": "TATN", **tatn},

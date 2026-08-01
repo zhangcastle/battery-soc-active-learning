@@ -211,11 +211,18 @@ def target_training_windows(
             xs.append(x)
             ys.append(y)
     if not xs:
-        raise RuntimeError(f"No target windows survived pseudo-label selection for {test_profile}")
+        x, y = windows([])
+        return x, y, {
+            "labeled_profile": labeled_profile,
+            "pseudo_windows": 0,
+            "total_windows": 0,
+            "status": "skipped_no_pseudo_labels",
+        }
     return np.concatenate(xs), np.concatenate(ys), {
         "labeled_profile": labeled_profile,
         "pseudo_windows": pseudo_windows,
         "total_windows": sum(len(x) for x in xs),
+        "status": "adapted",
     }
 
 
@@ -249,6 +256,8 @@ def adapt(
         device,
         labeled_profile=labeled_profile,
     )
+    if not len(target_x):
+        return model, [], target_info
     source_loader = _loader(source_x, source_y, batch_size, True)
     target_loader = _loader(target_x, target_y, batch_size, True)
     extractor_optimizer = torch.optim.Adam(model.target_extractor.parameters(), lr=learning_rate)
