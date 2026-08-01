@@ -19,15 +19,12 @@ training:
   batch_size: 64
   epochs: 2000
   seed: 100
-pilot_training:
+optimized_training:
   max_epochs: 300
   min_epochs: 60
   early_stopping_patience: 30
   plateau_lr_factor: 0.5
   min_learning_rate: 0.00001
-  source_temperature: 10
-  target_temperature: 0
-  profiles: [Cycle_4, UDDS]
 table_ii:
   protocol: nine_fold_leave_one_cycle_out
   reported_split: eight_training_cycles_per_fold
@@ -51,4 +48,4 @@ assumptions:
   - Select transfer checkpoints by training objective because target test labels are forbidden.
   - Preserve chronological contiguous pseudo-label segments instead of joining rejected gaps.
   - The paper does not state an epoch budget; 2000 is only the released CLI default.
-  - Pilot mode uses label-safe training-objective early stopping and plateau LR reduction.
+  - Optimized mode changes only training termination and keeps every paper table, pair, and fold.
