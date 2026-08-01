@@ -56,6 +56,9 @@ class ShenTableSuite:
         lambdas: tuple[float, float, float] = (1.0, 1.0, 1.0),
         seed: int = 100,
         device: str = "auto",
+        early_stopping_patience: int | None = None,
+        min_epochs: int = 0,
+        min_delta: float = 1e-4,
     ) -> None:
         self.raw_root = Path(raw_root)
         self.output_dir = Path(output_dir)
@@ -66,6 +69,9 @@ class ShenTableSuite:
         self.learning_rate = learning_rate
         self.lambdas = lambdas
         self.seed = seed
+        self.early_stopping_patience = early_stopping_patience
+        self.min_epochs = min_epochs
+        self.min_delta = min_delta
         resolved_device = (
             "cuda" if device == "auto" and torch.cuda.is_available() else
             "cpu" if device == "auto" else device
@@ -78,6 +84,9 @@ class ShenTableSuite:
             "learning_rate": learning_rate,
             "lambdas": lambdas,
             "seed": seed,
+            "early_stopping_patience": early_stopping_patience,
+            "min_epochs": min_epochs,
+            "min_delta": min_delta,
         }
         run_id = hashlib.sha256(json.dumps(protocol, sort_keys=True).encode()).hexdigest()[:12]
         self.cache_dir = self.output_dir / "cache" / run_id
@@ -107,8 +116,10 @@ class ShenTableSuite:
             return self._sources[temperature]
         checkpoint = self.cache_dir / "checkpoints" / f"source_{temperature}C.pt"
         if checkpoint.exists():
+            print(f"[source {temperature}C] restored {checkpoint.name}")
             model = load_source(checkpoint, self.device)
         else:
+            print(f"[source {temperature}C] training, max {self.epochs} epochs")
             model, _ = train_source(
                 self.cycles(temperature),
                 epochs=self.epochs,
@@ -117,6 +128,9 @@ class ShenTableSuite:
                 device=self.device,
                 seed=self.seed,
                 checkpoint=checkpoint,
+                early_stopping_patience=self.early_stopping_patience,
+                min_epochs=self.min_epochs,
+                min_delta=self.min_delta,
             )
         self._sources[temperature] = model
         return model
@@ -145,6 +159,9 @@ class ShenTableSuite:
                         device=self.device,
                         seed=self.seed,
                         checkpoint=checkpoint,
+                        early_stopping_patience=self.early_stopping_patience,
+                        min_epochs=self.min_epochs,
+                        min_delta=self.min_delta,
                     )
                 truth, estimate = predict(model, list(training_cycles.values()), self.device)
                 fold_metrics.append(
@@ -177,9 +194,12 @@ class ShenTableSuite:
                 f"{scenario}_{source_temperature}C_to_{target_temperature}C_"
                 f"{profile}_e{self.transfer_epochs}.json"
             )
+            run_label = f"{scenario} {source_temperature}C->{target_temperature}C {profile}"
             if result_path.exists():
+                print(f"[{run_label}] restored")
                 result = json.loads(result_path.read_text(encoding="utf-8"))
             else:
+                print(f"[{run_label}] training")
                 baseline = evaluate_cycle(source_model, target_cycles[profile], self.device)
                 labeled = (
                     next(p for p in PROFILES if p != profile)
@@ -199,6 +219,9 @@ class ShenTableSuite:
                     device=self.device,
                     seed=self.seed + fold,
                     labeled_profile=labeled,
+                    early_stopping_patience=self.early_stopping_patience,
+                    min_epochs=self.min_epochs,
+                    min_delta=self.min_delta,
                 )
                 tatn = evaluate_cycle(transferred, target_cycles[profile], self.device)
                 result = {
@@ -207,6 +230,7 @@ class ShenTableSuite:
                     "scenario": scenario,
                     "profile": profile,
                     "target_info": target_info,
+                    "epochs_completed": len(history),
                     "final_training_loss": history[-1],
                     "records": [
                         {"method": "Source pretrained", **baseline},
@@ -214,6 +238,7 @@ class ShenTableSuite:
                     ],
                 }
                 save_json(result_path, result)
+                print(f"  completed in {len(history)} epoch(s)")
             pair_records.extend(
                 {
                     "source_temperature": source_temperature,

@@ -9,6 +9,7 @@ from battery_benchmark.reproductions.shen_2023.data import (
     selected_windows,
 )
 from battery_benchmark.reproductions.shen_2023.model import TATN, gaussian_mmd
+from battery_benchmark.reproductions.shen_2023.train import _improved
 
 
 def test_tatn_shapes_and_freezing():
@@ -26,6 +27,12 @@ def test_tatn_shapes_and_freezing():
 def test_gaussian_mmd_is_zero_for_identical_features():
     features = torch.randn(4, 90, 128)
     assert torch.isclose(gaussian_mmd(features, features), torch.tensor(0.0), atol=1e-6)
+
+
+def test_relative_improvement_ignores_noise_below_threshold():
+    assert _improved(0.8, float("inf"), 1e-4)
+    assert _improved(0.98, 1.0, 1e-2)
+    assert not _improved(0.995, 1.0, 1e-2)
 
 
 def test_pseudo_windows_do_not_cross_rejected_gap():

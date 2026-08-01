@@ -20,6 +20,8 @@ def main() -> None:
     parser.add_argument("--learning-rate", type=float, default=1e-3)
     parser.add_argument("--seed", type=int, default=100)
     parser.add_argument("--device", default="auto")
+    parser.add_argument("--early-stopping-patience", type=int)
+    parser.add_argument("--min-epochs", type=int, default=0)
     parser.add_argument("--profiles", nargs="+", choices=PROFILES, default=list(PROFILES))
     args = parser.parse_args()
 
@@ -32,6 +34,8 @@ def main() -> None:
         learning_rate=args.learning_rate,
         seed=args.seed,
         device=args.device,
+        early_stopping_patience=args.early_stopping_patience,
+        min_epochs=args.min_epochs,
     )
     suite.run_all_transfers(profiles=tuple(args.profiles))
     for name, table in suite.tables().items():

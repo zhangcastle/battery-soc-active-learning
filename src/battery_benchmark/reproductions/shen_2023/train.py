@@ -33,6 +33,10 @@ def seed_everything(seed: int) -> None:
     torch.backends.cudnn.benchmark = False
 
 
+def _improved(value: float, best: float, min_delta: float) -> bool:
+    return not math.isfinite(best) or value < best * (1.0 - min_delta)
+
+
 def _loader(x: np.ndarray, y: np.ndarray, batch_size: int, shuffle: bool) -> DataLoader:
     if not len(x):
         raise ValueError("Cannot construct a loader from zero TATN windows")
@@ -68,6 +72,9 @@ def train_source(
     device: torch.device,
     seed: int,
     checkpoint: str | Path | None = None,
+    early_stopping_patience: int | None = None,
+    min_epochs: int = 0,
+    min_delta: float = 1e-4,
 ) -> tuple[TATN, list[float]]:
     seed_everything(seed)
     x, y = windows([cycles[p] for p in PROFILES if p in cycles])
@@ -77,7 +84,18 @@ def train_source(
         (*model.source_extractor.parameters(), *model.predictor.parameters()),
         lr=learning_rate,
     )
-    history, best_loss, best_state = [], math.inf, None
+    scheduler = (
+        torch.optim.lr_scheduler.ReduceLROnPlateau(
+            optimizer,
+            factor=0.5,
+            patience=max(5, early_stopping_patience // 3),
+            threshold=min_delta,
+            min_lr=learning_rate * 0.01,
+        )
+        if early_stopping_patience is not None
+        else None
+    )
+    history, best_loss, best_state, stale_epochs = [], math.inf, None, 0
     model.source_extractor.train()
     model.predictor.train()
     for _ in range(epochs):
@@ -92,9 +110,20 @@ def train_source(
             samples += len(xb)
         epoch_loss = total / max(samples, 1)
         history.append(epoch_loss)
-        if epoch_loss < best_loss:
+        if scheduler is not None:
+            scheduler.step(epoch_loss)
+        if _improved(epoch_loss, best_loss, min_delta):
             best_loss = epoch_loss
             best_state = model.source_state_dict()
+            stale_epochs = 0
+        else:
+            stale_epochs += 1
+        if (
+            early_stopping_patience is not None
+            and len(history) >= min_epochs
+            and stale_epochs >= early_stopping_patience
+        ):
+            break
     assert best_state is not None
     model.load_source_state_dict(best_state)
     if checkpoint:
@@ -109,6 +138,8 @@ def train_source(
                     "batch_size": batch_size,
                     "learning_rate": learning_rate,
                     "seed": seed,
+                    "epochs_completed": len(history),
+                    "early_stopping_patience": early_stopping_patience,
                 },
             },
             path,
@@ -202,6 +233,9 @@ def adapt(
     device: torch.device,
     seed: int,
     labeled_profile: str | None = None,
+    early_stopping_patience: int | None = None,
+    min_epochs: int = 0,
+    min_delta: float = 1e-4,
 ) -> tuple[TATN, list[dict[str, float]], dict[str, int | str | None]]:
     seed_everything(seed)
     model = deepcopy(source_model).to(device)
@@ -219,8 +253,19 @@ def adapt(
     target_loader = _loader(target_x, target_y, batch_size, True)
     extractor_optimizer = torch.optim.Adam(model.target_extractor.parameters(), lr=learning_rate)
     discriminator_optimizer = torch.optim.Adam(model.discriminator.parameters(), lr=learning_rate)
+    scheduler = (
+        torch.optim.lr_scheduler.ReduceLROnPlateau(
+            extractor_optimizer,
+            factor=0.5,
+            patience=max(5, early_stopping_patience // 3),
+            threshold=min_delta,
+            min_lr=learning_rate * 0.01,
+        )
+        if early_stopping_patience is not None
+        else None
+    )
     estimate_weight, adversarial_weight, mmd_weight = lambdas
-    history, best_loss, best_state = [], math.inf, None
+    history, best_loss, best_state, stale_epochs = [], math.inf, None, 0
 
     for _ in range(epochs):
         model.target_extractor.train()
@@ -272,11 +317,23 @@ def adapt(
                 totals[name] += float(value.detach())
             batches += 1
         epoch_metrics = {name: value / max(batches, 1) for name, value in totals.items()}
+        epoch_metrics["learning_rate"] = extractor_optimizer.param_groups[0]["lr"]
         history.append(epoch_metrics)
+        if scheduler is not None:
+            scheduler.step(epoch_metrics["total"])
         # Paper does not specify model selection; use label-safe training objective.
-        if epoch_metrics["total"] < best_loss:
+        if _improved(epoch_metrics["total"], best_loss, min_delta):
             best_loss = epoch_metrics["total"]
             best_state = deepcopy(model.target_extractor.state_dict())
+            stale_epochs = 0
+        else:
+            stale_epochs += 1
+        if (
+            early_stopping_patience is not None
+            and len(history) >= min_epochs
+            and stale_epochs >= early_stopping_patience
+        ):
+            break
     assert best_state is not None
     model.target_extractor.load_state_dict(best_state)
     return model, history, target_info
