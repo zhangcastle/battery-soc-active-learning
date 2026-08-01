@@ -74,6 +74,21 @@ writes resumable checkpoints, fold metrics, and Tables II/IV/V/VI/VII to:
 outputs/reproductions/shen_2023/tatn_paper_protocol/
 ```
 
+The screening and tensor-layout diagnostics use separate paths:
+
+```text
+outputs/reproductions/shen_2023/
+├── tatn_screening/
+└── tatn_layout_ablation/
+    ├── released_repo/
+    └── official_pre10/
+        ├── pre-10.pt              Published TL-UESTC/TATN checkpoint
+        └── screening/             Resumable official-checkpoint diagnostic
+```
+
+`official_pre10/pre-10.pt` must retain SHA-256
+`6e152435fd5808ba56bec1237e86042799c410aa80d2f49ac99203944d3de95e`.
+
 ## Vidal reproduction outputs
 
 The preferred layout for new reproduction runs is:
