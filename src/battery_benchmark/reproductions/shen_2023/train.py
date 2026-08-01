@@ -52,11 +52,12 @@ def predict(
     model: TATN,
     cycles: list[ShenCycle],
     device: torch.device,
+    tensor_layout: str = "paper",
 ) -> tuple[np.ndarray, np.ndarray]:
     model.eval()
     predictions, labels = [], []
     for cycle in cycles:
-        x, y = windows([cycle])
+        x, y = windows([cycle], tensor_layout)
         for xb, yb in _loader(x, y, 64, False):
             predictions.append(model(xb.to(device)).cpu().numpy())
             labels.append(yb.numpy())
@@ -75,9 +76,10 @@ def train_source(
     early_stopping_patience: int | None = None,
     min_epochs: int = 0,
     min_delta: float = 1e-4,
+    tensor_layout: str = "paper",
 ) -> tuple[TATN, list[float]]:
     seed_everything(seed)
-    x, y = windows([cycles[p] for p in PROFILES if p in cycles])
+    x, y = windows([cycles[p] for p in PROFILES if p in cycles], tensor_layout)
     loader = _loader(x, y, batch_size, True)
     model = TATN().to(device)
     optimizer = torch.optim.Adam(
@@ -155,11 +157,16 @@ def load_source(checkpoint: str | Path, device: torch.device) -> TATN:
 
 
 @torch.no_grad()
-def _cycle_prediction(model: TATN, cycle: ShenCycle, device: torch.device) -> np.ndarray:
+def _cycle_prediction(
+    model: TATN,
+    cycle: ShenCycle,
+    device: torch.device,
+    tensor_layout: str = "paper",
+) -> np.ndarray:
     model.eval()
     usable = len(cycle.soc) // 90 * 90
     output = np.empty(usable, dtype=np.float32)
-    x, y = windows([cycle])
+    x, y = windows([cycle], tensor_layout)
     offset = 0
     for xb, _ in _loader(x, y, 64, False):
         values = model.forward_source(xb.to(device)).cpu().numpy().ravel()
@@ -176,6 +183,7 @@ def target_training_windows(
     device: torch.device,
     *,
     labeled_profile: str | None = None,
+    tensor_layout: str = "paper",
 ) -> tuple[np.ndarray, np.ndarray, dict[str, int | str | None]]:
     if scenario not in {"semisupervised", "unsupervised"}:
         raise ValueError("scenario must be 'semisupervised' or 'unsupervised'")
@@ -201,11 +209,12 @@ def target_training_windows(
                         soc=cycle.soc[:usable],
                         paths=cycle.paths,
                     )
-                ]
+                ],
+                tensor_layout,
             )
         else:
-            pseudo = _cycle_prediction(source_model, cycle, device)
-            x, y = selected_windows(cycle, pseudo)
+            pseudo = _cycle_prediction(source_model, cycle, device, tensor_layout)
+            x, y = selected_windows(cycle, pseudo, tensor_layout=tensor_layout)
             pseudo_windows += len(x)
         if len(x):
             xs.append(x)
@@ -243,11 +252,12 @@ def adapt(
     early_stopping_patience: int | None = None,
     min_epochs: int = 0,
     min_delta: float = 1e-4,
+    tensor_layout: str = "paper",
 ) -> tuple[TATN, list[dict[str, float]], dict[str, int | str | None]]:
     seed_everything(seed)
     model = deepcopy(source_model).to(device)
     model.initialize_target()
-    source_x, source_y = windows([source_cycles[p] for p in PROFILES])
+    source_x, source_y = windows([source_cycles[p] for p in PROFILES], tensor_layout)
     target_x, target_y, target_info = target_training_windows(
         model,
         target_cycles,
@@ -255,6 +265,7 @@ def adapt(
         scenario,
         device,
         labeled_profile=labeled_profile,
+        tensor_layout=tensor_layout,
     )
     if not len(target_x):
         return model, [], target_info
@@ -348,8 +359,13 @@ def adapt(
     return model, history, target_info
 
 
-def evaluate_cycle(model: TATN, cycle: ShenCycle, device: torch.device) -> dict[str, float]:
-    truth, estimate = predict(model, [cycle], device)
+def evaluate_cycle(
+    model: TATN,
+    cycle: ShenCycle,
+    device: torch.device,
+    tensor_layout: str = "paper",
+) -> dict[str, float]:
+    truth, estimate = predict(model, [cycle], device, tensor_layout)
     return compute_metrics(truth, estimate)
 
 

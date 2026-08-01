@@ -8,6 +8,7 @@ from battery_benchmark.reproductions.shen_2023.data import (
     ShenCycle,
     _profile_paths,
     selected_windows,
+    windows,
 )
 from battery_benchmark.reproductions.shen_2023.model import TATN, gaussian_mmd
 from battery_benchmark.reproductions.shen_2023.suite import ShenTableSuite
@@ -59,6 +60,17 @@ def test_pseudo_windows_do_not_cross_rejected_gap():
     for window in x:
         source_indices = window[:, 0] // 3
         assert np.all(np.diff(source_indices) == 1)
+
+
+def test_released_repo_layout_reproduces_direct_reshape():
+    features = np.arange(90 * 3, dtype=np.float32).reshape(90, 3)
+    cycle = ShenCycle("Cycle_1", 10, features, np.zeros(90, dtype=np.float32), ())
+
+    paper_x, _ = windows([cycle], "paper")
+    released_x, _ = windows([cycle], "released_repo")
+
+    np.testing.assert_array_equal(paper_x[0], features)
+    np.testing.assert_array_equal(released_x[0], features.reshape(3, 90).T)
 
 
 def test_unsupervised_fold_without_pseudo_labels_is_a_recorded_noop(monkeypatch):

@@ -59,6 +59,7 @@ class ShenTableSuite:
         early_stopping_patience: int | None = None,
         min_epochs: int = 0,
         min_delta: float = 1e-4,
+        tensor_layout: str = "paper",
     ) -> None:
         self.raw_root = Path(raw_root)
         self.output_dir = Path(output_dir)
@@ -72,6 +73,7 @@ class ShenTableSuite:
         self.early_stopping_patience = early_stopping_patience
         self.min_epochs = min_epochs
         self.min_delta = min_delta
+        self.tensor_layout = tensor_layout
         resolved_device = (
             "cuda" if device == "auto" and torch.cuda.is_available() else
             "cpu" if device == "auto" else device
@@ -88,6 +90,8 @@ class ShenTableSuite:
             "min_epochs": min_epochs,
             "min_delta": min_delta,
         }
+        if tensor_layout != "paper":
+            protocol["tensor_layout"] = tensor_layout
         run_id = hashlib.sha256(json.dumps(protocol, sort_keys=True).encode()).hexdigest()[:12]
         self.cache_dir = self.output_dir / "cache" / run_id
         self.cache_dir.mkdir(parents=True, exist_ok=True)
@@ -95,6 +99,7 @@ class ShenTableSuite:
             self.output_dir / "run_metadata.json",
             {
                 **protocol,
+                "tensor_layout": tensor_layout,
                 "raw_root": str(self.raw_root),
                 "device": str(self.device),
                 "git_commit": get_full_commit_hash(),
@@ -131,6 +136,7 @@ class ShenTableSuite:
                 early_stopping_patience=self.early_stopping_patience,
                 min_epochs=self.min_epochs,
                 min_delta=self.min_delta,
+                tensor_layout=self.tensor_layout,
             )
         self._sources[temperature] = model
         return model
@@ -162,8 +168,14 @@ class ShenTableSuite:
                         early_stopping_patience=self.early_stopping_patience,
                         min_epochs=self.min_epochs,
                         min_delta=self.min_delta,
+                        tensor_layout=self.tensor_layout,
                     )
-                truth, estimate = predict(model, list(training_cycles.values()), self.device)
+                truth, estimate = predict(
+                    model,
+                    list(training_cycles.values()),
+                    self.device,
+                    self.tensor_layout,
+                )
                 fold_metrics.append(
                     (
                         float(np.mean(np.abs(truth - estimate))) * 100,
@@ -184,6 +196,7 @@ class ShenTableSuite:
                 self.source_model(temperature),
                 list(self.cycles(temperature).values()),
                 self.device,
+                self.tensor_layout,
             )
             rows.append(
                 {
@@ -222,7 +235,12 @@ class ShenTableSuite:
                 result = json.loads(result_path.read_text(encoding="utf-8"))
             else:
                 print(f"[{run_label}] training")
-                baseline = evaluate_cycle(source_model, target_cycles[profile], self.device)
+                baseline = evaluate_cycle(
+                    source_model,
+                    target_cycles[profile],
+                    self.device,
+                    self.tensor_layout,
+                )
                 labeled = (
                     next(p for p in PROFILES if p != profile)
                     if scenario == "semisupervised"
@@ -244,8 +262,14 @@ class ShenTableSuite:
                     early_stopping_patience=self.early_stopping_patience,
                     min_epochs=self.min_epochs,
                     min_delta=self.min_delta,
+                    tensor_layout=self.tensor_layout,
                 )
-                tatn = evaluate_cycle(transferred, target_cycles[profile], self.device)
+                tatn = evaluate_cycle(
+                    transferred,
+                    target_cycles[profile],
+                    self.device,
+                    self.tensor_layout,
+                )
                 model_path.parent.mkdir(parents=True, exist_ok=True)
                 torch.save(
                     {
@@ -256,6 +280,7 @@ class ShenTableSuite:
                         "target_temperature": target_temperature,
                         "scenario": scenario,
                         "profile": profile,
+                        "tensor_layout": self.tensor_layout,
                     },
                     model_path,
                 )
@@ -264,6 +289,7 @@ class ShenTableSuite:
                     "target_temperature": target_temperature,
                     "scenario": scenario,
                     "profile": profile,
+                    "tensor_layout": self.tensor_layout,
                     "target_info": target_info,
                     "epochs_completed": len(history),
                     "checkpoint": str(model_path.relative_to(self.output_dir)),

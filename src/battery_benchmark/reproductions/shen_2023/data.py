@@ -24,6 +24,7 @@ PROFILES = (
 TEMP_DIRS = {25: "25degC", 10: "10degC", 0: "0degC", -10: "-10degC", -20: "-20degC"}
 WINDOW = 90
 SAMPLE_INTERVAL = 10
+TENSOR_LAYOUTS = ("paper", "released_repo")
 
 
 @dataclass(frozen=True)
@@ -112,12 +113,23 @@ def load_temperature_cycles(raw_root: str | Path, temperature: int) -> dict[str,
     }
 
 
-def windows(cycles: list[ShenCycle]) -> tuple[np.ndarray, np.ndarray]:
+def _feature_windows(features: np.ndarray, tensor_layout: str) -> np.ndarray:
+    if tensor_layout not in TENSOR_LAYOUTS:
+        raise ValueError(f"tensor_layout must be one of {TENSOR_LAYOUTS}")
+    usable = len(features) // WINDOW * WINDOW
+    if tensor_layout == "paper":
+        return features[:usable].reshape(-1, WINDOW, 3)
+    return features[:usable].reshape(-1, 3, WINDOW).transpose(0, 2, 1)
+
+
+def windows(
+    cycles: list[ShenCycle], tensor_layout: str = "paper"
+) -> tuple[np.ndarray, np.ndarray]:
     xs, ys = [], []
     for cycle in cycles:
         usable = len(cycle.soc) // WINDOW * WINDOW
         if usable:
-            xs.append(cycle.features[:usable].reshape(-1, WINDOW, 3))
+            xs.append(_feature_windows(cycle.features[:usable], tensor_layout))
             ys.append(cycle.soc[:usable].reshape(-1, WINDOW))
     if not xs:
         return np.empty((0, WINDOW, 3), np.float32), np.empty((0, WINDOW), np.float32)
@@ -130,6 +142,7 @@ def selected_windows(
     *,
     threshold: float = 0.08,
     lookahead: int = 200,
+    tensor_layout: str = "paper",
 ) -> tuple[np.ndarray, np.ndarray]:
     """Select stable pseudo-label segments using Eqs. 11-12 and repo defaults."""
 
@@ -156,7 +169,7 @@ def selected_windows(
         for left, right in zip(np.r_[start, jumps], np.r_[jumps, stop]):
             usable = (right - left) // WINDOW * WINDOW
             if usable:
-                xs.append(cycle.features[left : left + usable].reshape(-1, WINDOW, 3))
+                xs.append(_feature_windows(cycle.features[left : left + usable], tensor_layout))
                 ys.append(pseudo_soc[left : left + usable].reshape(-1, WINDOW))
     if not xs:
         return windows([])
