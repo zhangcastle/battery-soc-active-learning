@@ -12,7 +12,11 @@ from battery_benchmark.reproductions.shen_2023.data import (
 )
 from battery_benchmark.reproductions.shen_2023.model import TATN, gaussian_mmd
 from battery_benchmark.reproductions.shen_2023.suite import ShenTableSuite
-from battery_benchmark.reproductions.shen_2023.train import _improved, target_training_windows
+from battery_benchmark.reproductions.shen_2023.train import (
+    _improved,
+    load_released_source,
+    target_training_windows,
+)
 
 
 def test_tatn_shapes_and_freezing():
@@ -71,6 +75,45 @@ def test_released_repo_layout_reproduces_direct_reshape():
 
     np.testing.assert_array_equal(paper_x[0], features)
     np.testing.assert_array_equal(released_x[0], features.reshape(3, 90).T)
+
+
+def test_load_released_source_checkpoint(tmp_path):
+    expected = TATN()
+    checkpoint = tmp_path / "pre-10.pt"
+    torch.save(
+        {
+            "conv": {
+                f"conv.{key}": value
+                for key, value in expected.source_extractor.conv.state_dict().items()
+            },
+            "lstm": {
+                **{
+                    f"lstm1.0.{key}": value
+                    for key, value in expected.source_extractor.lstm1.state_dict().items()
+                },
+                **{
+                    f"lstm2.0.{key}": value
+                    for key, value in expected.source_extractor.lstm2.state_dict().items()
+                },
+            },
+            "fc": {
+                f"fc.0.{key}": value
+                for key, value in expected.predictor.layers[0].state_dict().items()
+            },
+            "regression": {
+                f"fc.{key}": value
+                for key, value in expected.predictor.layers[2].state_dict().items()
+            },
+        },
+        checkpoint,
+    )
+
+    loaded = load_released_source(checkpoint, torch.device("cpu"))
+
+    for key, value in expected.source_state_dict()["extractor"].items():
+        torch.testing.assert_close(loaded.source_state_dict()["extractor"][key], value)
+    for key, value in expected.source_state_dict()["predictor"].items():
+        torch.testing.assert_close(loaded.source_state_dict()["predictor"][key], value)
 
 
 def test_unsupervised_fold_without_pseudo_labels_is_a_recorded_noop(monkeypatch):

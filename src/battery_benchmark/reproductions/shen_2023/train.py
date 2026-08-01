@@ -156,6 +156,33 @@ def load_source(checkpoint: str | Path, device: torch.device) -> TATN:
     return model
 
 
+def load_released_source(checkpoint: str | Path, device: torch.device) -> TATN:
+    """Load a source checkpoint from the authors' released TATN repository."""
+
+    payload = torch.load(checkpoint, map_location=device, weights_only=True)
+    model = TATN().to(device)
+    model.source_extractor.conv.load_state_dict(
+        {key.removeprefix("conv."): value for key, value in payload["conv"].items()}
+    )
+    for name in ("lstm1", "lstm2"):
+        prefix = f"{name}.0."
+        getattr(model.source_extractor, name).load_state_dict(
+            {
+                key.removeprefix(prefix): value
+                for key, value in payload["lstm"].items()
+                if key.startswith(prefix)
+            }
+        )
+    model.predictor.layers[0].load_state_dict(
+        {key.removeprefix("fc.0."): value for key, value in payload["fc"].items()}
+    )
+    model.predictor.layers[2].load_state_dict(
+        {key.removeprefix("fc."): value for key, value in payload["regression"].items()}
+    )
+    model.initialize_target()
+    return model
+
+
 @torch.no_grad()
 def _cycle_prediction(
     model: TATN,
