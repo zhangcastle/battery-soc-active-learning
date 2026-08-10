@@ -101,7 +101,9 @@ The TATN Panasonic 25 C to CMU notebook writes its two source-model variants to:
 ```text
 outputs/benchmarks/panasonic_to_cmu_evtol/tatn/
 ├── trained_paper_layout/   # source trained once on all nine Panasonic 25 C profiles
-└── released_pre25/         # authors' published pre-25.pt
+├── released_pre25/         # authors' published pre-25.pt
+├── trained_paper_layout_semisupervised/
+└── released_pre25_semisupervised/
 ```
 
 Both variants use the same CMU mission manifest and duration-matched adaptation

@@ -158,6 +158,37 @@ def test_unsupervised_target_accepts_arbitrary_mission_list(monkeypatch):
     assert info["pseudo_windows"] == len(x)
 
 
+def test_semisupervised_target_accepts_one_half_labeled_mission(monkeypatch):
+    features = np.zeros((900, 3), dtype=np.float32)
+    labeled_soc = np.linspace(1.0, 0.0, 900, dtype=np.float32)
+    cycles = [
+        ShenCycle("labeled", 25, features, labeled_soc, ()),
+        ShenCycle("unlabeled", 25, features, np.zeros(900, dtype=np.float32), ()),
+    ]
+    monkeypatch.setattr(
+        "battery_benchmark.reproductions.shen_2023.train._cycle_prediction",
+        lambda *_: np.full(900, 0.5, dtype=np.float32),
+    )
+
+    x, y, info = target_training_windows(
+        TATN(),
+        cycles,
+        None,
+        "semisupervised",
+        torch.device("cpu"),
+        labeled_profile="labeled",
+    )
+
+    assert info == {
+        "labeled_profile": "labeled",
+        "pseudo_windows": 7,
+        "total_windows": 12,
+        "status": "adapted",
+    }
+    np.testing.assert_allclose(y[:5].ravel(), labeled_soc[:450])
+    np.testing.assert_allclose(y[5:], 0.5)
+
+
 def test_profile_discovery_ignores_combined_files(tmp_path):
     root = tmp_path / "10degC" / "Drive cycles"
     root.mkdir(parents=True)

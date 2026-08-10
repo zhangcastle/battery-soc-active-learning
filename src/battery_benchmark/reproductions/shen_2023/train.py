@@ -220,9 +220,7 @@ def target_training_windows(
         remaining = [p for p in PROFILES if p != test_profile]
         candidates = [(profile, target_cycles[profile]) for profile in remaining]
     else:
-        if scenario != "unsupervised":
-            raise ValueError("A cycle list is supported only for unsupervised adaptation")
-        remaining = []
+        remaining = [cycle.profile for cycle in target_cycles]
         candidates = [(cycle.profile, cycle) for cycle in target_cycles]
 
     if scenario == "semisupervised":

@@ -121,7 +121,13 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--cmu-condition-root", type=Path, required=True)
     parser.add_argument("--output-root", type=Path, required=True)
     parser.add_argument("--source-kind", choices=("trained", "released"), required=True)
+    parser.add_argument("--trained-checkpoint", type=Path)
     parser.add_argument("--released-checkpoint", type=Path)
+    parser.add_argument(
+        "--scenario",
+        choices=("unsupervised", "semisupervised"),
+        default="unsupervised",
+    )
     parser.add_argument(
         "--cmu-manifest",
         type=Path,
@@ -148,7 +154,7 @@ def main() -> None:
 
     if args.source_kind == "trained":
         tensor_layout = "paper"
-        source_checkpoint = args.output_root / "source_25C.pt"
+        source_checkpoint = args.trained_checkpoint or args.output_root / "source_25C.pt"
         if source_checkpoint.is_file():
             source_model = load_source(source_checkpoint, device)
         else:
@@ -207,12 +213,30 @@ def main() -> None:
         labelled_records = load_cmu_dynamic_soc_for_vidal(
             [source_path], target_hz=1.0
         ).records
+        adaptation_records = _records_for_ids(feature_records, adaptation_ids)
         adaptation_cycles = _to_shen_cycles(
-            _records_for_ids(feature_records, adaptation_ids),
+            adaptation_records,
             feature_min,
             feature_max,
             require_labels=False,
         )
+        labeled_profile = None
+        if args.scenario == "semisupervised":
+            selected = manifest.loc[
+                (manifest["cell_id"] == cell_id)
+                & manifest["mission_cycle_id"].astype(str).isin(adaptation_ids)
+            ].sort_values("split_rank", kind="stable")
+            labeled_profile = str(selected.iloc[0]["mission_cycle_id"])
+            labeled_cycle = _to_shen_cycles(
+                _records_for_ids(labelled_records, {labeled_profile}),
+                feature_min,
+                feature_max,
+                require_labels=True,
+            )[0]
+            adaptation_cycles = [
+                labeled_cycle if cycle.profile == labeled_profile else cycle
+                for cycle in adaptation_cycles
+            ]
         test_cycles = _to_shen_cycles(
             _records_for_ids(labelled_records, test_ids),
             feature_min,
@@ -228,13 +252,14 @@ def main() -> None:
             source_cycles,
             adaptation_cycles,
             test_profile=None,
-            scenario="unsupervised",
+            scenario=args.scenario,
             epochs=args.transfer_epochs,
             batch_size=args.batch_size,
             learning_rate=1e-3,
             lambdas=(1.0, 1.0, 1.0),
             device=device,
             seed=args.seed + cell_index,
+            labeled_profile=labeled_profile,
             early_stopping_patience=15,
             min_epochs=30,
             tensor_layout=tensor_layout,
@@ -261,6 +286,7 @@ def main() -> None:
         result = {
             "benchmark": "shen_2023_tatn_panasonic_25c_to_cmu_core7",
             "source_kind": args.source_kind,
+            "scenario": args.scenario,
             "source_checkpoint": str(source_checkpoint),
             "source_checkpoint_sha256": sha256_file(source_checkpoint),
             "source_sanity": source_sanity,
@@ -273,12 +299,14 @@ def main() -> None:
             "cmu_input_sha256": input_sha256,
             "adaptation_budget": budget,
             "adaptation_missions": len(adaptation_cycles),
+            "labeled_target_mission": labeled_profile,
+            "labeled_target_fraction": 0.5 if labeled_profile else 0.0,
             "test_missions": len(test_cycles),
             "target_info": target_info,
             "epochs_completed": len(history),
             "metrics": metrics,
-            "target_soc_labels_used_for_adaptation": False,
-            "target_soc_labels_used_for_checkpoint_selection": False,
+            "target_soc_labels_used_for_adaptation": labeled_profile is not None,
+            "target_soc_labels_used_for_checkpoint_selection": labeled_profile is not None,
             "target_soc_reference_used_for_posthoc_evaluation": True,
             "label_is_ground_truth": False,
             "formal_benchmark_eligible": False,
@@ -299,6 +327,7 @@ def main() -> None:
             {
                 "benchmark": "shen_2023_tatn_panasonic_25c_to_cmu_core7",
                 "source_kind": args.source_kind,
+                "scenario": args.scenario,
                 "source_checkpoint": str(source_checkpoint),
                 "source_checkpoint_sha256": sha256_file(source_checkpoint),
                 "source_sanity": source_sanity,
