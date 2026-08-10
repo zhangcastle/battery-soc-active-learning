@@ -58,13 +58,6 @@ def _records_for_ids(records, mission_ids: set[str]):
     ]
 
 
-def _feature_range(records) -> tuple[np.ndarray, np.ndarray]:
-    values = np.concatenate(
-        [record.data.loc[:, list(FEATURES)].to_numpy(dtype=np.float64) for record in records]
-    )
-    return values.min(axis=0), values.max(axis=0)
-
-
 def _to_shen_cycles(
     records,
     feature_min: np.ndarray,
@@ -128,13 +121,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--cmu-condition-root", type=Path, required=True)
     parser.add_argument("--output-root", type=Path, required=True)
     parser.add_argument("--source-kind", choices=("trained", "released"), required=True)
-    parser.add_argument("--trained-checkpoint", type=Path)
     parser.add_argument("--released-checkpoint", type=Path)
-    parser.add_argument(
-        "--target-normalization",
-        choices=("source", "target_adaptation"),
-        default="source",
-    )
     parser.add_argument(
         "--cmu-manifest",
         type=Path,
@@ -161,7 +148,7 @@ def main() -> None:
 
     if args.source_kind == "trained":
         tensor_layout = "paper"
-        source_checkpoint = args.trained_checkpoint or args.output_root / "source_25C.pt"
+        source_checkpoint = args.output_root / "source_25C.pt"
         if source_checkpoint.is_file():
             source_model = load_source(source_checkpoint, device)
         else:
@@ -220,22 +207,16 @@ def main() -> None:
         labelled_records = load_cmu_dynamic_soc_for_vidal(
             [source_path], target_hz=1.0
         ).records
-        adaptation_records = _records_for_ids(feature_records, adaptation_ids)
-        target_feature_min, target_feature_max = (
-            _feature_range(adaptation_records)
-            if args.target_normalization == "target_adaptation"
-            else (feature_min, feature_max)
-        )
         adaptation_cycles = _to_shen_cycles(
-            adaptation_records,
-            target_feature_min,
-            target_feature_max,
+            _records_for_ids(feature_records, adaptation_ids),
+            feature_min,
+            feature_max,
             require_labels=False,
         )
         test_cycles = _to_shen_cycles(
             _records_for_ids(labelled_records, test_ids),
-            target_feature_min,
-            target_feature_max,
+            feature_min,
+            feature_max,
             require_labels=True,
         )
         if not adaptation_cycles or not test_cycles:
@@ -287,9 +268,6 @@ def main() -> None:
             "source_normalization": "Panasonic 25 C all-nine-profile min-max",
             "source_feature_min": feature_min.tolist(),
             "source_feature_max": feature_max.tolist(),
-            "target_normalization": args.target_normalization,
-            "target_feature_min": target_feature_min.tolist(),
-            "target_feature_max": target_feature_max.tolist(),
             "tensor_layout": tensor_layout,
             "cell_id": cell_id,
             "cmu_input_sha256": input_sha256,
@@ -325,7 +303,6 @@ def main() -> None:
                 "source_checkpoint_sha256": sha256_file(source_checkpoint),
                 "source_sanity": source_sanity,
                 "tensor_layout": tensor_layout,
-                "target_normalization": args.target_normalization,
                 "source_epochs": args.source_epochs if args.source_kind == "trained" else None,
                 "transfer_epochs": args.transfer_epochs,
                 "batch_size": args.batch_size,

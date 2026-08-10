@@ -101,15 +101,11 @@ The TATN Panasonic 25 C to CMU notebook writes its two source-model variants to:
 ```text
 outputs/benchmarks/panasonic_to_cmu_evtol/tatn/
 ├── trained_paper_layout/   # source trained once on all nine Panasonic 25 C profiles
-├── released_pre25/         # authors' published pre-25.pt
-├── trained_paper_layout_target_normalized/
-└── released_pre25_target_normalized/
+└── released_pre25/         # authors' published pre-25.pt
 ```
 
 Both variants use the same CMU mission manifest and duration-matched adaptation
 budget. Each CMU cell starts independently from the selected source checkpoint.
-The `target_normalized` variants fit each cell's feature min-max using only its
-unlabelled adaptation missions, then apply that frozen range to its test missions.
 
 ## Vidal reproduction outputs
 
