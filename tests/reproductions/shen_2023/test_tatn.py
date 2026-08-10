@@ -142,6 +142,22 @@ def test_unsupervised_fold_without_pseudo_labels_is_a_recorded_noop(monkeypatch)
     }
 
 
+def test_unsupervised_target_accepts_arbitrary_mission_list(monkeypatch):
+    features = np.zeros((900, 3), dtype=np.float32)
+    cycle = ShenCycle("cmu_mission", 25, features, np.zeros(900, dtype=np.float32), ())
+    monkeypatch.setattr(
+        "battery_benchmark.reproductions.shen_2023.train._cycle_prediction",
+        lambda *_: np.full(900, 0.5, dtype=np.float32),
+    )
+
+    x, y, info = target_training_windows(
+        TATN(), [cycle], None, "unsupervised", torch.device("cpu")
+    )
+
+    assert len(x) == len(y) > 0
+    assert info["pseudo_windows"] == len(x)
+
+
 def test_profile_discovery_ignores_combined_files(tmp_path):
     root = tmp_path / "10degC" / "Drive cycles"
     root.mkdir(parents=True)

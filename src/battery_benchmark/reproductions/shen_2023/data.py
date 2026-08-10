@@ -81,8 +81,10 @@ def _load_profile(paths: tuple[Path, ...]) -> tuple[np.ndarray, np.ndarray]:
     return np.concatenate(feature_parts), np.concatenate(ah_parts)
 
 
-def load_temperature_cycles(raw_root: str | Path, temperature: int) -> dict[str, ShenCycle]:
-    """Load and paper-normalize all nine profiles at one temperature.
+def load_temperature_cycles_and_range(
+    raw_root: str | Path, temperature: int
+) -> tuple[dict[str, ShenCycle], np.ndarray, np.ndarray]:
+    """Load all profiles and return paper-normalized cycles plus feature limits.
 
     The paper explicitly fits min-max ranges on all nine profiles separately at
     each temperature. This is intentionally paper-faithful, not benchmark-fair.
@@ -101,7 +103,7 @@ def load_temperature_cycles(raw_root: str | Path, temperature: int) -> dict[str,
     ah_min, ah_max = all_ah.min(), all_ah.max()
     x_scale = np.where(x_max == x_min, 1.0, x_max - x_min)
     ah_scale = ah_max - ah_min or 1.0
-    return {
+    cycles = {
         profile: ShenCycle(
             profile=profile,
             temperature=temperature,
@@ -111,6 +113,13 @@ def load_temperature_cycles(raw_root: str | Path, temperature: int) -> dict[str,
         )
         for profile in PROFILES
     }
+    return cycles, x_min, x_max
+
+
+def load_temperature_cycles(raw_root: str | Path, temperature: int) -> dict[str, ShenCycle]:
+    """Load and paper-normalize all nine profiles at one temperature."""
+
+    return load_temperature_cycles_and_range(raw_root, temperature)[0]
 
 
 def _feature_windows(features: np.ndarray, tensor_layout: str) -> np.ndarray:

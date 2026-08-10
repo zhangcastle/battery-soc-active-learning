@@ -43,6 +43,9 @@ change personal storage paths.
     │   └── panasonic_to_cmu_evtol/
     │       ├── liu_2025_darm/
     │       │   └── duration_matched/
+    │       ├── tatn/
+    │       │   ├── trained_paper_layout/
+    │       │   └── released_pre25/
     │       └── vidal/
     └── vidal_case1/ ... vidal_case4/  Existing legacy reproduction artifacts
 ```
@@ -81,13 +84,28 @@ outputs/reproductions/shen_2023/
 ├── tatn_screening/
 └── tatn_layout_ablation/
     ├── released_repo/
-    └── official_pre10/
+    ├── official_pre10/
         ├── pre-10.pt              Published TL-UESTC/TATN checkpoint
         └── screening/             Resumable official-checkpoint diagnostic
+    └── official_pre25/
+        └── pre-25.pt              Published TL-UESTC/TATN checkpoint
 ```
 
 `official_pre10/pre-10.pt` must retain SHA-256
 `6e152435fd5808ba56bec1237e86042799c410aa80d2f49ac99203944d3de95e`.
+`official_pre25/pre-25.pt` must retain SHA-256
+`f05475fc627bfb92304bc357b7f0ce81da4bceb724410409e51c65a3d0b969c5`.
+
+The TATN Panasonic 25 C to CMU notebook writes its two source-model variants to:
+
+```text
+outputs/benchmarks/panasonic_to_cmu_evtol/tatn/
+├── trained_paper_layout/   # source trained once on all nine Panasonic 25 C profiles
+└── released_pre25/         # authors' published pre-25.pt
+```
+
+Both variants use the same CMU mission manifest and duration-matched adaptation
+budget. Each CMU cell starts independently from the selected source checkpoint.
 
 ## Vidal reproduction outputs
 

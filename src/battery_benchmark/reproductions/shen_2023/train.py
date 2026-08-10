@@ -204,8 +204,8 @@ def _cycle_prediction(
 
 def target_training_windows(
     source_model: TATN,
-    target_cycles: dict[str, ShenCycle],
-    test_profile: str,
+    target_cycles: dict[str, ShenCycle] | list[ShenCycle],
+    test_profile: str | None,
     scenario: str,
     device: torch.device,
     *,
@@ -214,7 +214,17 @@ def target_training_windows(
 ) -> tuple[np.ndarray, np.ndarray, dict[str, int | str | None]]:
     if scenario not in {"semisupervised", "unsupervised"}:
         raise ValueError("scenario must be 'semisupervised' or 'unsupervised'")
-    remaining = [p for p in PROFILES if p != test_profile]
+    if isinstance(target_cycles, dict):
+        if test_profile is None:
+            raise ValueError("test_profile is required for paper temperature folds")
+        remaining = [p for p in PROFILES if p != test_profile]
+        candidates = [(profile, target_cycles[profile]) for profile in remaining]
+    else:
+        if scenario != "unsupervised":
+            raise ValueError("A cycle list is supported only for unsupervised adaptation")
+        remaining = []
+        candidates = [(cycle.profile, cycle) for cycle in target_cycles]
+
     if scenario == "semisupervised":
         labeled_profile = labeled_profile or remaining[0]
         if labeled_profile not in remaining:
@@ -223,8 +233,7 @@ def target_training_windows(
         labeled_profile = None
 
     xs, ys, pseudo_windows = [], [], 0
-    for profile in remaining:
-        cycle = target_cycles[profile]
+    for profile, cycle in candidates:
         if profile == labeled_profile:
             usable = (len(cycle.soc) // 2) // 90 * 90
             x, y = windows(
@@ -265,9 +274,9 @@ def target_training_windows(
 def adapt(
     source_model: TATN,
     source_cycles: dict[str, ShenCycle],
-    target_cycles: dict[str, ShenCycle],
+    target_cycles: dict[str, ShenCycle] | list[ShenCycle],
     *,
-    test_profile: str,
+    test_profile: str | None,
     scenario: str,
     epochs: int,
     batch_size: int,
