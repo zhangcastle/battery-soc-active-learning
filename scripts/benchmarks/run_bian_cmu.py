@@ -28,7 +28,10 @@ from battery_benchmark.datasets.cmu_evtol.vidal_adapter import load_cmu_dynamic_
 from battery_benchmark.evaluation.metrics import compute_metrics
 from battery_benchmark.reproductions.bian_2021 import DTNN, adaptive_multiscale_mmd
 from battery_benchmark.reproductions.liu_2025.cmu_protocol import select_duration_matched_missions
-from battery_benchmark.reproductions.shen_2023.data import load_temperature_cycles_and_range
+from battery_benchmark.reproductions.shen_2023.data import (
+    TEMPERATURES,
+    load_temperature_cycles_and_range,
+)
 from battery_benchmark.utils.device import get_device
 from battery_benchmark.utils.hashing import sha256_file
 
@@ -59,25 +62,50 @@ def _windows(parts: list[tuple[np.ndarray, np.ndarray, str]], length: int):
 
 
 def _source_data(root: Path, length: int):
-    cycles, feature_min, feature_max = load_temperature_cycles_and_range(root, 25)
-    parts = [(cycles[name].features[:, :2], cycles[name].soc, name) for name in SOURCE_PROFILES]
-    x, y, _ = _windows(parts, length)
-    return x, y, feature_min[:2], feature_max[:2]
-
-
-def _target_data(records, mission_ids, length, feature_min, feature_max, fraction=1.0):
+    raw_parts = []
+    for temperature in TEMPERATURES:
+        cycles, feature_min, feature_max = load_temperature_cycles_and_range(root, temperature)
+        scale = np.where(feature_max == feature_min, 1.0, feature_max - feature_min)
+        raw_parts.extend(
+            (
+                cycles[name].features[:, :2] * scale[:2] + feature_min[:2],
+                cycles[name].soc,
+                f"{temperature}C/{name}",
+            )
+            for name in SOURCE_PROFILES
+        )
+    all_features = np.concatenate([part[0] for part in raw_parts])
+    feature_min, feature_max = all_features.min(0), all_features.max(0)
     scale = np.where(feature_max == feature_min, 1.0, feature_max - feature_min)
+    parts = [((x - feature_min) / scale, y, name) for x, y, name in raw_parts]
+    x, y, _ = _windows(parts, length)
+    return x, y, feature_min, feature_max
+
+
+def _target_parts(records, mission_ids, initial_soc, fraction, portion):
+    if portion not in {"adapt", "test"}:
+        raise ValueError("portion must be adapt or test")
     parts = []
     for record in records:
         mission = str(record.metadata["mission_cycle_id"])
         if mission not in mission_ids:
             continue
         frame = record.data
-        stop = max(0, int(len(frame) * fraction))
-        raw = frame.loc[:, FEATURES].to_numpy(dtype=np.float64)[:stop]
-        x = (raw - feature_min) / scale
-        y = frame["soc"].to_numpy(dtype=np.float64)[:stop]
-        parts.append((x, y, mission))
+        y = frame["soc"].to_numpy(dtype=np.float64)
+        starts = np.flatnonzero(y <= initial_soc)
+        if not len(starts):
+            continue
+        raw = frame.loc[:, FEATURES].to_numpy(dtype=np.float64)[starts[0] :]
+        y = y[starts[0] :]
+        boundary = int(len(y) * fraction)
+        selection = slice(0, boundary) if portion == "adapt" else slice(boundary, None)
+        parts.append((raw[selection], y[selection], mission))
+    return parts
+
+
+def _target_data(parts, length, feature_min, feature_max):
+    scale = np.where(feature_max == feature_min, 1.0, feature_max - feature_min)
+    parts = [((x - feature_min) / scale, y, mission) for x, y, mission in parts]
     return _windows(parts, length)
 
 
@@ -108,9 +136,9 @@ def _train_source(model, x, y, epochs, batch_size, lr, device):
 
 
 def _adapt(model, source_x, source_y, target_x, target_y, args, device):
-    source_loader = _loader(source_x, source_y, args.batch_size, True)
-    target_loader = _loader(target_x, target_y, args.batch_size, True)
-    optimizer = torch.optim.Adam(model.parameters(), lr=args.lr)
+    source_loader = _loader(source_x, source_y, args.transfer_batch_size, True)
+    target_loader = _loader(target_x, target_y, args.transfer_batch_size, True)
+    optimizer = torch.optim.Adam(model.parameters(), lr=args.transfer_lr)
     criterion = nn.MSELoss()
     final = {}
     for _ in range(args.transfer_epochs):
@@ -136,6 +164,7 @@ def _adapt(model, source_x, source_y, target_x, target_y, args, device):
                 "layer_mmd": [float(v) for v in layer_mmd.detach().cpu()],
                 "layer_weights": [float(v) for v in weights.cpu()],
             }
+    final["optimizer_steps"] = args.transfer_epochs * len(target_loader)
     return final
 
 
@@ -201,13 +230,16 @@ def parse_args():
         "--output-root", type=Path, default=REPO_ROOT / "outputs/benchmarks/bian_2021_cmu"
     )
     parser.add_argument("--cells", nargs="+", choices=CELLS, default=list(CELLS))
-    parser.add_argument("--sequence-length", type=int, default=50)
+    parser.add_argument("--sequence-length", type=int, default=20)
     parser.add_argument("--adapt-fraction", type=float, default=0.30)
-    parser.add_argument("--source-epochs", type=int, default=200)
-    parser.add_argument("--transfer-epochs", type=int, default=200)
+    parser.add_argument("--initial-soc", type=float, default=0.70)
+    parser.add_argument("--source-epochs", type=int, default=2000)
+    parser.add_argument("--transfer-epochs", type=int, default=2000)
     parser.add_argument("--repeats", type=int, default=5)
     parser.add_argument("--batch-size", type=int, default=32)
+    parser.add_argument("--transfer-batch-size", type=int, default=16)
     parser.add_argument("--lr", type=float, default=1e-3)
+    parser.add_argument("--transfer-lr", type=float, default=1e-4)
     parser.add_argument("--target-weight", type=float, default=5.0)
     parser.add_argument("--mmd-weight", type=float, default=0.1)
     parser.add_argument("--budget-seconds", type=float, default=8778.0)
@@ -220,12 +252,13 @@ def parse_args():
 def main():
     args = parse_args()
     if (
-        not 0 < args.adapt_fraction <= 1
+        not 0 < args.adapt_fraction < 1
+        or not 0 < args.initial_soc <= 1
         or min(args.source_epochs, args.transfer_epochs, args.repeats) <= 0
     ):
-        raise ValueError("adapt-fraction must be in (0,1] and epoch/repeat counts must be positive")
+        raise ValueError("fractions/SOC and epoch/repeat counts are invalid")
     device = get_device(args.device)
-    source_x, source_y, feature_min, feature_max = _source_data(
+    source_x, source_y, source_feature_min, source_feature_max = _source_data(
         args.panasonic_data_root, args.sequence_length
     )
     manifest = pd.read_csv(args.cmu_manifest)
@@ -255,16 +288,17 @@ def main():
                 manifest, cell, budget_seconds=args.budget_seconds
             )
             records = load_cmu_dynamic_soc_for_vidal([path], target_hz=1.0).records
+            adapt_parts = _target_parts(
+                records, adapt_ids, args.initial_soc, args.adapt_fraction, "adapt"
+            )
             adapt_x, adapt_y, adapt_missions = _target_data(
-                records,
-                adapt_ids,
-                args.sequence_length,
-                feature_min,
-                feature_max,
-                args.adapt_fraction,
+                adapt_parts, args.sequence_length, source_feature_min, source_feature_max
+            )
+            test_parts = _target_parts(
+                records, test_ids, args.initial_soc, args.adapt_fraction, "test"
             )
             test_x, test_y, test_missions = _target_data(
-                records, test_ids, args.sequence_length, feature_min, feature_max
+                test_parts, args.sequence_length, source_feature_min, source_feature_max
             )
             model = DTNN(2, *widths).to(device)
             model.load_state_dict(source_state)
@@ -277,6 +311,7 @@ def main():
                         "repeat": repeat + 1,
                         "seed": seed,
                         "cell_id": cell,
+                        "initial_soc_percent": int(round(args.initial_soc * 100)),
                         "method": method,
                         **metrics,
                     }
@@ -286,6 +321,7 @@ def main():
                     "repeat": repeat + 1,
                     "seed": seed,
                     "cell_id": cell,
+                    "initial_soc_percent": int(round(args.initial_soc * 100)),
                     "cmu_input_sha256": actual,
                     "adaptation_budget": budget,
                     "adaptation_fraction_within_mission": args.adapt_fraction,
@@ -302,16 +338,22 @@ def main():
 
     table = pd.DataFrame(rows)
     table.to_csv(args.output_root / "metrics.csv", index=False)
-    summary = table.groupby(["cell_id", "method"], sort=False).mean(numeric_only=True).reset_index()
+    summary = (
+        table.groupby(["cell_id", "initial_soc_percent", "method"], sort=False)
+        .mean(numeric_only=True)
+        .reset_index()
+    )
     summary.to_csv(args.output_root / "summary.csv", index=False)
     metadata = {
-        "benchmark": "bian_2021_panasonic_25c_to_cmu_supervised_development",
+        "benchmark": "bian_2021_panasonic_multitemperature_to_cmu_supervised_development",
         "architecture": "CNN1->CNN2->two-layer-BiLSTM->FC->sequence-regression",
         "mmd_layers": ["CNN2", "BiLSTM2", "FC"],
         "objective": "source_mse + 5*target_mse + 0.1*adaptive_multiscale_mmd",
         "source_profiles": list(SOURCE_PROFILES),
+        "source_temperatures_c": list(TEMPERATURES),
         "feature_order": list(FEATURES),
-        "normalization": "Panasonic 25C min-max ranges applied unchanged to CMU",
+        "normalization": "source-global min-max applied unchanged to target",
+        "target_protocol": "start at initial SOC; first 30% adapt; remaining 70% test",
         "target_soc_labels_used_for_adaptation": True,
         "target_soc_labels_used_for_checkpoint_selection": False,
         "target_soc_reference_used_for_posthoc_evaluation": True,

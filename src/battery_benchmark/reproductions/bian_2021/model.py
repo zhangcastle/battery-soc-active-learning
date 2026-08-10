@@ -43,14 +43,14 @@ class DTNN(nn.Module):
         self, x: torch.Tensor, *, return_features: bool = False
     ) -> torch.Tensor | tuple[torch.Tensor, tuple[torch.Tensor, ...]]:
         features = self.encode(x)
-        prediction = self.regression(features[-1]).squeeze(-1)
+        prediction = self.activation(self.regression(features[-1])).squeeze(-1)
         return (prediction, features) if return_features else prediction
 
 
 def feature_mmd(source: torch.Tensor, target: torch.Tensor) -> torch.Tensor:
-    """Eq. 6 with DTNN as the learned RKHS mapping (no hand-set kernel)."""
-    source = source.reshape(-1, source.shape[-1])
-    target = target.reshape(-1, target.shape[-1])
+    """Eq. 6 on temporal-mean sequence embeddings from a DTNN layer."""
+    source = source.mean(dim=1)
+    target = target.mean(dim=1)
     return (source.mean(0) - target.mean(0)).square().sum()
 
 

@@ -1,0 +1,309 @@
+{
+  "benchmark": "bian_2021_panasonic_multitemperature_to_cmu_supervised_development",
+  "architecture": "CNN1->CNN2->two-layer-BiLSTM->FC->sequence-regression",
+  "mmd_layers": [
+    "CNN2",
+    "BiLSTM2",
+    "FC"
+  ],
+  "objective": "source_mse + 5*target_mse + 0.1*adaptive_multiscale_mmd",
+  "source_profiles": [
+    "Cycle_1",
+    "Cycle_2",
+    "Cycle_3",
+    "Cycle_4",
+    "NN",
+    "US06",
+    "HWFET"
+  ],
+  "source_temperatures_c": [
+    25,
+    10,
+    0,
+    -10,
+    -20
+  ],
+  "feature_order": [
+    "current",
+    "voltage"
+  ],
+  "normalization": "source-global min-max applied unchanged to target",
+  "target_protocol": "start at initial SOC; first 30% adapt; remaining 70% test",
+  "target_soc_labels_used_for_adaptation": true,
+  "target_soc_labels_used_for_checkpoint_selection": false,
+  "target_soc_reference_used_for_posthoc_evaluation": true,
+  "label_is_ground_truth": false,
+  "formal_benchmark_eligible": false,
+  "arguments": {
+    "panasonic_data_root": "/Users/yue/Research/battery-soc-transfer-benchmark/data/raw/Panasonic_18650PF",
+    "cmu_base_root": "/Users/yue/Research/battery-soc-transfer-benchmark/outputs/datasets/cmu_evtol/dynamic_capacity_soc_development_v1",
+    "cmu_condition_root": "/Users/yue/Research/battery-soc-transfer-benchmark/outputs/datasets/cmu_evtol/dynamic_capacity_soc_development_v1_extension4",
+    "cmu_manifest": "/Users/yue/Research/battery-soc-transfer-benchmark/data/manifests/cmu_evtol/cmu_evtol_supervised_budget_manifest_v0_1.csv",
+    "output_root": "outputs/benchmarks/bian_2021_cmu_screening_v2",
+    "cells": [
+      "VAH01",
+      "VAH17",
+      "VAH27",
+      "VAH30",
+      "VAH15",
+      "VAH12",
+      "VAH11"
+    ],
+    "sequence_length": 20,
+    "adapt_fraction": 0.3,
+    "initial_soc": 0.7,
+    "source_epochs": 20,
+    "transfer_epochs": 5,
+    "repeats": 1,
+    "batch_size": 64,
+    "transfer_batch_size": 16,
+    "lr": 0.001,
+    "transfer_lr": 0.0001,
+    "target_weight": 5.0,
+    "mmd_weight": 0.1,
+    "budget_seconds": 8778.0,
+    "seed": 1,
+    "device": "cpu",
+    "lightweight": true
+  },
+  "runs": [
+    {
+      "repeat": 1,
+      "seed": 1,
+      "cell_id": "VAH01",
+      "initial_soc_percent": 70,
+      "cmu_input_sha256": "e19f9a8f9c6772343cfb1db5749bfe2c3dcd3f51f4aa3805e2d4dff2a853110f",
+      "adaptation_budget": {
+        "cell_id": "VAH01",
+        "condition": "baseline_protocol",
+        "budget_seconds": 8778.0,
+        "adaptation_missions": 9,
+        "adaptation_seconds": 8819.512427118098
+      },
+      "adaptation_fraction_within_mission": 0.3,
+      "adaptation_missions": 9,
+      "adaptation_windows": 45,
+      "validation_missions_unused": 165,
+      "training_final_batch": {
+        "source_mse": 0.006887095980346203,
+        "target_mse": 0.0005254285642877221,
+        "adaptive_mmd": 1.2904400825500488,
+        "layer_mmd": [
+          0.8887696862220764,
+          0.9557812213897705,
+          0.28405168652534485
+        ],
+        "layer_weights": [
+          0.582463264465332,
+          0.5509818196296692,
+          0.866554856300354
+        ],
+        "optimizer_steps": 15
+      }
+    },
+    {
+      "repeat": 1,
+      "seed": 1,
+      "cell_id": "VAH17",
+      "initial_soc_percent": 70,
+      "cmu_input_sha256": "c5f20175cdb95b4ebed2440c682c1dc82555d1400c1f4269cdaed34570be601b",
+      "adaptation_budget": {
+        "cell_id": "VAH17",
+        "condition": "baseline_protocol",
+        "budget_seconds": 8778.0,
+        "adaptation_missions": 9,
+        "adaptation_seconds": 8819.516427118193
+      },
+      "adaptation_fraction_within_mission": 0.3,
+      "adaptation_missions": 9,
+      "adaptation_windows": 45,
+      "validation_missions_unused": 196,
+      "training_final_batch": {
+        "source_mse": 0.011627587489783764,
+        "target_mse": 0.00029441306833177805,
+        "adaptive_mmd": 1.2024595737457275,
+        "layer_mmd": [
+          0.8363224267959595,
+          0.8261463046073914,
+          0.29079321026802063
+        ],
+        "layer_weights": [
+          0.5718328952789307,
+          0.5770426988601685,
+          0.8511242866516113
+        ],
+        "optimizer_steps": 15
+      }
+    },
+    {
+      "repeat": 1,
+      "seed": 1,
+      "cell_id": "VAH27",
+      "initial_soc_percent": 70,
+      "cmu_input_sha256": "c6a261f3c2073e90e1455410db503458a21c134d2f7a22175f83366595f42a5e",
+      "adaptation_budget": {
+        "cell_id": "VAH27",
+        "condition": "baseline_protocol",
+        "budget_seconds": 8778.0,
+        "adaptation_missions": 9,
+        "adaptation_seconds": 8819.512427118214
+      },
+      "adaptation_fraction_within_mission": 0.3,
+      "adaptation_missions": 9,
+      "adaptation_windows": 45,
+      "validation_missions_unused": 114,
+      "training_final_batch": {
+        "source_mse": 0.0047443099319934845,
+        "target_mse": 0.00046115470468066633,
+        "adaptive_mmd": 1.4112439155578613,
+        "layer_mmd": [
+          0.9071899652481079,
+          1.0193359851837158,
+          0.3560211956501007
+        ],
+        "layer_weights": [
+          0.6025537252426147,
+          0.5534217357635498,
+          0.8440245985984802
+        ],
+        "optimizer_steps": 15
+      }
+    },
+    {
+      "repeat": 1,
+      "seed": 1,
+      "cell_id": "VAH30",
+      "initial_soc_percent": 70,
+      "cmu_input_sha256": "be2b7cb1f1b52f84e17688ec63e26578f8007327eb92a9c0e3866bdbdf8a2fef",
+      "adaptation_budget": {
+        "cell_id": "VAH30",
+        "condition": "chamber_35_c",
+        "budget_seconds": 8778.0,
+        "adaptation_missions": 9,
+        "adaptation_seconds": 8819.562427120694
+      },
+      "adaptation_fraction_within_mission": 0.3,
+      "adaptation_missions": 9,
+      "adaptation_windows": 45,
+      "validation_missions_unused": 180,
+      "training_final_batch": {
+        "source_mse": 0.007484862115234137,
+        "target_mse": 9.087795478990301e-05,
+        "adaptive_mmd": 1.663164496421814,
+        "layer_mmd": [
+          1.3080841302871704,
+          1.0205364227294922,
+          0.40178802609443665
+        ],
+        "layer_weights": [
+          0.5209199786186218,
+          0.6262330412864685,
+          0.8528469204902649
+        ],
+        "optimizer_steps": 15
+      }
+    },
+    {
+      "repeat": 1,
+      "seed": 1,
+      "cell_id": "VAH15",
+      "initial_soc_percent": 70,
+      "cmu_input_sha256": "f4999e875bd08651ac52eb89b21d91063594b21af76ee1afa743f2a85b369255",
+      "adaptation_budget": {
+        "cell_id": "VAH15",
+        "condition": "extended_1000_s",
+        "budget_seconds": 8778.0,
+        "adaptation_missions": 8,
+        "adaptation_seconds": 9439.560458245098
+      },
+      "adaptation_fraction_within_mission": 0.3,
+      "adaptation_missions": 8,
+      "adaptation_windows": 64,
+      "validation_missions_unused": 108,
+      "training_final_batch": {
+        "source_mse": 0.0077310591004788876,
+        "target_mse": 0.0004651877097785473,
+        "adaptive_mmd": 1.1537060737609863,
+        "layer_mmd": [
+          0.8532559275627136,
+          0.7968523502349854,
+          0.25338882207870483
+        ],
+        "layer_weights": [
+          0.5517430305480957,
+          0.5813745260238647,
+          0.8668825030326843
+        ],
+        "optimizer_steps": 20
+      }
+    },
+    {
+      "repeat": 1,
+      "seed": 1,
+      "cell_id": "VAH12",
+      "initial_soc_percent": 70,
+      "cmu_input_sha256": "13a1ad1837ffea21486e90b7089dbda7fd8a6cf9f982e685f29495f84f9f1858",
+      "adaptation_budget": {
+        "cell_id": "VAH12",
+        "condition": "short_400_s",
+        "budget_seconds": 8778.0,
+        "adaptation_missions": 16,
+        "adaptation_seconds": 9279.22045532272
+      },
+      "adaptation_fraction_within_mission": 0.3,
+      "adaptation_missions": 16,
+      "adaptation_windows": 16,
+      "validation_missions_unused": 460,
+      "training_final_batch": {
+        "source_mse": 0.011844530701637268,
+        "target_mse": 0.0014323847135528922,
+        "adaptive_mmd": 2.144282579421997,
+        "layer_mmd": [
+          3.9375391006469727,
+          1.0145862102508545,
+          0.33876559138298035
+        ],
+        "layer_weights": [
+          0.25578904151916504,
+          0.8082391023635864,
+          0.9359719157218933
+        ],
+        "optimizer_steps": 5
+      }
+    },
+    {
+      "repeat": 1,
+      "seed": 1,
+      "cell_id": "VAH11",
+      "initial_soc_percent": 70,
+      "cmu_input_sha256": "0f0c2aea71d36765ff4537739a81529ffd0a4d426ef1afefd887e85d1c8965c9",
+      "adaptation_budget": {
+        "cell_id": "VAH11",
+        "condition": "reduction_20_percent",
+        "budget_seconds": 8778.0,
+        "adaptation_missions": 9,
+        "adaptation_seconds": 8819.512424379907
+      },
+      "adaptation_fraction_within_mission": 0.3,
+      "adaptation_missions": 9,
+      "adaptation_windows": 18,
+      "validation_missions_unused": 440,
+      "training_final_batch": {
+        "source_mse": 0.0024985219351947308,
+        "target_mse": 0.0002877333026845008,
+        "adaptive_mmd": 1.2036597728729248,
+        "layer_mmd": [
+          0.9880691766738892,
+          0.7654895782470703,
+          0.25959882140159607
+        ],
+        "layer_weights": [
+          0.5091943144798279,
+          0.6197567582130432,
+          0.8710489273071289
+        ],
+        "optimizer_steps": 10
+      }
+    }
+  ]
+}
