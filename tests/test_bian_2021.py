@@ -17,3 +17,6 @@ def test_dtnn_is_sequence_to_sequence_and_uses_paper_adaptive_weights():
     expected = 1.0 - losses.detach() / losses.detach().sum()
     assert torch.allclose(weights, expected)
     assert feature_mmd(features[0], features[0]) == 0
+
+    sequence = torch.tensor([[[1.0], [2.0]], [[3.0], [4.0]]])
+    assert feature_mmd(sequence, sequence.flip(1)) == 0

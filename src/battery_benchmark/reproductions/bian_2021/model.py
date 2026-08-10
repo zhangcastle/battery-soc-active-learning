@@ -49,8 +49,8 @@ class DTNN(nn.Module):
 
 def feature_mmd(source: torch.Tensor, target: torch.Tensor) -> torch.Tensor:
     """Eq. 6 with DTNN as the learned RKHS mapping (no hand-set kernel)."""
-    source = source.flatten(1)
-    target = target.flatten(1)
+    source = source.reshape(-1, source.shape[-1])
+    target = target.reshape(-1, target.shape[-1])
     return (source.mean(0) - target.mean(0)).square().sum()
 
 
