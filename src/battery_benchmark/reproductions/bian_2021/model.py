@@ -30,6 +30,7 @@ class DTNN(nn.Module):
         )
         self.fc = nn.Linear(2 * bilstm_hidden, fc_hidden)
         self.regression = nn.Linear(fc_hidden, 1)
+        nn.init.constant_(self.regression.bias, 0.1)
         self.activation = nn.ReLU()
 
     def encode(self, x: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:

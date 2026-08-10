@@ -13,10 +13,11 @@ from battery_benchmark.reproductions.bian_2021 import (
 
 
 def test_dtnn_is_sequence_to_sequence_and_uses_paper_adaptive_weights():
+    torch.manual_seed(2)  # Previously produced an all-zero, gradient-dead ReLU output.
     model = DTNN(input_size=2, cnn_filters=8, bilstm_hidden=4, fc_hidden=6)
     prediction, features = model(torch.randn(3, 20, 2), return_features=True)
     assert prediction.shape == (3, 20)
-    assert (prediction >= 0).all()
+    assert (prediction > 0).all()
     assert [feature.shape for feature in features] == [(3, 20, 8), (3, 20, 8), (3, 20, 6)]
 
     _, losses, weights = adaptive_multiscale_mmd(features, tuple(x + 0.2 for x in features))
