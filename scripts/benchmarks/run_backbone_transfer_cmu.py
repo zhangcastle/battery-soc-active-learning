@@ -70,6 +70,18 @@ BUDGET_COLUMNS = {
     "partial": "vidal_partial",
     "full": "vidal_full",
 }
+# output_clip=False during training: all three models clamp their final layer
+# to [0, 1] by default, and torch.clamp has exactly zero gradient outside that
+# range. If a model's untrained output happens to start outside [0, 1] (this
+# reliably happens for cnn_lstm, not for tcn/transformer_encoder, given the
+# same seed/data/lr -- verified empirically: with the clamp active, cnn_lstm's
+# training loss is bit-for-bit identical across every epoch and every
+# fine-tuning budget, because no gradient ever reaches its weights), the
+# model is permanently stuck predicting a constant and never trains at all.
+# _evaluate() already clips its predictions to [0, 1] for the reported
+# metrics, so this only removes a redundant, gradient-killing clamp from the
+# training path -- it does not change what gets reported.
+MODEL_CONFIG = {"input_size": len(FEATURES), "output_clip": False}
 
 
 def _seed(value: int) -> None:
@@ -233,26 +245,35 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--lr", type=float, default=1e-3)
     parser.add_argument("--transfer-lr", type=float, default=1e-4)
     parser.add_argument("--device", default="auto")
-    parser.add_argument("--resume", action="store_true", help="skip (model, cell, seed) triples with an existing result file")
+    parser.add_argument(
+        "--resume", action="store_true",
+        help="skip (model, seed) source pretraining and (model, seed, cell, budget) "
+        "evaluations that already have a result file on disk",
+    )
+    parser.add_argument(
+        "--no-save-checkpoints", action="store_true",
+        help="do not write per-budget model checkpoints (source.pt / <budget>.pt); "
+        "result JSON rows are always written",
+    )
     return parser.parse_args()
 
 
 def _rebuild_cell_metrics(output_root: Path) -> pd.DataFrame:
-    """Aggregate every per-(model, seed, cell) result.json under output_root.
+    """Aggregate every per-(model, seed, cell, budget) result JSON under output_root.
 
     cell_metrics.csv is shared across models, and each backbone is normally
     launched as its own subprocess/notebook cell (one ``--models`` value per
     invocation). Writing it from the current process's in-memory rows alone
     would make the last model to run silently overwrite the others' rows in
-    the CSV, even though their result.json files are untouched on disk. This
-    rebuilds the CSV from every result.json found, so the file always
-    reflects everything completed so far, regardless of which invocation ran
-    last.
+    the CSV, even though their result files are untouched on disk. This
+    rebuilds the CSV from every <output_root>/<model>/seed_<seed>/<cell>/<budget>.json
+    found, so the file always reflects everything completed so far --
+    regardless of which invocation ran last -- and matches the same
+    per-budget file layout the resume logic below reads and writes.
     """
     all_rows: list[dict] = []
-    for result_path in sorted(output_root.glob("*/seed_*/*/result.json")):
-        payload = json.loads(result_path.read_text(encoding="utf-8"))
-        all_rows.extend(payload["metrics"])
+    for result_path in sorted(output_root.glob("*/seed_*/*/*.json")):
+        all_rows.append(json.loads(result_path.read_text(encoding="utf-8")))
     table = pd.DataFrame(all_rows)
     table.to_csv(output_root / "cell_metrics.csv", index=False)
     return table
@@ -274,34 +295,52 @@ def main() -> None:
 
     for model_name in args.models:
         for seed in args.seeds:
-            _seed(seed)
-            print(f"=== {model_name} / seed {seed}: pretraining on {len(source_x)} source windows ===")
-            model = ModelRegistry.build(model_name, {"input_size": len(FEATURES)}).to(device)
+            seed_root = args.output_root / model_name / f"seed_{seed}"
+            source_checkpoint = seed_root / "source.pt"
+
+            model = ModelRegistry.build(model_name, MODEL_CONFIG).to(device)
             param_counts[model_name] = model.count_parameters()
-            _train(model, source_x, source_y, args.source_epochs, args.batch_size, args.lr, device, "source")
+
+            if args.resume and source_checkpoint.is_file():
+                model.load_state_dict(torch.load(source_checkpoint, map_location=device))
+                print(f"=== {model_name} / seed {seed}: resumed source checkpoint from {source_checkpoint} ===")
+            else:
+                _seed(seed)
+                print(f"=== {model_name} / seed {seed}: pretraining on {len(source_x)} source windows ===")
+                _train(model, source_x, source_y, args.source_epochs, args.batch_size, args.lr, device, "source")
+                if not args.no_save_checkpoints:
+                    seed_root.mkdir(parents=True, exist_ok=True)
+                    torch.save(model.state_dict(), source_checkpoint)
             source_state = copy.deepcopy(model.state_dict())
 
             for cell in args.cells:
-                result_path = args.output_root / model_name / f"seed_{seed}" / cell / "result.json"
-                if args.resume and result_path.is_file():
-                    rows.extend(json.loads(result_path.read_text(encoding="utf-8"))["metrics"])
-                    print(f"  {cell}: resumed from {result_path}")
-                    continue
+                cell_root = seed_root / cell
+                path = None
+                records = None
+                actual = None
 
-                path = _cell_path(cell, args.cmu_base_root, args.cmu_condition_root)
-                expected = set(manifest.loc[manifest["cell_id"] == cell, "source_artifact_sha256"].astype(str))
-                actual = sha256_file(path)
-                if expected != {actual}:
-                    raise ValueError(f"{cell}: CMU input hash does not match manifest")
-                records = load_cmu_dynamic_soc_for_vidal([path], target_hz=1.0).records
-
-                cell_metrics = []
                 for budget in args.budgets:
+                    result_path = cell_root / f"{budget}.json"
+                    if args.resume and result_path.is_file():
+                        rows.append(json.loads(result_path.read_text(encoding="utf-8")))
+                        print(f"  {cell}/{budget}: resumed from {result_path}")
+                        continue
+
+                    if records is None:
+                        path = _cell_path(cell, args.cmu_base_root, args.cmu_condition_root)
+                        expected = set(
+                            manifest.loc[manifest["cell_id"] == cell, "source_artifact_sha256"].astype(str)
+                        )
+                        actual = sha256_file(path)
+                        if expected != {actual}:
+                            raise ValueError(f"{cell}: CMU input hash does not match manifest")
+                        records = load_cmu_dynamic_soc_for_vidal([path], target_hz=1.0).records
+
                     adapt_ids, test_ids = _budget_mission_ids(manifest, cell, budget)
                     test_x, test_y, test_missions = _target_windows(
                         records, test_ids, feature_min, feature_max, args.sequence_length
                     )
-                    eval_model = ModelRegistry.build(model_name, {"input_size": len(FEATURES)}).to(device)
+                    eval_model = ModelRegistry.build(model_name, MODEL_CONFIG).to(device)
                     eval_model.load_state_dict(source_state)
                     adapt_missions = 0
                     if budget != "zero_shot":
@@ -320,35 +359,24 @@ def main() -> None:
                         "cell_id": cell,
                         "budget": budget,
                         "seed": seed,
+                        "cmu_input_sha256": actual,
                         "adaptation_missions": adapt_missions,
                         "n_parameters": param_counts[model_name],
+                        "label_is_ground_truth": False,
+                        "formal_benchmark_eligible": False,
                         **metrics,
                     }
-                    cell_metrics.append(row)
                     print(
                         f"  {cell}/{budget}: MAE={metrics['overall_mae_percent']:.3f}% "
                         f"RMSE={metrics['overall_rmse_percent']:.3f}%"
                     )
 
-                result_path.parent.mkdir(parents=True, exist_ok=True)
-                result_path.write_text(
-                    json.dumps(
-                        {
-                            "model": model_name,
-                            "cell_id": cell,
-                            "seed": seed,
-                            "cmu_input_sha256": actual,
-                            "n_parameters": param_counts[model_name],
-                            "metrics": cell_metrics,
-                            "label_is_ground_truth": False,
-                            "formal_benchmark_eligible": False,
-                        },
-                        indent=2,
-                    ),
-                    encoding="utf-8",
-                )
-                rows.extend(cell_metrics)
-                _rebuild_cell_metrics(args.output_root)
+                    cell_root.mkdir(parents=True, exist_ok=True)
+                    result_path.write_text(json.dumps(row, indent=2), encoding="utf-8")
+                    if not args.no_save_checkpoints and budget != "zero_shot":
+                        torch.save(eval_model.state_dict(), cell_root / f"{budget}.pt")
+                    rows.append(row)
+                    _rebuild_cell_metrics(args.output_root)
 
     table = _rebuild_cell_metrics(args.output_root)
     metadata = {
