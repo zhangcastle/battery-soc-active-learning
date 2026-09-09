@@ -22,6 +22,19 @@ Budgets reuse the nested mission-budget flags already frozen in
 ``vidal_full``), so the resulting budget points line up exactly with the
 already-published Vidal LSTM sweep.
 
+Checkpointing / resume, at fine (model, seed, cell, budget) granularity:
+- The source-pretrained checkpoint for each (model, seed) is written to
+  ``<output_root>/<model>/seed_<seed>/source.pt`` as soon as source training
+  finishes, and reloaded on ``--resume`` instead of being retrained.
+- Every single (model, seed, cell, budget) result is written to its own
+  ``.../<cell>/<budget>.json`` file (plus the fine-tuned checkpoint as
+  ``<budget>.pt`` for non-zero-shot budgets) the moment it finishes, and
+  ``cell_metrics.csv`` is rewritten after every one of those results, not
+  just after a whole cell's six-budget sweep. ``--resume`` skips any
+  (model, seed, cell, budget) whose result file already exists. This means a
+  disconnect can cost at most the one budget that was in flight, not an
+  entire cell.
+
 CMU ``soc_dynamic`` is a development dynamic-capacity reference, not
 measured ground truth. Every run written by this script is
 ``label_is_ground_truth=false`` and ``formal_benchmark_eligible=false``.
@@ -70,6 +83,10 @@ BUDGET_COLUMNS = {
     "partial": "vidal_partial",
     "full": "vidal_full",
 }
+
+
+def _print(msg: str) -> None:
+    print(msg, flush=True)
 
 
 def _seed(value: int) -> None:
@@ -166,7 +183,7 @@ def _train(model: nn.Module, x: np.ndarray, y: np.ndarray, epochs: int, batch_si
             optimizer.step()
             total += float(loss.detach()) * len(xb)
         if epoch == 0 or epoch + 1 == epochs or (epoch + 1) % max(epochs // 5, 1) == 0:
-            print(f"    {label} epoch {epoch + 1}/{epochs}: mse={total / len(x):.6f}")
+            _print(f"    {label} epoch {epoch + 1}/{epochs}: mse={total / len(x):.6f}")
 
 
 @torch.no_grad()
@@ -201,6 +218,14 @@ def _evaluate(model: nn.Module, x: np.ndarray, y: np.ndarray, missions, batch_si
     return overall
 
 
+def _source_checkpoint_path(output_root: Path, model_name: str, seed: int) -> Path:
+    return output_root / model_name / f"seed_{seed}" / "source.pt"
+
+
+def _result_path(output_root: Path, model_name: str, seed: int, cell: str, budget: str) -> Path:
+    return output_root / model_name / f"seed_{seed}" / cell / f"{budget}.json"
+
+
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument(
@@ -233,7 +258,16 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--lr", type=float, default=1e-3)
     parser.add_argument("--transfer-lr", type=float, default=1e-4)
     parser.add_argument("--device", default="auto")
-    parser.add_argument("--resume", action="store_true", help="skip (model, cell, seed) triples with an existing result file")
+    parser.add_argument(
+        "--resume", action="store_true",
+        help="skip any (model, seed) whose source.pt already exists, and any "
+             "(model, seed, cell, budget) whose <budget>.json already exists",
+    )
+    parser.add_argument(
+        "--save-checkpoints", action="store_true", default=True,
+        help="save the fine-tuned model state for every non-zero-shot budget (default on)",
+    )
+    parser.add_argument("--no-save-checkpoints", dest="save_checkpoints", action="store_false")
     return parser.parse_args()
 
 
@@ -242,40 +276,63 @@ def main() -> None:
     device = get_device(args.device)
     args.output_root.mkdir(parents=True, exist_ok=True)
 
-    print("loading Panasonic 25C source windows ...")
+    _print("loading Panasonic 25C source windows ...")
     source_x, source_y, feature_min, feature_max = _source_data(
         args.panasonic_data_root, args.sequence_length
     )
+    _print(f"source windows: {len(source_x)}")
     manifest = pd.read_csv(args.cmu_manifest)
 
     rows: list[dict] = []
     param_counts: dict[str, int] = {}
 
+    def _save_rows() -> None:
+        pd.DataFrame(rows).to_csv(args.output_root / "cell_metrics.csv", index=False)
+
     for model_name in args.models:
         for seed in args.seeds:
             _seed(seed)
-            print(f"=== {model_name} / seed {seed}: pretraining on {len(source_x)} source windows ===")
             model = ModelRegistry.build(model_name, {"input_size": len(FEATURES)}).to(device)
             param_counts[model_name] = model.count_parameters()
-            _train(model, source_x, source_y, args.source_epochs, args.batch_size, args.lr, device, "source")
+
+            source_ckpt = _source_checkpoint_path(args.output_root, model_name, seed)
+            if args.resume and source_ckpt.is_file():
+                state = torch.load(source_ckpt, map_location=device, weights_only=False)
+                model.load_state_dict(state["model_state_dict"])
+                _print(f"=== {model_name} / seed {seed}: resumed source checkpoint {source_ckpt} ===")
+            else:
+                _print(f"=== {model_name} / seed {seed}: pretraining on {len(source_x)} source windows ===")
+                _train(model, source_x, source_y, args.source_epochs, args.batch_size, args.lr, device, "source")
+                source_ckpt.parent.mkdir(parents=True, exist_ok=True)
+                torch.save(
+                    {"model_state_dict": model.state_dict(), "n_parameters": param_counts[model_name]},
+                    source_ckpt,
+                )
+                _print(f"  saved source checkpoint: {source_ckpt}")
             source_state = copy.deepcopy(model.state_dict())
 
             for cell in args.cells:
-                result_path = args.output_root / model_name / f"seed_{seed}" / cell / "result.json"
-                if args.resume and result_path.is_file():
-                    rows.extend(json.loads(result_path.read_text(encoding="utf-8"))["metrics"])
-                    print(f"  {cell}: resumed from {result_path}")
-                    continue
-
                 path = _cell_path(cell, args.cmu_base_root, args.cmu_condition_root)
                 expected = set(manifest.loc[manifest["cell_id"] == cell, "source_artifact_sha256"].astype(str))
                 actual = sha256_file(path)
                 if expected != {actual}:
                     raise ValueError(f"{cell}: CMU input hash does not match manifest")
+
+                needed_budgets = [
+                    b for b in args.budgets
+                    if not (args.resume and _result_path(args.output_root, model_name, seed, cell, b).is_file())
+                ]
+                for b in args.budgets:
+                    if b not in needed_budgets:
+                        row = json.loads(_result_path(args.output_root, model_name, seed, cell, b).read_text())
+                        rows.append(row)
+                        _print(f"  {cell}/{b}: resumed")
+                if not needed_budgets:
+                    continue
+
                 records = load_cmu_dynamic_soc_for_vidal([path], target_hz=1.0).records
 
-                cell_metrics = []
-                for budget in args.budgets:
+                for budget in needed_budgets:
                     adapt_ids, test_ids = _budget_mission_ids(manifest, cell, budget)
                     test_x, test_y, test_missions = _target_windows(
                         records, test_ids, feature_min, feature_max, args.sequence_length
@@ -303,34 +360,23 @@ def main() -> None:
                         "n_parameters": param_counts[model_name],
                         **metrics,
                     }
-                    cell_metrics.append(row)
-                    print(
+                    result_path = _result_path(args.output_root, model_name, seed, cell, budget)
+                    result_path.parent.mkdir(parents=True, exist_ok=True)
+                    result_path.write_text(json.dumps(row, indent=2), encoding="utf-8")
+                    if args.save_checkpoints and budget != "zero_shot":
+                        torch.save(
+                            {"model_state_dict": eval_model.state_dict()},
+                            result_path.with_suffix(".pt"),
+                        )
+                    rows.append(row)
+                    _save_rows()
+                    _print(
                         f"  {cell}/{budget}: MAE={metrics['overall_mae_percent']:.3f}% "
                         f"RMSE={metrics['overall_rmse_percent']:.3f}%"
                     )
 
-                result_path.parent.mkdir(parents=True, exist_ok=True)
-                result_path.write_text(
-                    json.dumps(
-                        {
-                            "model": model_name,
-                            "cell_id": cell,
-                            "seed": seed,
-                            "cmu_input_sha256": actual,
-                            "n_parameters": param_counts[model_name],
-                            "metrics": cell_metrics,
-                            "label_is_ground_truth": False,
-                            "formal_benchmark_eligible": False,
-                        },
-                        indent=2,
-                    ),
-                    encoding="utf-8",
-                )
-                rows.extend(cell_metrics)
-                pd.DataFrame(rows).to_csv(args.output_root / "cell_metrics.csv", index=False)
-
     table = pd.DataFrame(rows)
-    table.to_csv(args.output_root / "cell_metrics.csv", index=False)
+    _save_rows()
     metadata = {
         "benchmark": "backbone_transfer_panasonic_25c_to_cmu_core7",
         "note": (
@@ -339,7 +385,8 @@ def main() -> None:
             "restart-from-source full-parameter fine-tuning) for CNN-LSTM, "
             "TCN, and Transformer-encoder backbones. Does not import "
             "battery_benchmark.reproductions.vidal_2019; the published Vidal "
-            "LSTM CMU results are untouched by this script."
+            "LSTM CMU results are untouched by this script. Checkpointed and "
+            "resumable at (model, seed, cell, budget) granularity."
         ),
         "models": list(args.models),
         "n_parameters": param_counts,
@@ -368,7 +415,7 @@ def main() -> None:
         "git_dirty": is_dirty(REPO_ROOT),
     }
     (args.output_root / "run_metadata.json").write_text(json.dumps(metadata, indent=2), encoding="utf-8")
-    print(table.to_string(index=False))
+    _print(table.to_string(index=False))
 
 
 if __name__ == "__main__":
