@@ -1,4 +1,16 @@
-"""Table II/IV/V/VI/VII experiment suite for Shen et al. (2023)."""
+"""Table II/IV/V/VI/VII experiment suite for Shen et al. (2023).
+
+Three methods are compared wherever the paper itself compares them:
+
+* ``Source pretrained`` -- no adaptation, source model applied zero-shot.
+* ``MED`` -- the paper's proposed source-free method (Algorithm 1).
+* ``DANN+MMD`` -- the paper's own adversarial/MMD comparison baseline.
+
+MED has no semisupervised variant in Algorithm 1 (it is a source-free,
+label-free method by construction), so the semisupervised tables (IV/V)
+only compare ``Source pretrained`` against ``DANN+MMD``; the unsupervised
+tables (VI/VII) compare all three.
+"""
 
 from __future__ import annotations
 
@@ -16,10 +28,13 @@ from battery_benchmark.reproductions.shen_2023.data import (
     load_temperature_cycles,
 )
 from battery_benchmark.reproductions.shen_2023.train import (
-    adapt,
+    adapt_dann_mmd,
+    adapt_med,
     evaluate_cycle,
+    load_med_source,
     load_source,
     predict,
+    pretrain_med,
     save_json,
     train_source,
 )
@@ -32,6 +47,9 @@ PAPER_TABLES = {
     "VI": {"MAE": [8.01, 1.15, 2.26, 4.03], "RMSE": [14.9, 1.50, 2.91, 5.01]},
     "VII": {"MAE": [2.63, 3.86, 4.26, 3.54, 4.31], "RMSE": [3.44, 6.08, 6.60, 5.23, 6.01]},
 }
+
+SEMISUPERVISED_METHODS = ("Source pretrained", "DANN+MMD")
+UNSUPERVISED_METHODS = ("Source pretrained", "MED", "DANN+MMD")
 
 
 def _label(temperature: int) -> str:
@@ -54,6 +72,7 @@ class ShenTableSuite:
         batch_size: int = 64,
         learning_rate: float = 1e-3,
         lambdas: tuple[float, float, float] = (1.0, 1.0, 1.0),
+        med_lambdas: tuple[float, float] = (1.0, 0.1),
         seed: int = 100,
         device: str = "auto",
         early_stopping_patience: int | None = None,
@@ -69,6 +88,7 @@ class ShenTableSuite:
         self.batch_size = batch_size
         self.learning_rate = learning_rate
         self.lambdas = lambdas
+        self.med_lambdas = med_lambdas
         self.seed = seed
         self.early_stopping_patience = early_stopping_patience
         self.min_epochs = min_epochs
@@ -85,6 +105,7 @@ class ShenTableSuite:
             "batch_size": batch_size,
             "learning_rate": learning_rate,
             "lambdas": lambdas,
+            "med_lambdas": med_lambdas,
             "seed": seed,
             "early_stopping_patience": early_stopping_patience,
             "min_epochs": min_epochs,
@@ -105,10 +126,15 @@ class ShenTableSuite:
                 "git_commit": get_full_commit_hash(),
                 "git_dirty": is_dirty(),
                 "cache_id": run_id,
+                "methods": {
+                    "semisupervised": list(SEMISUPERVISED_METHODS),
+                    "unsupervised": list(UNSUPERVISED_METHODS),
+                },
             },
         )
         self._cycles = {}
-        self._sources = {}
+        self._med_sources = {}
+        self._dann_sources = {}
         self.records: list[dict] = []
 
     def cycles(self, temperature: int):
@@ -116,15 +142,40 @@ class ShenTableSuite:
             self._cycles[temperature] = load_temperature_cycles(self.raw_root, temperature)
         return self._cycles[temperature]
 
-    def source_model(self, temperature: int):
-        if temperature in self._sources:
-            return self._sources[temperature]
-        checkpoint = self.cache_dir / "checkpoints" / f"source_{temperature}C.pt"
+    def med_source_model(self, temperature: int):
+        if temperature in self._med_sources:
+            return self._med_sources[temperature]
+        checkpoint = self.cache_dir / "checkpoints" / f"med_source_{temperature}C.pt"
         if checkpoint.exists():
-            print(f"[source {temperature}C] restored {checkpoint.name}")
+            print(f"[MED source {temperature}C] restored {checkpoint.name}")
+            model = load_med_source(checkpoint, self.device)
+        else:
+            print(f"[MED source {temperature}C] pretraining, max {self.epochs} epochs")
+            model, _ = pretrain_med(
+                self.cycles(temperature),
+                epochs=self.epochs,
+                batch_size=self.batch_size,
+                learning_rate=self.learning_rate,
+                device=self.device,
+                seed=self.seed,
+                checkpoint=checkpoint,
+                early_stopping_patience=self.early_stopping_patience,
+                min_epochs=self.min_epochs,
+                min_delta=self.min_delta,
+                tensor_layout=self.tensor_layout,
+            )
+        self._med_sources[temperature] = model
+        return model
+
+    def dann_source_model(self, temperature: int):
+        if temperature in self._dann_sources:
+            return self._dann_sources[temperature]
+        checkpoint = self.cache_dir / "checkpoints" / f"dann_source_{temperature}C.pt"
+        if checkpoint.exists():
+            print(f"[DANN source {temperature}C] restored {checkpoint.name}")
             model = load_source(checkpoint, self.device)
         else:
-            print(f"[source {temperature}C] training, max {self.epochs} epochs")
+            print(f"[DANN source {temperature}C] training, max {self.epochs} epochs")
             model, _ = train_source(
                 self.cycles(temperature),
                 epochs=self.epochs,
@@ -138,10 +189,12 @@ class ShenTableSuite:
                 min_delta=self.min_delta,
                 tensor_layout=self.tensor_layout,
             )
-        self._sources[temperature] = model
+        self._dann_sources[temperature] = model
         return model
 
     def run_table_ii(self, *, profiles: tuple[str, ...] = PROFILES) -> pd.DataFrame:
+        """Single-domain fit accuracy (method-agnostic); uses the MED source model."""
+
         rows = {"MAE": [], "RMSE": []}
         for temperature in TEMPERATURES:
             fold_metrics = []
@@ -155,9 +208,9 @@ class ShenTableSuite:
                     / f"{temperature}C_holdout_{held_out}.pt"
                 )
                 if checkpoint.exists():
-                    model = load_source(checkpoint, self.device)
+                    model = load_med_source(checkpoint, self.device)
                 else:
-                    model, _ = train_source(
+                    model, _ = pretrain_med(
                         training_cycles,
                         epochs=self.epochs,
                         batch_size=self.batch_size,
@@ -175,6 +228,7 @@ class ShenTableSuite:
                     list(training_cycles.values()),
                     self.device,
                     self.tensor_layout,
+                    branch="source",
                 )
                 fold_metrics.append(
                     (
@@ -189,26 +243,6 @@ class ShenTableSuite:
         table.to_csv(self.output_dir / "table_ii.csv")
         return table
 
-    def source_sanity_table(self) -> pd.DataFrame:
-        rows = []
-        for temperature in TEMPERATURES:
-            truth, estimate = predict(
-                self.source_model(temperature),
-                list(self.cycles(temperature).values()),
-                self.device,
-                self.tensor_layout,
-            )
-            rows.append(
-                {
-                    "temperature": _label(temperature),
-                    "MAE": float(np.mean(np.abs(truth - estimate))) * 100,
-                    "RMSE": float(np.sqrt(np.mean((truth - estimate) ** 2))) * 100,
-                }
-            )
-        table = pd.DataFrame(rows).set_index("temperature")
-        table.to_csv(self.output_dir / "source_sanity.csv")
-        return table
-
     def run_transfer(
         self,
         source_temperature: int,
@@ -217,37 +251,79 @@ class ShenTableSuite:
         *,
         profiles: tuple[str, ...] = PROFILES,
     ) -> list[dict]:
-        source_model = self.source_model(source_temperature)
+        med_source = self.med_source_model(source_temperature)
+        dann_source = self.dann_source_model(source_temperature)
         source_cycles = self.cycles(source_temperature)
         target_cycles = self.cycles(target_temperature)
+        methods = UNSUPERVISED_METHODS if scenario == "unsupervised" else SEMISUPERVISED_METHODS
         pair_records = []
         for fold, profile in enumerate(profiles):
             result_path = self.cache_dir / "folds" / (
                 f"{scenario}_{source_temperature}C_to_{target_temperature}C_"
                 f"{profile}_e{self.transfer_epochs}.json"
             )
-            model_path = self.cache_dir / "checkpoints" / "transfer" / (
-                f"{scenario}_{source_temperature}C_to_{target_temperature}C_{profile}.pt"
-            )
             run_label = f"{scenario} {source_temperature}C->{target_temperature}C {profile}"
-            if result_path.exists() and model_path.exists():
+            if result_path.exists():
                 print(f"[{run_label}] restored")
                 result = json.loads(result_path.read_text(encoding="utf-8"))
             else:
                 print(f"[{run_label}] training")
-                baseline = evaluate_cycle(
-                    source_model,
-                    target_cycles[profile],
-                    self.device,
-                    self.tensor_layout,
-                )
+                records = [
+                    {
+                        "method": "Source pretrained",
+                        **evaluate_cycle(
+                            dann_source, target_cycles[profile], self.device,
+                            self.tensor_layout, branch="source",
+                        ),
+                    }
+                ]
+                if "MED" in methods:
+                    labeled = None  # MED has no semisupervised variant (source-free by design)
+                    med_model_path = self.cache_dir / "checkpoints" / "transfer" / (
+                        f"med_{scenario}_{source_temperature}C_to_{target_temperature}C_{profile}.pt"
+                    )
+                    med_model, med_history, med_info = adapt_med(
+                        med_source,
+                        target_cycles,
+                        test_profile=profile,
+                        epochs=self.transfer_epochs,
+                        batch_size=self.batch_size,
+                        learning_rate=self.learning_rate,
+                        device=self.device,
+                        seed=self.seed + fold,
+                        lambdas=self.med_lambdas,
+                        early_stopping_patience=self.early_stopping_patience,
+                        min_epochs=self.min_epochs,
+                        min_delta=self.min_delta,
+                        tensor_layout=self.tensor_layout,
+                    )
+                    med_model_path.parent.mkdir(parents=True, exist_ok=True)
+                    torch.save(
+                        {
+                            "model_state_dict": med_model.state_dict(),
+                            "history": med_history,
+                            "target_info": med_info,
+                        },
+                        med_model_path,
+                    )
+                    records.append(
+                        {
+                            "method": "MED",
+                            **evaluate_cycle(
+                                med_model, target_cycles[profile], self.device, self.tensor_layout
+                            ),
+                        }
+                    )
                 labeled = (
                     next(p for p in PROFILES if p != profile)
                     if scenario == "semisupervised"
                     else None
                 )
-                transferred, history, target_info = adapt(
-                    source_model,
+                dann_model_path = self.cache_dir / "checkpoints" / "transfer" / (
+                    f"dann_{scenario}_{source_temperature}C_to_{target_temperature}C_{profile}.pt"
+                )
+                dann_model, dann_history, dann_info = adapt_dann_mmd(
+                    dann_source,
                     source_cycles,
                     target_cycles,
                     test_profile=profile,
@@ -264,25 +340,22 @@ class ShenTableSuite:
                     min_delta=self.min_delta,
                     tensor_layout=self.tensor_layout,
                 )
-                tatn = evaluate_cycle(
-                    transferred,
-                    target_cycles[profile],
-                    self.device,
-                    self.tensor_layout,
-                )
-                model_path.parent.mkdir(parents=True, exist_ok=True)
+                dann_model_path.parent.mkdir(parents=True, exist_ok=True)
                 torch.save(
                     {
-                        "model_state_dict": transferred.state_dict(),
-                        "history": history,
-                        "target_info": target_info,
-                        "source_temperature": source_temperature,
-                        "target_temperature": target_temperature,
-                        "scenario": scenario,
-                        "profile": profile,
-                        "tensor_layout": self.tensor_layout,
+                        "model_state_dict": dann_model.state_dict(),
+                        "history": dann_history,
+                        "target_info": dann_info,
                     },
-                    model_path,
+                    dann_model_path,
+                )
+                records.append(
+                    {
+                        "method": "DANN+MMD",
+                        **evaluate_cycle(
+                            dann_model, target_cycles[profile], self.device, self.tensor_layout
+                        ),
+                    }
                 )
                 result = {
                     "source_temperature": source_temperature,
@@ -290,17 +363,11 @@ class ShenTableSuite:
                     "scenario": scenario,
                     "profile": profile,
                     "tensor_layout": self.tensor_layout,
-                    "target_info": target_info,
-                    "epochs_completed": len(history),
-                    "checkpoint": str(model_path.relative_to(self.output_dir)),
-                    "final_training_loss": history[-1] if history else None,
-                    "records": [
-                        {"method": "Source pretrained", **baseline},
-                        {"method": "TATN", **tatn},
-                    ],
+                    "dann_target_info": dann_info,
+                    "records": records,
                 }
                 save_json(result_path, result)
-                print(f"  completed in {len(history)} epoch(s)")
+                print(f"  completed")
             pair_records.extend(
                 {
                     "source_temperature": source_temperature,
@@ -333,11 +400,14 @@ class ShenTableSuite:
             and (target is None or r["target_temperature"] == target)
         ]
 
+    def _methods_for(self, scenario: str) -> tuple[str, ...]:
+        return UNSUPERVISED_METHODS if scenario == "unsupervised" else SEMISUPERVISED_METHODS
+
     def table_for_source(self, source: int, scenario: str) -> pd.DataFrame:
         targets = [t for t in TEMPERATURES if t != source]
         columns = [f"{source}C->{target}C" for target in targets]
         rows = {}
-        for method in ("Source pretrained", "TATN"):
+        for method in self._methods_for(scenario):
             for metric in ("mae", "rmse"):
                 values = [
                     _mean(self._records(scenario, source, target), method, metric)
@@ -349,7 +419,7 @@ class ShenTableSuite:
     def table_for_all_sources(self, scenario: str) -> pd.DataFrame:
         columns = [f"{source}C->R" for source in TEMPERATURES]
         rows = {}
-        for method in ("Source pretrained", "TATN"):
+        for method in self._methods_for(scenario):
             for metric in ("mae", "rmse"):
                 values = [
                     _mean(self._records(scenario, source), method, metric)

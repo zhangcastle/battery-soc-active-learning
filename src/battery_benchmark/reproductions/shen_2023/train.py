@@ -1,4 +1,24 @@
-"""Training and evaluation loops for the Shen et al. (2023) reproduction."""
+"""Training and evaluation loops for the Shen et al. (2023) reproduction.
+
+Two independent transfer paths live here:
+
+* ``pretrain_med`` / ``build_pseudo_target_dataset`` / ``med_adapt`` --
+  the paper's actual proposed method (Algorithm 1). Source-free: the
+  transfer stage never touches source data, source labels, or target
+  labels. Pseudo-labels come once from the frozen source model's
+  averaged-head output; only the target feature extractor is trained.
+* ``train_source`` (DANN+MMD baseline) / ``adapt_dann_mmd`` -- the
+  domain-adversarial + MMD comparison baseline the paper reports in
+  Table VI alongside its proposed method. Not source-free in the same
+  sense (it does use source data, batch-for-batch, throughout transfer),
+  and must never be reported as "the Shen et al. method."
+
+``build_pseudo_target_dataset`` is deliberately generic (it only needs a
+list of ``ShenCycle``-shaped windows), so both the in-paper Panasonic
+cross-temperature suite (``suite.py``) and the CMU eVTOL target-domain
+benchmark (``scripts/benchmarks/run_sftnn_transfer_cmu.py``) can reuse the
+exact same pseudo-labeling and confidence-filtering code.
+"""
 
 from __future__ import annotations
 
@@ -20,7 +40,12 @@ from battery_benchmark.reproductions.shen_2023.data import (
     selected_windows,
     windows,
 )
-from battery_benchmark.reproductions.shen_2023.model import TATN, gaussian_mmd
+from battery_benchmark.reproductions.shen_2023.model import (
+    DANNBaselineNet,
+    MEDNet,
+    discrepancy,
+    gaussian_mmd,
+)
 
 
 def seed_everything(seed: int) -> None:
@@ -39,7 +64,7 @@ def _improved(value: float, best: float, min_delta: float) -> bool:
 
 def _loader(x: np.ndarray, y: np.ndarray, batch_size: int, shuffle: bool) -> DataLoader:
     if not len(x):
-        raise ValueError("Cannot construct a loader from zero TATN windows")
+        raise ValueError("Cannot construct a loader from zero windows")
     return DataLoader(
         TensorDataset(torch.from_numpy(x), torch.from_numpy(y)),
         batch_size=min(batch_size, len(x)),
@@ -49,19 +74,385 @@ def _loader(x: np.ndarray, y: np.ndarray, batch_size: int, shuffle: bool) -> Dat
 
 @torch.no_grad()
 def predict(
-    model: TATN,
+    model: MEDNet | DANNBaselineNet,
     cycles: list[ShenCycle],
     device: torch.device,
     tensor_layout: str = "paper",
+    branch: str = "target",
 ) -> tuple[np.ndarray, np.ndarray]:
     model.eval()
     predictions, labels = [], []
     for cycle in cycles:
         x, y = windows([cycle], tensor_layout)
         for xb, yb in _loader(x, y, 64, False):
-            predictions.append(model(xb.to(device)).cpu().numpy())
+            xb = xb.to(device)
+            output = (
+                model.estimate_source(xb) if branch == "source" else model(xb)
+            )
+            predictions.append(output.cpu().numpy())
             labels.append(yb.numpy())
     return np.concatenate(labels).ravel(), np.concatenate(predictions).ravel()
+
+
+def evaluate_cycle(
+    model: MEDNet | DANNBaselineNet,
+    cycle: ShenCycle,
+    device: torch.device,
+    tensor_layout: str = "paper",
+    branch: str = "target",
+) -> dict[str, float]:
+    truth, estimate = predict(model, [cycle], device, tensor_layout, branch=branch)
+    return compute_metrics(truth, estimate)
+
+
+def save_json(path: str | Path, payload: object) -> None:
+    path = Path(path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(payload, indent=2), encoding="utf-8")
+
+
+# ---------------------------------------------------------------------------
+# MED: the paper's proposed source-free method (Algorithm 1).
+# ---------------------------------------------------------------------------
+
+
+def pretrain_med(
+    cycles: dict[str, ShenCycle],
+    *,
+    epochs: int,
+    batch_size: int,
+    learning_rate: float,
+    device: torch.device,
+    seed: int,
+    checkpoint: str | Path | None = None,
+    early_stopping_patience: int | None = None,
+    min_epochs: int = 0,
+    min_delta: float = 1e-4,
+    tensor_layout: str = "paper",
+) -> tuple[MEDNet, list[float]]:
+    """Joint supervised pretraining of the shared extractor + both heads.
+
+    Both heads see the same batches and the same labels; the only thing
+    that makes them diverge is their different Xavier-init gain (set in
+    ``SOCHead``). No diversity-promoting loss term is used -- that mirrors
+    the paper, which describes divergent initialization as the mechanism,
+    not an extra objective.
+    """
+
+    seed_everything(seed)
+    x, y = windows([cycles[p] for p in PROFILES if p in cycles], tensor_layout)
+    loader = _loader(x, y, batch_size, True)
+    model = MEDNet().to(device)
+    optimizer = torch.optim.Adam(
+        (
+            *model.source_extractor.parameters(),
+            *model.head1.parameters(),
+            *model.head2.parameters(),
+        ),
+        lr=learning_rate,
+    )
+    scheduler = (
+        torch.optim.lr_scheduler.ReduceLROnPlateau(
+            optimizer,
+            factor=0.5,
+            patience=max(5, early_stopping_patience // 3),
+            threshold=min_delta,
+            min_lr=learning_rate * 0.01,
+        )
+        if early_stopping_patience is not None
+        else None
+    )
+    history, best_loss, best_state, stale_epochs = [], math.inf, None, 0
+    model.source_extractor.train()
+    model.head1.train()
+    model.head2.train()
+    for _ in range(epochs):
+        total, samples = 0.0, 0
+        for xb, yb in loader:
+            xb, yb = xb.to(device), yb.to(device)
+            optimizer.zero_grad()
+            pred1, pred2 = model.forward_source(xb)
+            loss = F.mse_loss(pred1, yb, reduction="sum") + F.mse_loss(pred2, yb, reduction="sum")
+            loss.backward()
+            optimizer.step()
+            total += float(loss.detach())
+            samples += 2 * len(xb)
+        epoch_loss = total / max(samples, 1)
+        history.append(epoch_loss)
+        if scheduler is not None:
+            scheduler.step(epoch_loss)
+        if _improved(epoch_loss, best_loss, min_delta):
+            best_loss = epoch_loss
+            best_state = model.source_state_dict()
+            stale_epochs = 0
+        else:
+            stale_epochs += 1
+        if (
+            early_stopping_patience is not None
+            and len(history) >= min_epochs
+            and stale_epochs >= early_stopping_patience
+        ):
+            break
+    assert best_state is not None
+    model.load_source_state_dict(best_state)
+    if checkpoint:
+        path = Path(checkpoint)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        torch.save(
+            {
+                "source_state_dict": best_state,
+                "history": history,
+                "protocol": {
+                    "epochs": epochs,
+                    "batch_size": batch_size,
+                    "learning_rate": learning_rate,
+                    "seed": seed,
+                    "epochs_completed": len(history),
+                    "early_stopping_patience": early_stopping_patience,
+                    "head1_gain": model.head1.gain,
+                    "head2_gain": model.head2.gain,
+                },
+            },
+            path,
+        )
+    return model, history
+
+
+def load_med_source(checkpoint: str | Path, device: torch.device) -> MEDNet:
+    payload = torch.load(checkpoint, map_location=device, weights_only=False)
+    model = MEDNet().to(device)
+    model.load_source_state_dict(payload["source_state_dict"])
+    return model
+
+
+def build_pseudo_target_dataset(
+    source_model: MEDNet,
+    cycles: list[ShenCycle],
+    device: torch.device,
+    *,
+    threshold: float = 0.08,
+    lookahead: int = 200,
+    tensor_layout: str = "paper",
+) -> tuple[TensorDataset, dict[str, int]]:
+    """Build a pseudo-labeled target dataset from a frozen MED source model.
+
+    Confidence filtering (``selected_windows``) runs **per cycle**, before
+    any concatenation across cycles/files -- this is deliberate: the
+    delivered reference implementation's equivalent filter flattens all
+    target files into one array first and then applies a 200-sample
+    lookahead across that flattened array, which can span an unrelated file
+    boundary. Filtering per cycle first avoids that cross-file artifact
+    entirely, at zero extra cost, since ``selected_windows`` already worked
+    this way for the in-paper cross-temperature transfer.
+    """
+
+    source_model.eval()
+    xs, ys, pseudo_windows, total_windows = [], [], 0, 0
+    for cycle in cycles:
+        usable = len(cycle.soc) // 90 * 90
+        if not usable:
+            continue
+        probe = ShenCycle(
+            profile=cycle.profile,
+            temperature=cycle.temperature,
+            features=cycle.features[:usable],
+            soc=cycle.soc[:usable],
+            paths=cycle.paths,
+        )
+        x_probe, _ = windows([probe], tensor_layout)
+        with torch.no_grad():
+            pseudo = np.concatenate(
+                [
+                    source_model.estimate_source(xb.to(device)).cpu().numpy().ravel()
+                    for xb, _ in _loader(x_probe, np.zeros((len(x_probe), 90), np.float32), 64, False)
+                ]
+            )
+        total_windows += len(x_probe)
+        x, y = selected_windows(
+            probe, pseudo, threshold=threshold, lookahead=lookahead, tensor_layout=tensor_layout
+        )
+        if len(x):
+            xs.append(x)
+            ys.append(y)
+            pseudo_windows += len(x)
+    if not xs:
+        empty_x, empty_y = windows([])
+        dataset = TensorDataset(torch.from_numpy(empty_x), torch.from_numpy(empty_y))
+        return dataset, {
+            "pseudo_windows": 0,
+            "total_windows": total_windows,
+            "status": "skipped_no_pseudo_labels",
+        }
+    x, y = np.concatenate(xs), np.concatenate(ys)
+    dataset = TensorDataset(torch.from_numpy(x), torch.from_numpy(y))
+    return dataset, {
+        "pseudo_windows": pseudo_windows,
+        "total_windows": total_windows,
+        "status": "adapted",
+    }
+
+
+def med_adapt(
+    source_model: MEDNet,
+    target_dataset: TensorDataset,
+    *,
+    epochs: int,
+    batch_size: int,
+    learning_rate: float,
+    device: torch.device,
+    seed: int,
+    lambdas: tuple[float, float] = (1.0, 0.1),
+    early_stopping_patience: int | None = None,
+    min_epochs: int = 0,
+    min_delta: float = 1e-4,
+) -> tuple[MEDNet, list[dict[str, float]]]:
+    """Source-free transfer (Algorithm 1): only ``target_extractor`` trains.
+
+    Both heads and the source extractor are frozen by ``initialize_target``
+    below and stay frozen for the entire loop -- no source data and no real
+    target labels are used anywhere in this function, only the fixed
+    pseudo-labels already baked into ``target_dataset``.
+    """
+
+    if len(target_dataset) == 0:
+        raise ValueError("target_dataset is empty; nothing to adapt on")
+    seed_everything(seed)
+    model = deepcopy(source_model).to(device)
+    model.initialize_target()
+    loader = DataLoader(
+        target_dataset, batch_size=min(batch_size, len(target_dataset)), shuffle=True
+    )
+    optimizer = torch.optim.Adam(model.target_extractor.parameters(), lr=learning_rate)
+    scheduler = (
+        torch.optim.lr_scheduler.ReduceLROnPlateau(
+            optimizer,
+            factor=0.5,
+            patience=max(5, early_stopping_patience // 3),
+            threshold=min_delta,
+            min_lr=learning_rate * 0.01,
+        )
+        if early_stopping_patience is not None
+        else None
+    )
+    lambda_soc, lambda_dis = lambdas
+    history, best_loss, best_state, stale_epochs = [], math.inf, None, 0
+
+    for _ in range(epochs):
+        model.target_extractor.train()
+        model.source_extractor.eval()
+        model.head1.eval()
+        model.head2.eval()
+        totals = {"soc": 0.0, "dis": 0.0, "total": 0.0}
+        batches = 0
+        for xb, pseudo_y in loader:
+            xb, pseudo_y = xb.to(device), pseudo_y.to(device)
+            optimizer.zero_grad()
+            pred1, pred2 = model.forward_target(xb)
+            loss_soc = F.mse_loss(pred1, pseudo_y, reduction="mean") + F.mse_loss(
+                pred2, pseudo_y, reduction="mean"
+            )
+            loss_dis = discrepancy(pred1, pred2, reduction="mean")
+            loss = lambda_soc * loss_soc + lambda_dis * loss_dis
+            loss.backward()
+            optimizer.step()
+            totals["soc"] += float(loss_soc.detach())
+            totals["dis"] += float(loss_dis.detach())
+            totals["total"] += float(loss.detach())
+            batches += 1
+        epoch_metrics = {name: value / max(batches, 1) for name, value in totals.items()}
+        epoch_metrics["learning_rate"] = optimizer.param_groups[0]["lr"]
+        history.append(epoch_metrics)
+        if scheduler is not None:
+            scheduler.step(epoch_metrics["total"])
+        # No target labels are available for model selection (source-free);
+        # select on the training objective itself, as the released reference
+        # implementation does.
+        if _improved(epoch_metrics["total"], best_loss, min_delta):
+            best_loss = epoch_metrics["total"]
+            best_state = deepcopy(model.target_extractor.state_dict())
+            stale_epochs = 0
+        else:
+            stale_epochs += 1
+        if (
+            early_stopping_patience is not None
+            and len(history) >= min_epochs
+            and stale_epochs >= early_stopping_patience
+        ):
+            break
+    assert best_state is not None
+    model.target_extractor.load_state_dict(best_state)
+    return model, history
+
+
+def target_cycles_excluding(
+    target_cycles: dict[str, ShenCycle], test_profile: str
+) -> list[ShenCycle]:
+    """Every target-domain profile except the held-out test profile."""
+
+    return [target_cycles[p] for p in PROFILES if p in target_cycles and p != test_profile]
+
+
+def adapt_med(
+    source_model: MEDNet,
+    target_cycles: dict[str, ShenCycle] | list[ShenCycle],
+    *,
+    test_profile: str | None,
+    epochs: int,
+    batch_size: int,
+    learning_rate: float,
+    device: torch.device,
+    seed: int,
+    lambdas: tuple[float, float] = (1.0, 0.1),
+    pseudo_threshold: float = 0.08,
+    pseudo_lookahead: int = 200,
+    early_stopping_patience: int | None = None,
+    min_epochs: int = 0,
+    min_delta: float = 1e-4,
+    tensor_layout: str = "paper",
+) -> tuple[MEDNet, list[dict[str, float]], dict[str, int]]:
+    """Paper-faithful, source-free MED transfer for the in-paper suite.
+
+    ``target_cycles`` may be the full per-temperature profile dict (paper
+    cross-temperature transfer, ``test_profile`` held out) or an arbitrary
+    list of cycles (e.g. CMU eVTOL missions with no notion of "profile").
+    """
+
+    if isinstance(target_cycles, dict):
+        if test_profile is None:
+            raise ValueError("test_profile is required when target_cycles is a profile dict")
+        adaptation_cycles = target_cycles_excluding(target_cycles, test_profile)
+    else:
+        adaptation_cycles = list(target_cycles)
+
+    dataset, info = build_pseudo_target_dataset(
+        source_model,
+        adaptation_cycles,
+        device,
+        threshold=pseudo_threshold,
+        lookahead=pseudo_lookahead,
+        tensor_layout=tensor_layout,
+    )
+    if len(dataset) == 0:
+        return deepcopy(source_model), [], info
+    model, history = med_adapt(
+        source_model,
+        dataset,
+        epochs=epochs,
+        batch_size=batch_size,
+        learning_rate=learning_rate,
+        device=device,
+        seed=seed,
+        lambdas=lambdas,
+        early_stopping_patience=early_stopping_patience,
+        min_epochs=min_epochs,
+        min_delta=min_delta,
+    )
+    return model, history, info
+
+
+# ---------------------------------------------------------------------------
+# DANN + MMD baseline (Table VI "adversarial"/"MMD" comparison rows).
+# ---------------------------------------------------------------------------
 
 
 def train_source(
@@ -77,11 +468,13 @@ def train_source(
     min_epochs: int = 0,
     min_delta: float = 1e-4,
     tensor_layout: str = "paper",
-) -> tuple[TATN, list[float]]:
+) -> tuple[DANNBaselineNet, list[float]]:
+    """Single-head source pretraining for the DANN+MMD baseline only."""
+
     seed_everything(seed)
     x, y = windows([cycles[p] for p in PROFILES if p in cycles], tensor_layout)
     loader = _loader(x, y, batch_size, True)
-    model = TATN().to(device)
+    model = DANNBaselineNet().to(device)
     optimizer = torch.optim.Adam(
         (*model.source_extractor.parameters(), *model.predictor.parameters()),
         lr=learning_rate,
@@ -149,43 +542,16 @@ def train_source(
     return model, history
 
 
-def load_source(checkpoint: str | Path, device: torch.device) -> TATN:
+def load_source(checkpoint: str | Path, device: torch.device) -> DANNBaselineNet:
     payload = torch.load(checkpoint, map_location=device, weights_only=False)
-    model = TATN().to(device)
+    model = DANNBaselineNet().to(device)
     model.load_source_state_dict(payload["source_state_dict"])
-    return model
-
-
-def load_released_source(checkpoint: str | Path, device: torch.device) -> TATN:
-    """Load a source checkpoint from the authors' released TATN repository."""
-
-    payload = torch.load(checkpoint, map_location=device, weights_only=True)
-    model = TATN().to(device)
-    model.source_extractor.conv.load_state_dict(
-        {key.removeprefix("conv."): value for key, value in payload["conv"].items()}
-    )
-    for name in ("lstm1", "lstm2"):
-        prefix = f"{name}.0."
-        getattr(model.source_extractor, name).load_state_dict(
-            {
-                key.removeprefix(prefix): value
-                for key, value in payload["lstm"].items()
-                if key.startswith(prefix)
-            }
-        )
-    model.predictor.layers[0].load_state_dict(
-        {key.removeprefix("fc.0."): value for key, value in payload["fc"].items()}
-    )
-    model.predictor.layers[2].load_state_dict(
-        {key.removeprefix("fc."): value for key, value in payload["regression"].items()}
-    )
-    model.initialize_target()
     return model
 
 
 @torch.no_grad()
 def _cycle_prediction(
-    model: TATN,
+    model: DANNBaselineNet,
     cycle: ShenCycle,
     device: torch.device,
     tensor_layout: str = "paper",
@@ -203,7 +569,7 @@ def _cycle_prediction(
 
 
 def target_training_windows(
-    source_model: TATN,
+    source_model: DANNBaselineNet,
     target_cycles: dict[str, ShenCycle] | list[ShenCycle],
     test_profile: str | None,
     scenario: str,
@@ -269,8 +635,8 @@ def target_training_windows(
     }
 
 
-def adapt(
-    source_model: TATN,
+def adapt_dann_mmd(
+    source_model: DANNBaselineNet,
     source_cycles: dict[str, ShenCycle],
     target_cycles: dict[str, ShenCycle] | list[ShenCycle],
     *,
@@ -287,7 +653,7 @@ def adapt(
     min_epochs: int = 0,
     min_delta: float = 1e-4,
     tensor_layout: str = "paper",
-) -> tuple[TATN, list[dict[str, float]], dict[str, int | str | None]]:
+) -> tuple[DANNBaselineNet, list[dict[str, float]], dict[str, int | str | None]]:
     seed_everything(seed)
     model = deepcopy(source_model).to(device)
     model.initialize_target()
@@ -391,19 +757,3 @@ def adapt(
     assert best_state is not None
     model.target_extractor.load_state_dict(best_state)
     return model, history, target_info
-
-
-def evaluate_cycle(
-    model: TATN,
-    cycle: ShenCycle,
-    device: torch.device,
-    tensor_layout: str = "paper",
-) -> dict[str, float]:
-    truth, estimate = predict(model, [cycle], device, tensor_layout)
-    return compute_metrics(truth, estimate)
-
-
-def save_json(path: str | Path, payload: object) -> None:
-    path = Path(path)
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(json.dumps(payload, indent=2), encoding="utf-8")
