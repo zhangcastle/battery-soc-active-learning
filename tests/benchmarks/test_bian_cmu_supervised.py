@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+import ast
 import importlib.util
+import json
 import math
 import sys
 from pathlib import Path
@@ -768,3 +770,73 @@ def test_streaming_writer_failure_path_leaves_incomplete_file_and_raises(tmp_pat
     # exactly the one chunk written before the failure.
     frame = pq.read_table(tmp_output).to_pandas()
     assert len(frame) == 3
+
+
+def test_run_metadata_records_validation_interval_and_label_usage_flags() -> None:
+    """run.json's metadata must record args.validation_interval and the
+    three target_validation_labels_used_for_* flags with the exact values
+    the user asked for: diagnostics=True, training=False,
+    checkpoint_selection=False. This is pure metadata/bookkeeping -- no
+    computation -- so it's checked directly against _build_run_metadata's
+    return value rather than by running the full pipeline."""
+
+    args = SimpleNamespace(
+        validation_interval=7,
+        panasonic_data_root=Path("/data/panasonic"),
+        seed=1,
+        repeats=2,
+    )
+    runs = [{"repeat": 1, "cell_id": "VAH01"}]
+
+    metadata = module._build_run_metadata(args, runs)
+
+    assert metadata["validation_interval"] == 7
+    assert metadata["target_validation_labels_used_for_diagnostics"] is True
+    assert metadata["target_validation_labels_used_for_training"] is False
+    assert metadata["target_validation_labels_used_for_checkpoint_selection"] is False
+    # Untouched existing flags/fields must still be present and correct.
+    assert metadata["target_soc_labels_used_for_adaptation"] is True
+    assert metadata["target_soc_labels_used_for_checkpoint_selection"] is False
+    assert metadata["label_is_ground_truth"] is False
+    assert metadata["formal_benchmark_eligible"] is False
+    assert metadata["runs"] is runs
+    # Path-typed argument values are still stringified for JSON-safety.
+    assert metadata["arguments"]["panasonic_data_root"] == "/data/panasonic"
+    assert metadata["arguments"]["validation_interval"] == 7
+
+
+def test_run_metadata_is_json_serializable() -> None:
+    """run.json is written with json.dumps(metadata) -- guard against a
+    future field sneaking in a non-JSON-serializable value (e.g. a raw
+    Path or numpy scalar)."""
+
+    args = SimpleNamespace(validation_interval=10, output_root=Path("/tmp/out"))
+    metadata = module._build_run_metadata(args, runs=[{"repeat": 1}])
+
+    json.dumps(metadata)  # must not raise
+
+
+def test_run_json_metadata_uses_validation_missions_diagnostic_not_unused() -> None:
+    """Static regression check on the script source: the per-run dict
+    built inside main() (the ``runs.append({...})`` literal) must key the
+    validation-split mission count as ``validation_missions_diagnostic``
+    -- reflecting that it's now used for the periodic validation
+    diagnostic -- and must never reintroduce the old
+    ``validation_missions_unused`` key as an actual dict key (a mention in
+    a comment, such as the one documenting the rename, is fine)."""
+
+    source = SCRIPT.read_text()
+    tree = ast.parse(source)
+
+    dict_keys_containing_validation_missions = set()
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Dict):
+            for key in node.keys:
+                if (
+                    isinstance(key, ast.Constant)
+                    and isinstance(key.value, str)
+                    and "validation_missions" in key.value
+                ):
+                    dict_keys_containing_validation_missions.add(key.value)
+
+    assert dict_keys_containing_validation_missions == {"validation_missions_diagnostic"}

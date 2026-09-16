@@ -486,6 +486,47 @@ def _cell_path(cell, base_root, condition_root):
     return root / f"{cell}_dynamic_soc.parquet"
 
 
+def _build_run_metadata(args, runs):
+    """Builds the run.json metadata dict -- pure bookkeeping, no
+    computation. Factored out of main() so it can be unit tested without
+    running the full CMU/Panasonic pipeline. validation_interval and the
+    three target_validation_labels_used_for_* flags document the
+    (diagnostic-only) validation split's role: it feeds
+    validation_mae/validation_rmse in training_history.csv (see _adapt's
+    docstring), and nothing else -- never training, adaptation, or
+    checkpoint/model selection."""
+    return {
+        "benchmark": "bian_2021_panasonic_multitemperature_to_cmu_supervised_development",
+        "architecture": "CNN1->CNN2->two-layer-BiLSTM->FC->sequence-regression",
+        "mmd_layers": ["CNN2", "BiLSTM2", "FC"],
+        "objective": "source_mse + 5*target_mse + 0.1*adaptive_multiscale_mmd",
+        "source_profiles": list(SOURCE_PROFILES),
+        "source_temperatures_c": list(TEMPERATURES),
+        "feature_order": list(FEATURES),
+        "normalization": "source-global min-max applied unchanged to target",
+        "target_protocol": "start at initial SOC; first 30% adapt; remaining 70% test",
+        "target_soc_labels_used_for_adaptation": True,
+        "target_soc_labels_used_for_checkpoint_selection": False,
+        "target_soc_reference_used_for_posthoc_evaluation": True,
+        # Metadata only, describing the (diagnostic-only) validation split
+        # recorded per-run as validation_missions_diagnostic in each
+        # `runs` entry -- does not change what's computed.
+        # validation_interval mirrors args.validation_interval (also
+        # present under "arguments" below); repeated here at the top
+        # level, alongside the target_soc_labels_* flags, so the
+        # validation split's role is discoverable without having to know
+        # it lives under "arguments".
+        "validation_interval": args.validation_interval,
+        "target_validation_labels_used_for_diagnostics": True,
+        "target_validation_labels_used_for_training": False,
+        "target_validation_labels_used_for_checkpoint_selection": False,
+        "label_is_ground_truth": False,
+        "formal_benchmark_eligible": False,
+        "arguments": {k: str(v) if isinstance(v, Path) else v for k, v in vars(args).items()},
+        "runs": runs,
+    }
+
+
 def parse_args():
     parser = argparse.ArgumentParser()
     parser.add_argument(
@@ -704,7 +745,15 @@ def main():
                         "adaptation_fraction_within_mission": args.adapt_fraction,
                         "adaptation_missions": len(adapt_missions),
                         "adaptation_windows": len(adapt_x),
-                        "validation_missions_unused": len(validation_ids),
+                        # Renamed from validation_missions_unused: these
+                        # missions ARE used now, for the periodic
+                        # validation_mae/validation_rmse diagnostic in
+                        # training_history.csv (see validation_interval and
+                        # the target_validation_labels_used_for_* flags
+                        # below) -- just never for training, adaptation, or
+                        # checkpoint/model selection. Value is unchanged
+                        # (still len(validation_ids)).
+                        "validation_missions_diagnostic": len(validation_ids),
                         "training_final_batch": training,
                     }
                 )
@@ -753,24 +802,7 @@ def main():
         .reset_index()
     )
     summary.to_csv(args.output_root / "summary.csv", index=False)
-    metadata = {
-        "benchmark": "bian_2021_panasonic_multitemperature_to_cmu_supervised_development",
-        "architecture": "CNN1->CNN2->two-layer-BiLSTM->FC->sequence-regression",
-        "mmd_layers": ["CNN2", "BiLSTM2", "FC"],
-        "objective": "source_mse + 5*target_mse + 0.1*adaptive_multiscale_mmd",
-        "source_profiles": list(SOURCE_PROFILES),
-        "source_temperatures_c": list(TEMPERATURES),
-        "feature_order": list(FEATURES),
-        "normalization": "source-global min-max applied unchanged to target",
-        "target_protocol": "start at initial SOC; first 30% adapt; remaining 70% test",
-        "target_soc_labels_used_for_adaptation": True,
-        "target_soc_labels_used_for_checkpoint_selection": False,
-        "target_soc_reference_used_for_posthoc_evaluation": True,
-        "label_is_ground_truth": False,
-        "formal_benchmark_eligible": False,
-        "arguments": {k: str(v) if isinstance(v, Path) else v for k, v in vars(args).items()},
-        "runs": runs,
-    }
+    metadata = _build_run_metadata(args, runs)
     (args.output_root / "run.json").write_text(json.dumps(metadata, indent=2), encoding="utf-8")
     print(summary.to_string(index=False))
 
