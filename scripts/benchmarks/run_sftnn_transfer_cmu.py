@@ -41,6 +41,7 @@ import argparse
 import json
 import random
 import sys
+import time
 from copy import deepcopy
 from pathlib import Path
 
@@ -87,6 +88,26 @@ def _seed(value: int) -> None:
     random.seed(value)
     np.random.seed(value)
     torch.manual_seed(value)
+
+
+class _Timer:
+    """Wall-clock stopwatch. CUDA ops are async, so any timed block that ran
+    on GPU is synced before stopping -- otherwise the measured duration would
+    just be launch-overhead, not actual compute time."""
+
+    def __init__(self, device: torch.device) -> None:
+        self.device = device
+
+    def __enter__(self) -> "_Timer":
+        if self.device.type == "cuda":
+            torch.cuda.synchronize()
+        self._start = time.perf_counter()
+        return self
+
+    def __exit__(self, *exc) -> None:
+        if self.device.type == "cuda":
+            torch.cuda.synchronize()
+        self.seconds = time.perf_counter() - self._start
 
 
 def _cell_path(cell: str, base_root: Path, condition_root: Path) -> Path:
@@ -207,6 +228,28 @@ def parse_args() -> argparse.Namespace:
     return parser.parse_args()
 
 
+def _save_timing(seed_root: Path, name: str, *, seconds: float | None, epochs: int | None, device: str) -> None:
+    """Persist a pretraining timing record so it survives --resume: if this
+    run resumed from a checkpoint instead of retraining, we still want the
+    original run's timing available for the rows written this time."""
+
+    seed_root.mkdir(parents=True, exist_ok=True)
+    path = seed_root / f"{name}_timing.json"
+    if seconds is None:
+        return  # nothing new measured this run; leave any existing file alone
+    path.write_text(
+        json.dumps({"seconds": seconds, "epochs": epochs, "device": device}, indent=2),
+        encoding="utf-8",
+    )
+
+
+def _load_timing(seed_root: Path, name: str) -> dict:
+    path = seed_root / f"{name}_timing.json"
+    if path.is_file():
+        return json.loads(path.read_text(encoding="utf-8"))
+    return {"seconds": None, "epochs": None, "device": None}
+
+
 def _rebuild_cell_metrics(output_root: Path) -> pd.DataFrame:
     """Aggregate every per-(method, seed, cell) result JSON under output_root,
     the same merge-not-overwrite convention run_backbone_transfer_cmu.py
@@ -221,6 +264,7 @@ def _rebuild_cell_metrics(output_root: Path) -> pd.DataFrame:
 
 
 def main() -> None:
+    run_start = time.perf_counter()
     args = parse_args()
     device = get_device(args.device)
     args.output_root.mkdir(parents=True, exist_ok=True)
@@ -236,40 +280,62 @@ def main() -> None:
         med_checkpoint = seed_root / "med_source.pt"
         dann_checkpoint = seed_root / "dann_source.pt"
 
+        med_pretrain_seconds = None
+        med_pretrain_epochs = None
         _seed(seed)
         if args.resume and med_checkpoint.is_file():
             med_source = load_med_source(med_checkpoint, device)
             print(f"=== seed {seed}: resumed MED source checkpoint from {med_checkpoint} ===")
         else:
             print(f"=== seed {seed}: MED source pretraining, max {args.source_epochs} epochs ===")
-            med_source, _ = pretrain_med(
-                source_cycles,
-                epochs=args.source_epochs,
-                batch_size=args.batch_size,
-                learning_rate=args.lr,
-                device=device,
-                seed=seed,
-                checkpoint=None if args.no_save_checkpoints else med_checkpoint,
-                early_stopping_patience=args.early_stopping_patience,
-            )
-
-        dann_source = None
-        if "dann_mmd" in args.methods:
-            if args.resume and dann_checkpoint.is_file():
-                dann_source = load_dann_source(dann_checkpoint, device)
-                print(f"=== seed {seed}: resumed DANN+MMD source checkpoint from {dann_checkpoint} ===")
-            else:
-                print(f"=== seed {seed}: DANN+MMD source pretraining, max {args.source_epochs} epochs ===")
-                dann_source, _ = train_dann_source(
+            with _Timer(device) as timer:
+                med_source, med_pretrain_history = pretrain_med(
                     source_cycles,
                     epochs=args.source_epochs,
                     batch_size=args.batch_size,
                     learning_rate=args.lr,
                     device=device,
                     seed=seed,
-                    checkpoint=None if args.no_save_checkpoints else dann_checkpoint,
+                    checkpoint=None if args.no_save_checkpoints else med_checkpoint,
                     early_stopping_patience=args.early_stopping_patience,
                 )
+            med_pretrain_seconds = timer.seconds
+            med_pretrain_epochs = len(med_pretrain_history)
+            print(f"    done in {med_pretrain_seconds:.1f}s ({med_pretrain_epochs} epochs)")
+        _save_timing(
+            seed_root, "med_source_pretrain",
+            seconds=med_pretrain_seconds, epochs=med_pretrain_epochs, device=str(device),
+        )
+        med_pretrain_timing = _load_timing(seed_root, "med_source_pretrain")
+
+        dann_source = None
+        dann_pretrain_seconds = None
+        dann_pretrain_epochs = None
+        if "dann_mmd" in args.methods:
+            if args.resume and dann_checkpoint.is_file():
+                dann_source = load_dann_source(dann_checkpoint, device)
+                print(f"=== seed {seed}: resumed DANN+MMD source checkpoint from {dann_checkpoint} ===")
+            else:
+                print(f"=== seed {seed}: DANN+MMD source pretraining, max {args.source_epochs} epochs ===")
+                with _Timer(device) as timer:
+                    dann_source, dann_pretrain_history = train_dann_source(
+                        source_cycles,
+                        epochs=args.source_epochs,
+                        batch_size=args.batch_size,
+                        learning_rate=args.lr,
+                        device=device,
+                        seed=seed,
+                        checkpoint=None if args.no_save_checkpoints else dann_checkpoint,
+                        early_stopping_patience=args.early_stopping_patience,
+                    )
+                dann_pretrain_seconds = timer.seconds
+                dann_pretrain_epochs = len(dann_pretrain_history)
+                print(f"    done in {dann_pretrain_seconds:.1f}s ({dann_pretrain_epochs} epochs)")
+            _save_timing(
+                seed_root, "dann_source_pretrain",
+                seconds=dann_pretrain_seconds, epochs=dann_pretrain_epochs, device=str(device),
+            )
+        dann_pretrain_timing = _load_timing(seed_root, "dann_source_pretrain")
 
         for cell in args.cells:
             cell_root = seed_root / cell
@@ -292,40 +358,50 @@ def main() -> None:
                     continue
 
                 extra = {}
+                timing = {"pseudo_label_seconds": None, "adapt_seconds": None}
                 if method == "zero_shot":
-                    metrics = _evaluate(med_source, test_cycles, device, branch="source")
+                    with _Timer(device) as eval_timer:
+                        metrics = _evaluate(med_source, test_cycles, device, branch="source")
                 elif method == "med":
-                    dataset, info = build_pseudo_target_dataset(
-                        med_source, train_cycles, device,
-                        threshold=args.pseudo_threshold, lookahead=args.pseudo_lookahead,
-                    )
+                    with _Timer(device) as pseudo_timer:
+                        dataset, info = build_pseudo_target_dataset(
+                            med_source, train_cycles, device,
+                            threshold=args.pseudo_threshold, lookahead=args.pseudo_lookahead,
+                        )
                     if len(dataset) == 0:
                         raise RuntimeError(
                             f"{cell}: no pseudo-labels survived confidence filtering; "
                             "try a higher --pseudo-threshold"
                         )
-                    adapted, history = med_adapt(
-                        med_source, dataset,
-                        epochs=args.transfer_epochs, batch_size=args.batch_size,
-                        learning_rate=args.transfer_lr, device=device, seed=seed,
-                        lambdas=(args.med_lambda_soc, args.med_lambda_dis),
-                        early_stopping_patience=args.early_stopping_patience,
-                    )
-                    metrics = _evaluate(adapted, test_cycles, device, branch="target")
+                    with _Timer(device) as adapt_timer:
+                        adapted, history = med_adapt(
+                            med_source, dataset,
+                            epochs=args.transfer_epochs, batch_size=args.batch_size,
+                            learning_rate=args.transfer_lr, device=device, seed=seed,
+                            lambdas=(args.med_lambda_soc, args.med_lambda_dis),
+                            early_stopping_patience=args.early_stopping_patience,
+                        )
+                    with _Timer(device) as eval_timer:
+                        metrics = _evaluate(adapted, test_cycles, device, branch="target")
+                    timing["pseudo_label_seconds"] = pseudo_timer.seconds
+                    timing["adapt_seconds"] = adapt_timer.seconds
                     extra = {"pseudo_label_info": info, "epochs_completed": len(history)}
                     if not args.no_save_checkpoints:
                         cell_root.mkdir(parents=True, exist_ok=True)
                         torch.save(adapted.target_extractor.state_dict(), cell_root / "med.pt")
                 elif method == "dann_mmd":
                     assert dann_source is not None
-                    adapted, history, info = _adapt_dann_mmd(
-                        dann_source, source_cycles, train_cycles,
-                        test_profile=None, scenario="unsupervised",
-                        epochs=args.transfer_epochs, batch_size=args.batch_size,
-                        learning_rate=args.transfer_lr, lambdas=tuple(args.dann_lambdas),
-                        device=device, seed=seed,
-                    )
-                    metrics = _evaluate(adapted, test_cycles, device, branch="target")
+                    with _Timer(device) as adapt_timer:
+                        adapted, history, info = _adapt_dann_mmd(
+                            dann_source, source_cycles, train_cycles,
+                            test_profile=None, scenario="unsupervised",
+                            epochs=args.transfer_epochs, batch_size=args.batch_size,
+                            learning_rate=args.transfer_lr, lambdas=tuple(args.dann_lambdas),
+                            device=device, seed=seed,
+                        )
+                    with _Timer(device) as eval_timer:
+                        metrics = _evaluate(adapted, test_cycles, device, branch="target")
+                    timing["adapt_seconds"] = adapt_timer.seconds
                     extra = {"pseudo_label_info": info, "epochs_completed": len(history)}
                     if not args.no_save_checkpoints:
                         cell_root.mkdir(parents=True, exist_ok=True)
@@ -337,6 +413,14 @@ def main() -> None:
                     "method": method,
                     "cell_id": cell,
                     "seed": seed,
+                    "device": str(device),
+                    "med_source_pretrain_seconds": med_pretrain_timing["seconds"],
+                    "med_source_pretrain_epochs": med_pretrain_timing["epochs"],
+                    "dann_source_pretrain_seconds": dann_pretrain_timing["seconds"],
+                    "dann_source_pretrain_epochs": dann_pretrain_timing["epochs"],
+                    "pseudo_label_seconds": timing["pseudo_label_seconds"],
+                    "adapt_seconds": timing["adapt_seconds"],
+                    "eval_seconds": eval_timer.seconds,
                     "cmu_input_sha256": actual,
                     "n_train_missions": len(train_cycles),
                     "n_test_missions": len(test_cycles),
@@ -345,9 +429,13 @@ def main() -> None:
                     **extra,
                     **metrics,
                 }
+                row_seconds = sum(
+                    s for s in (timing["pseudo_label_seconds"], timing["adapt_seconds"], eval_timer.seconds)
+                    if s is not None
+                )
                 print(
                     f"  {cell}/{method}: MAE={metrics['overall_mae_percent']:.3f}% "
-                    f"RMSE={metrics['overall_rmse_percent']:.3f}%"
+                    f"RMSE={metrics['overall_rmse_percent']:.3f}% ({row_seconds:.1f}s)"
                 )
                 cell_root.mkdir(parents=True, exist_ok=True)
                 result_path.write_text(json.dumps(row, indent=2), encoding="utf-8")
@@ -392,6 +480,13 @@ def main() -> None:
         "formal_benchmark_eligible": False,
         "git_commit": get_full_commit_hash(REPO_ROOT),
         "git_dirty": is_dirty(REPO_ROOT),
+        # Wall-clock time spent by *this invocation* only -- with --resume,
+        # anything skipped because a result file already existed is not
+        # counted here. Per-row timing breakdowns (pretrain/pseudo-label/
+        # adapt/eval seconds, plus the device they ran on) live in
+        # cell_metrics.csv, which is cumulative across every invocation.
+        "this_invocation_wall_seconds": time.perf_counter() - run_start,
+        "device": str(device),
     }
     metadata_path = args.output_root / "run_metadata.json"
     if metadata_path.is_file():
@@ -399,6 +494,7 @@ def main() -> None:
         metadata["methods"] = sorted(set(previous.get("methods", [])) | set(metadata["methods"]))
     metadata_path.write_text(json.dumps(metadata, indent=2), encoding="utf-8")
     print(table.to_string(index=False))
+    print(f"\nthis invocation took {metadata['this_invocation_wall_seconds']:.1f}s wall-clock")
 
 
 if __name__ == "__main__":
