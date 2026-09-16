@@ -309,3 +309,81 @@ def test_evaluate_target_last_raw_end_conditions_default_to_nan_when_unavailable
     assert math.isnan(frame["voltage_v_end"].iloc[0])
     assert math.isnan(frame["current_a_end"].iloc[0])
     assert math.isnan(frame["temperature_c_end"].iloc[0])
+
+
+def test_evaluate_target_last_provenance_passthrough() -> None:
+    """capacity_ah/capacity_source/source_rpt_id must be the exact raw
+    provenance values passed in via raw_provenance_by_source_row, joined on
+    source_row_right -- same convention as the voltage/current/temperature
+    raw lookup. Not used by training or metric calculation."""
+
+    windows = _synthetic_prediction_windows()  # source_row_right: 1000, 2000
+    raw_provenance_by_source_row = {
+        1000: (4.85, "rpt_measured", "cmu_v3_rpt_capacity_v1:VAH01:b0:s787:e19120"),
+        2000: (4.79, "rpt_measured", "cmu_v3_rpt_capacity_v1:VAH01:b1:s900:e20500"),
+    }
+    torch.manual_seed(0)
+    model = module.VidalLSTM()
+    frame, _result = module.evaluate_target_last(
+        model, windows, phase_by_source_row={}, batch_size=8, device=torch.device("cpu"),
+        raw_provenance_by_source_row=raw_provenance_by_source_row,
+    )
+
+    assert {"capacity_ah", "capacity_source", "source_rpt_id"} <= set(frame.columns)
+    by_mission = frame.set_index("mission_cycle_id")
+    assert by_mission.loc["m1", "capacity_ah"] == 4.85
+    assert by_mission.loc["m1", "capacity_source"] == "rpt_measured"
+    assert by_mission.loc["m1", "source_rpt_id"] == "cmu_v3_rpt_capacity_v1:VAH01:b0:s787:e19120"
+    assert by_mission.loc["m2", "capacity_ah"] == 4.79
+    assert by_mission.loc["m2", "source_rpt_id"] == "cmu_v3_rpt_capacity_v1:VAH01:b1:s900:e20500"
+
+
+def test_evaluate_target_last_missing_source_rpt_id_stays_none_not_nan_string() -> None:
+    """A genuinely missing source_rpt_id (and capacity_source) must survive
+    as a real null (None / NaN in the DataFrame), never the literal string
+    'nan' -- this is the exact failure mode of naively .astype(str)'ing a
+    column that contains missing values, which the phase_by_source_row
+    lookup above (development_phase_role) already does; the new provenance
+    lookup deliberately does not follow that pattern."""
+
+    windows = _synthetic_prediction_windows()  # source_row_right: 1000, 2000
+    raw_provenance_by_source_row = {
+        1000: (4.85, "rpt_measured", "cmu_v3_rpt_capacity_v1:VAH01:b0:s787:e19120"),
+        2000: (None, None, None),  # e.g. a phase with no RPT reference at all
+    }
+    torch.manual_seed(0)
+    model = module.VidalLSTM()
+    frame, _result = module.evaluate_target_last(
+        model, windows, phase_by_source_row={}, batch_size=8, device=torch.device("cpu"),
+        raw_provenance_by_source_row=raw_provenance_by_source_row,
+    )
+
+    by_mission = frame.set_index("mission_cycle_id")
+    missing_source_rpt_id = by_mission.loc["m2", "source_rpt_id"]
+    missing_capacity_source = by_mission.loc["m2", "capacity_source"]
+    missing_capacity_ah = by_mission.loc["m2", "capacity_ah"]
+
+    assert missing_source_rpt_id != "nan"
+    assert missing_capacity_source != "nan"
+    assert pd.isna(missing_source_rpt_id) or missing_source_rpt_id is None
+    assert pd.isna(missing_capacity_source) or missing_capacity_source is None
+    assert pd.isna(missing_capacity_ah)
+
+    # Untouched row (m1) still round-trips correctly alongside the missing one.
+    assert by_mission.loc["m1", "source_rpt_id"] == "cmu_v3_rpt_capacity_v1:VAH01:b0:s787:e19120"
+
+
+def test_evaluate_target_last_provenance_defaults_to_none_when_unavailable() -> None:
+    """Callers that don't pass raw_provenance_by_source_row must not crash;
+    the new columns are present but None/NaN, never fabricated or 'nan'."""
+
+    windows = _synthetic_prediction_windows()
+    torch.manual_seed(0)
+    model = module.VidalLSTM()
+    frame, _result = module.evaluate_target_last(
+        model, windows, phase_by_source_row={}, batch_size=8, device=torch.device("cpu"),
+    )
+    assert pd.isna(frame["capacity_ah"].iloc[0])
+    assert pd.isna(frame["capacity_source"].iloc[0]) or frame["capacity_source"].iloc[0] is None
+    assert pd.isna(frame["source_rpt_id"].iloc[0]) or frame["source_rpt_id"].iloc[0] is None
+    assert frame["source_rpt_id"].iloc[0] != "nan"

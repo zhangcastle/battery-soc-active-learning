@@ -259,6 +259,8 @@ def evaluate_target_last(
     device: torch.device,
     *,
     raw_features_by_source_row: dict[int, tuple[float, float, float]] | None = None,
+    raw_provenance_by_source_row: dict[int, tuple[float | None, str | None, str | None]]
+    | None = None,
 ) -> tuple[pd.DataFrame, dict[str, float]]:
     loader = DataLoader(
         Case1WindowDataset(windows), batch_size=batch_size, shuffle=False
@@ -287,6 +289,20 @@ def evaluate_target_last(
             voltage_v_end, current_a_end, temperature_c_end = (
                 raw_features if raw_features is not None else (math.nan, math.nan, math.nan)
             )
+            # Provenance fields at the window's end row -- also looked up by
+            # source_row from the raw parquet, not touched by training or
+            # metrics. A genuinely missing source_rpt_id/capacity_source
+            # stays None here (see raw_provenance_by_source_row in
+            # run_setting, which maps pd.isna() -> None) so it round-trips
+            # as a real null in the output parquet, never the text "nan".
+            raw_provenance = (
+                raw_provenance_by_source_row.get(source_row)
+                if raw_provenance_by_source_row is not None
+                else None
+            )
+            capacity_ah, capacity_source, source_rpt_id = (
+                raw_provenance if raw_provenance is not None else (None, None, None)
+            )
             rows.append(
                 {
                     "cell_id": metadata["cell_id"],
@@ -311,6 +327,9 @@ def evaluate_target_last(
                     "voltage_v_end": voltage_v_end,
                     "current_a_end": current_a_end,
                     "temperature_c_end": temperature_c_end,
+                    "capacity_ah": capacity_ah,
+                    "capacity_source": capacity_source,
+                    "source_rpt_id": source_rpt_id,
                 }
             )
     frame = pd.DataFrame(rows)
@@ -392,6 +411,9 @@ def run_setting(
                 "voltage_v",
                 "current_a",
                 "Temperature__C",
+                "capacity_ah",
+                "capacity_source",
+                "source_rpt_id",
             ],
         )
         phase_by_source_row = dict(
@@ -411,6 +433,23 @@ def run_setting(
                 raw_phase["voltage_v"],
                 raw_phase["current_a"],
                 raw_phase["Temperature__C"],
+            )
+        }
+        # Provenance fields keyed the same way. pd.isna() -> None explicitly
+        # (rather than e.g. .astype(str), which would turn a missing
+        # source_rpt_id into the literal string "nan") so a missing
+        # source_rpt_id/capacity_source round-trips as a real null, not text.
+        raw_provenance_by_source_row = {
+            int(row): (
+                float(capacity_ah) if pd.notna(capacity_ah) else None,
+                capacity_source if pd.notna(capacity_source) else None,
+                source_rpt_id if pd.notna(source_rpt_id) else None,
+            )
+            for row, capacity_ah, capacity_source, source_rpt_id in zip(
+                raw_phase["source_row"],
+                raw_phase["capacity_ah"],
+                raw_phase["capacity_source"],
+                raw_phase["source_rpt_id"],
             )
         }
         adapted = load_cmu_dynamic_soc_for_vidal([source_path], target_hz=1.0)
@@ -492,10 +531,12 @@ def run_setting(
             cfg.batch_size,
             device,
             raw_features_by_source_row=raw_features_by_source_row,
+            raw_provenance_by_source_row=raw_provenance_by_source_row,
         )
         test_predictions, test_metrics = evaluate_target_last(
             model, test_windows, phase_by_source_row, cfg.batch_size, device,
             raw_features_by_source_row=raw_features_by_source_row,
+            raw_provenance_by_source_row=raw_provenance_by_source_row,
         )
 
         cell_dir = run_root / cell_id
