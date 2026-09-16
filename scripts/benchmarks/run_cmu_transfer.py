@@ -257,6 +257,8 @@ def evaluate_target_last(
     phase_by_source_row: dict[int, str],
     batch_size: int,
     device: torch.device,
+    *,
+    raw_features_by_source_row: dict[int, tuple[float, float, float]] | None = None,
 ) -> tuple[pd.DataFrame, dict[str, float]]:
     loader = DataLoader(
         Case1WindowDataset(windows), batch_size=batch_size, shuffle=False
@@ -271,6 +273,20 @@ def evaluate_target_last(
             reference = float(y[batch_index, target_index])
             prediction = float(predictions[batch_index, target_index])
             source_row = int(metadata["source_row_right"])
+            # Raw operating conditions at the window's end row -- looked up
+            # by source_row directly from the raw parquet's own voltage_v/
+            # current_a/Temperature__C columns (see raw_features_by_source_row
+            # in run_setting). NEVER derived from x (the scaler-normalized
+            # model input) or from the windows.metadata voltage/current/
+            # temperature aliases, which are normalized/resampled, not raw.
+            raw_features = (
+                raw_features_by_source_row.get(source_row)
+                if raw_features_by_source_row is not None
+                else None
+            )
+            voltage_v_end, current_a_end, temperature_c_end = (
+                raw_features if raw_features is not None else (math.nan, math.nan, math.nan)
+            )
             rows.append(
                 {
                     "cell_id": metadata["cell_id"],
@@ -292,6 +308,9 @@ def evaluate_target_last(
                     "mission_sequence_order": int(metadata["sequence_order"]),
                     "elapsed_candidate_s_end": float(metadata["elapsed_candidate_s_end"]),
                     "original_time_s_end": float(metadata["original_time_s_end"]),
+                    "voltage_v_end": voltage_v_end,
+                    "current_a_end": current_a_end,
+                    "temperature_c_end": temperature_c_end,
                 }
             )
     frame = pd.DataFrame(rows)
@@ -367,7 +386,13 @@ def run_setting(
         source_path = _cell_path(cell_id, base_root, extension_root)
         raw_phase = pd.read_parquet(
             source_path,
-            columns=["source_row", "development_phase_role"],
+            columns=[
+                "source_row",
+                "development_phase_role",
+                "voltage_v",
+                "current_a",
+                "Temperature__C",
+            ],
         )
         phase_by_source_row = dict(
             zip(
@@ -375,6 +400,19 @@ def run_setting(
                 raw_phase["development_phase_role"].astype(str),
             )
         )
+        # Raw, UNNORMALIZED CMU field values keyed by the raw parquet's own
+        # source_row -- read directly from source_path, never derived from
+        # the scaler-transformed model-input windows. Same source_row join
+        # convention already used for phase_by_source_row above.
+        raw_features_by_source_row = {
+            int(row): (float(voltage_v), float(current_a), float(temperature_c))
+            for row, voltage_v, current_a, temperature_c in zip(
+                raw_phase["source_row"],
+                raw_phase["voltage_v"],
+                raw_phase["current_a"],
+                raw_phase["Temperature__C"],
+            )
+        }
         adapted = load_cmu_dynamic_soc_for_vidal([source_path], target_hz=1.0)
         train_ids, validation_ids, test_ids = select_mission_ids(
             manifest, cell_id, cfg.setting
@@ -453,9 +491,11 @@ def run_setting(
             phase_by_source_row,
             cfg.batch_size,
             device,
+            raw_features_by_source_row=raw_features_by_source_row,
         )
         test_predictions, test_metrics = evaluate_target_last(
-            model, test_windows, phase_by_source_row, cfg.batch_size, device
+            model, test_windows, phase_by_source_row, cfg.batch_size, device,
+            raw_features_by_source_row=raw_features_by_source_row,
         )
 
         cell_dir = run_root / cell_id

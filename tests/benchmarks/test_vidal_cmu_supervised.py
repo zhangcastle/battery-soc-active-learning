@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import importlib.util
+import math
 import sys
 from pathlib import Path
 
@@ -255,3 +256,56 @@ def test_evaluate_target_last_prediction_fields() -> None:
     assert by_mission.loc["m2", "mission_sequence_order"] == 7
     assert by_mission.loc["m2", "elapsed_candidate_s_end"] == 45.0
     assert by_mission.loc["m2", "original_time_s_end"] == 200.0
+
+
+def test_evaluate_target_last_raw_end_conditions_come_from_raw_lookup() -> None:
+    """voltage_v_end/current_a_end/temperature_c_end must be the exact raw
+    (unnormalized) values passed in via raw_features_by_source_row, joined
+    on source_row_right -- deliberately chosen far outside the synthetic
+    normalized x range (which is ~N(0,1)) so a bug that instead derived
+    these from x (e.g. inverse-scaling the model input) would be caught by
+    the magnitude/value mismatch, not just a missing-column check."""
+
+    windows = _synthetic_prediction_windows()  # source_row_right: 1000, 2000
+    raw_features_by_source_row = {
+        1000: (3.7, -12.4, 26.1),   # (voltage_v, current_a, Temperature__C)
+        2000: (4.05, 8.9, 31.7),
+        999999: (0.0, 0.0, 0.0),  # unrelated row -- must not be picked up
+    }
+    torch.manual_seed(0)
+    model = module.VidalLSTM()
+    frame, _result = module.evaluate_target_last(
+        model, windows, phase_by_source_row={}, batch_size=8, device=torch.device("cpu"),
+        raw_features_by_source_row=raw_features_by_source_row,
+    )
+
+    assert {"voltage_v_end", "current_a_end", "temperature_c_end"} <= set(frame.columns)
+    by_mission = frame.set_index("mission_cycle_id")
+    assert by_mission.loc["m1", "voltage_v_end"] == 3.7
+    assert by_mission.loc["m1", "current_a_end"] == -12.4
+    assert by_mission.loc["m1", "temperature_c_end"] == 26.1
+    assert by_mission.loc["m2", "voltage_v_end"] == 4.05
+    assert by_mission.loc["m2", "current_a_end"] == 8.9
+    assert by_mission.loc["m2", "temperature_c_end"] == 31.7
+
+    # x is standard-normal synthetic noise (see _synthetic_prediction_windows);
+    # the raw values above are physically-scaled and outside that range, so
+    # this also rules out the fields being some transform of the model input.
+    assert abs(by_mission.loc["m1", "voltage_v_end"]) > 3
+    assert abs(by_mission.loc["m2", "current_a_end"]) > 3
+
+
+def test_evaluate_target_last_raw_end_conditions_default_to_nan_when_unavailable() -> None:
+    """Callers that don't pass raw_features_by_source_row (e.g. any external
+    code still using the old evaluate_target_last signature) must not crash;
+    the new columns are present but NaN rather than silently fabricated."""
+
+    windows = _synthetic_prediction_windows()
+    torch.manual_seed(0)
+    model = module.VidalLSTM()
+    frame, _result = module.evaluate_target_last(
+        model, windows, phase_by_source_row={}, batch_size=8, device=torch.device("cpu"),
+    )
+    assert math.isnan(frame["voltage_v_end"].iloc[0])
+    assert math.isnan(frame["current_a_end"].iloc[0])
+    assert math.isnan(frame["temperature_c_end"].iloc[0])
