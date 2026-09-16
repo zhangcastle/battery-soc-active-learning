@@ -624,6 +624,10 @@ def _sample_prediction_chunk(*, repeat, seed, cell_id, method, n_records=3):
             "mission_cycle_id": f"{cell_id}-mission-{i % 2}",
             "window_index": i,
             "timestep_index": 0,
+            "mission_sequence_order": i % 2,
+            "elapsed_candidate_s": 1.0 * i,
+            "original_time_s": 100.0 + i,
+            "source_row_right": 1000 + i,
             "soc_reference": 0.1 * i,
             "soc_prediction": 0.1 * i + 0.01,
             "signed_error": 0.01,
@@ -840,3 +844,247 @@ def test_run_json_metadata_uses_validation_missions_diagnostic_not_unused() -> N
                     dict_keys_containing_validation_missions.add(key.value)
 
     assert dict_keys_containing_validation_missions == {"validation_missions_diagnostic"}
+
+
+def _fake_target_record(
+    *, mission, sequence_order, soc, current=None, voltage=None,
+    elapsed_candidate_s=None, original_time_s=None, source_row_right=None,
+):
+    """A minimal stand-in for a VidalV2Record (only ``.data`` and
+    ``.metadata`` are read by _target_parts): ``soc`` fully determines the
+    mission's length and its initial-SOC/30-70 split behavior, while the
+    other per-timestep columns are set to easily distinguishable sequences
+    so a test can independently recompute, from the frame itself, exactly
+    which raw index each retained timestep must have come from."""
+
+    n = len(soc)
+    frame = pd.DataFrame(
+        {
+            "current": (np.arange(n, dtype=np.float64) if current is None else current),
+            "voltage": (np.arange(n, dtype=np.float64) + 100.0 if voltage is None else voltage),
+            "soc": np.asarray(soc, dtype=np.float64),
+            "elapsed_candidate_s": (
+                np.arange(n, dtype=np.float64) if elapsed_candidate_s is None
+                else elapsed_candidate_s
+            ),
+            "original_time_s": (
+                np.arange(n, dtype=np.float64) + 10_000.0 if original_time_s is None
+                else original_time_s
+            ),
+            "source_row_right": (
+                np.arange(n, dtype=np.int64) + 500 if source_row_right is None
+                else source_row_right
+            ),
+        }
+    )
+    return SimpleNamespace(
+        data=frame,
+        metadata={"mission_cycle_id": mission, "sequence_order": sequence_order},
+    )
+
+
+def test_target_parts_metadata_matches_raw_frame_at_the_exact_kept_indices() -> None:
+    """Core alignment requirement, at the _target_parts level (before any
+    windowing/reshape): for the "test" portion, the metadata slice for a
+    mission must equal the mission's raw elapsed_candidate_s/
+    original_time_s/source_row_right/sequence_order at EXACTLY the same
+    raw-frame indices that ended up in x/y -- reconstructed independently
+    here from starts[0] and the fraction boundary, not by re-running
+    _target_parts' own logic."""
+
+    initial_soc = 0.80
+    fraction = 0.30
+    # 10 timesteps, SOC decreasing from 0.95 to 0.05: first index with
+    # soc <= 0.80 is index 2 (soc=0.75), so starts[0] == 2.
+    soc = np.linspace(0.95, 0.05, 10)
+    record = _fake_target_record(mission="M1", sequence_order=3, soc=soc)
+
+    parts = module._target_parts(
+        [record], {"M1"}, initial_soc, fraction, "test", include_metadata=True
+    )
+    assert len(parts) == 1
+    x, y, mission, metadata = parts[0]
+    assert mission == "M1"
+
+    starts0 = int(np.flatnonzero(soc <= initial_soc)[0])
+    truncated_len = len(soc) - starts0
+    boundary = int(truncated_len * fraction)
+    kept = slice(starts0 + boundary, len(soc))  # portion="test" -> [boundary:] of the truncated array
+
+    frame = record.data
+    assert np.array_equal(y, frame["soc"].to_numpy()[kept])
+    assert np.array_equal(
+        metadata["elapsed_candidate_s"], frame["elapsed_candidate_s"].to_numpy()[kept]
+    )
+    assert np.array_equal(metadata["original_time_s"], frame["original_time_s"].to_numpy()[kept])
+    assert np.array_equal(metadata["source_row_right"], frame["source_row_right"].to_numpy()[kept])
+    assert np.all(metadata["mission_sequence_order"] == 3)
+    assert len(x) == len(y) == len(metadata["elapsed_candidate_s"])
+
+
+def test_target_data_metadata_survives_truncation_with_correct_dropped_tail() -> None:
+    """Core alignment requirement under truncation: when a mission's
+    selected timesteps aren't an exact multiple of the window length,
+    _windows drops the same trailing timesteps from x/y AND from every
+    metadata column -- never leaving metadata one element longer/shorter,
+    or shifted, relative to x/y."""
+
+    initial_soc = 0.90
+    fraction = 0.0  # portion="test" keeps everything from starts[0] onward
+    # 13 timesteps all <= initial_soc, so starts[0] == 0 and the "test"
+    # selection keeps all 13 -- not a multiple of sequence_length=3, so
+    # _windows must drop the trailing 1 timestep (13 -> usable=12).
+    soc = np.linspace(0.85, 0.05, 13)
+    record = _fake_target_record(mission="M2", sequence_order=7, soc=soc)
+    length = 3
+
+    parts = module._target_parts(
+        [record], {"M2"}, initial_soc, fraction, "test", include_metadata=True
+    )
+    x, y, missions, metadata = module._target_data(
+        parts,
+        length,
+        feature_min=np.array([0.0, 0.0]),
+        feature_max=np.array([20.0, 120.0]),
+        include_metadata=True,
+    )
+
+    assert missions == [("M2", 4)]  # usable=12 -> 4 windows of length 3
+    assert x.shape == (4, 3, 2)
+    assert y.shape == (4, 3)
+    for name in module.METADATA_COLUMNS:
+        assert metadata[name].shape == (4, 3)
+
+    frame = record.data
+    kept = slice(0, 12)  # first 12 of the 13 selected timesteps; last one dropped
+    assert np.array_equal(y.reshape(-1), frame["soc"].to_numpy()[kept].astype(np.float32))
+    assert np.array_equal(
+        metadata["elapsed_candidate_s"].reshape(-1),
+        frame["elapsed_candidate_s"].to_numpy()[kept],
+    )
+    assert np.array_equal(
+        metadata["source_row_right"].reshape(-1), frame["source_row_right"].to_numpy()[kept]
+    )
+    assert np.all(metadata["mission_sequence_order"] == 7)
+
+
+def test_target_data_metadata_stays_aligned_across_multiple_missions_of_different_lengths() -> (
+    None
+):
+    """Two missions with different lengths and different amounts of
+    truncation, concatenated by _windows into one array (as main() does
+    for the full test split): every window/timestep's metadata must still
+    match its own mission's raw frame at the correct offset -- proving
+    concatenation across missions doesn't misalign metadata relative to
+    x/y for any mission after the first."""
+
+    length = 4
+    initial_soc = 1.0  # keep every timestep (starts[0] == 0 always)
+    fraction = 0.0  # keep every timestep from starts[0] onward too
+
+    soc_a = np.linspace(0.9, 0.1, 9)  # 9 timesteps -> usable=8 -> 2 windows, 1 dropped
+    soc_b = np.linspace(0.8, 0.2, 12)  # 12 timesteps -> usable=12 -> 3 windows, none dropped
+    record_a = _fake_target_record(
+        mission="MA", sequence_order=0, soc=soc_a,
+        source_row_right=np.arange(9, dtype=np.int64) + 2_000,
+    )
+    record_b = _fake_target_record(
+        mission="MB", sequence_order=1, soc=soc_b,
+        source_row_right=np.arange(12, dtype=np.int64) + 5_000,
+    )
+
+    parts = module._target_parts(
+        [record_a, record_b], {"MA", "MB"}, initial_soc, fraction, "test",
+        include_metadata=True,
+    )
+    x, y, missions, metadata = module._target_data(
+        parts, length, feature_min=np.array([0.0, 0.0]), feature_max=np.array([20.0, 120.0]),
+        include_metadata=True,
+    )
+
+    assert missions == [("MA", 2), ("MB", 3)]
+    assert x.shape[0] == 5 and y.shape == (5, 4)
+
+    # Reconstruct, per mission, the expected raw-frame indices kept after
+    # truncation, and check every retained window/timestep against them.
+    expected_frames = {"MA": (record_a.data, 8), "MB": (record_b.data, 12)}
+    start = 0
+    for mission, count in missions:
+        frame, usable = expected_frames[mission]
+        expected_source_row = frame["source_row_right"].to_numpy()[:usable].reshape(count, length)
+        expected_soc = frame["soc"].to_numpy()[:usable].reshape(count, length).astype(np.float32)
+        stop = start + count
+        assert np.array_equal(metadata["source_row_right"][start:stop], expected_source_row)
+        assert np.array_equal(y[start:stop], expected_soc)
+        start = stop
+
+
+def test_evaluate_prediction_records_carry_aligned_metadata_across_missions() -> None:
+    """End-to-end alignment check through _evaluate() itself: for windows
+    drawn from missions of different lengths/window counts, every
+    prediction record's mission_sequence_order/elapsed_candidate_s/
+    original_time_s/source_row_right must equal metadata[global_window_
+    index, timestep_index] -- the SAME indices used for that record's
+    soc_reference -- and the plain (metadata=None) call path must still
+    omit those four fields entirely."""
+
+    torch.manual_seed(3)
+    model = module.DTNN(2, 8, 4, 8)
+    seq_len = 4
+    x, y, missions = _synthetic_evaluate_inputs(seq_len=seq_len, seed=21)
+    device = torch.device("cpu")
+
+    rng = np.random.default_rng(99)
+    metadata = {
+        "mission_sequence_order": rng.integers(0, 5, size=y.shape).astype(np.int64),
+        "elapsed_candidate_s": rng.uniform(0, 1000, size=y.shape),
+        "original_time_s": rng.uniform(10_000, 20_000, size=y.shape),
+        "source_row_right": rng.integers(0, 100_000, size=y.shape).astype(np.int64),
+    }
+
+    _, records_with_metadata = module._evaluate(
+        model, x, y, missions, batch_size=4, device=device,
+        return_predictions=True, metadata=metadata,
+    )
+    _, records_without_metadata = module._evaluate(
+        model, x, y, missions, batch_size=4, device=device,
+        return_predictions=True, metadata=None,
+    )
+
+    for record in records_without_metadata:
+        assert not ({"mission_sequence_order", "elapsed_candidate_s",
+                     "original_time_s", "source_row_right"} & set(record.keys()))
+
+    start = 0
+    for mission, count in missions:
+        for local_window_index in range(count):
+            global_window_index = start + local_window_index
+            for timestep_index in range(seq_len):
+                record = next(
+                    r for r in records_with_metadata
+                    if r["mission_cycle_id"] == mission
+                    and r["window_index"] == local_window_index
+                    and r["timestep_index"] == timestep_index
+                )
+                assert record["mission_sequence_order"] == int(
+                    metadata["mission_sequence_order"][global_window_index, timestep_index]
+                )
+                assert math.isclose(
+                    record["elapsed_candidate_s"],
+                    float(metadata["elapsed_candidate_s"][global_window_index, timestep_index]),
+                )
+                assert math.isclose(
+                    record["original_time_s"],
+                    float(metadata["original_time_s"][global_window_index, timestep_index]),
+                )
+                assert record["source_row_right"] == int(
+                    metadata["source_row_right"][global_window_index, timestep_index]
+                )
+                # Same index also used for soc_reference -- confirms the
+                # metadata is aligned to the SAME timestep, not just
+                # internally self-consistent.
+                assert math.isclose(
+                    record["soc_reference"],
+                    float(y[global_window_index, timestep_index]),
+                )
+        start += count

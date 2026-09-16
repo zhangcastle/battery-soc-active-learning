@@ -60,6 +60,10 @@ TEST_PREDICTIONS_SCHEMA = pa.schema(
         ("mission_cycle_id", pa.string()),
         ("window_index", pa.int64()),
         ("timestep_index", pa.int64()),
+        ("mission_sequence_order", pa.int64()),
+        ("elapsed_candidate_s", pa.float64()),
+        ("original_time_s", pa.float64()),
+        ("source_row_right", pa.int64()),
         ("soc_reference", pa.float64()),
         ("soc_prediction", pa.float64()),
         ("signed_error", pa.float64()),
@@ -107,18 +111,60 @@ class _Timer:
         self.seconds = time.perf_counter() - self._start
 
 
-def _windows(parts: list[tuple[np.ndarray, np.ndarray, str]], length: int):
+# Per-timestep metadata columns carried through _windows/_target_data in
+# lockstep with x/y whenever include_metadata=True -- see _target_parts.
+METADATA_COLUMNS = (
+    "mission_sequence_order",
+    "elapsed_candidate_s",
+    "original_time_s",
+    "source_row_right",
+)
+
+
+def _windows(
+    parts: list[tuple[np.ndarray, np.ndarray, str]]
+    | list[tuple[np.ndarray, np.ndarray, str, dict]],
+    length: int,
+    *,
+    include_metadata: bool = False,
+):
+    """Unchanged reshape/truncation logic for x/y/missions when
+    ``include_metadata=False`` (every pre-existing caller): identical
+    output to before this parameter existed.
+
+    When ``include_metadata=True``, each part is a 4-tuple
+    ``(x, y, mission, metadata)`` where ``metadata`` maps each name in
+    METADATA_COLUMNS to a 1-D per-timestep array the same length as
+    ``x``/``y`` for that part (see _target_parts). Every metadata array is
+    truncated and reshaped with the EXACT SAME ``usable``/``count`` values
+    computed from x/y -- not a separate slicing pass -- so metadata stays
+    index-for-index aligned with the SOC timestep it describes, including
+    across truncated/dropped trailing timesteps and windows dropped
+    entirely for a mission with no complete window."""
     xs, ys, missions = [], [], []
-    for x, y, mission in parts:
+    metadata_lists = {name: [] for name in METADATA_COLUMNS} if include_metadata else None
+    for part in parts:
+        if include_metadata:
+            x, y, mission, metadata = part
+        else:
+            x, y, mission = part
         usable = min(len(x), len(y)) // length * length
         if usable:
             count = usable // length
             xs.append(x[:usable].reshape(count, length, x.shape[-1]))
             ys.append(y[:usable].reshape(count, length))
             missions.append((mission, count))
+            if include_metadata:
+                for name in METADATA_COLUMNS:
+                    metadata_lists[name].append(metadata[name][:usable].reshape(count, length))
     if not xs:
         raise ValueError("No complete non-overlapping windows")
-    return np.concatenate(xs).astype(np.float32), np.concatenate(ys).astype(np.float32), missions
+    x_out = np.concatenate(xs).astype(np.float32)
+    y_out = np.concatenate(ys).astype(np.float32)
+    if not include_metadata:
+        return x_out, y_out, missions
+    metadata_out = {name: np.concatenate(metadata_lists[name]) for name in METADATA_COLUMNS}
+    return x_out, y_out, missions, metadata_out
 
 
 def _source_data(root: Path, length: int):
@@ -142,7 +188,22 @@ def _source_data(root: Path, length: int):
     return x, y, feature_min, feature_max
 
 
-def _target_parts(records, mission_ids, initial_soc, fraction, portion):
+def _target_parts(records, mission_ids, initial_soc, fraction, portion, *, include_metadata=False):
+    """``include_metadata=False`` (every pre-existing caller: adapt data,
+    validation diagnostic data): unchanged output, byte-for-byte the same
+    as before this parameter existed.
+
+    ``include_metadata=True`` (test data only): for each part, also builds
+    the four METADATA_COLUMNS arrays (mission_sequence_order,
+    elapsed_candidate_s, original_time_s, source_row_right) directly from
+    the SAME frame this part's raw/y features/labels come from, and
+    slices them with the EXACT SAME two-step slicing raw/y already use --
+    first ``[starts[0]:]`` (drop everything before the mission first
+    reaches initial_soc), then ``[selection]`` (the adapt/test 30/70
+    split). This is not a second, independent slicing pass computed
+    after the fact: it's the same starts/selection indices applied to a
+    parallel array, which is what keeps every metadata value aligned to
+    the exact SOC timestep it describes."""
     if portion not in {"adapt", "test"}:
         raise ValueError("portion must be adapt or test")
     parts = []
@@ -159,14 +220,38 @@ def _target_parts(records, mission_ids, initial_soc, fraction, portion):
         y = y[starts[0] :]
         boundary = int(len(y) * fraction)
         selection = slice(0, boundary) if portion == "adapt" else slice(boundary, None)
-        parts.append((raw[selection], y[selection], mission))
+        if not include_metadata:
+            parts.append((raw[selection], y[selection], mission))
+            continue
+        sequence_order = int(record.metadata["sequence_order"])
+        metadata_full = {
+            "mission_sequence_order": np.full(len(frame), sequence_order, dtype=np.int64),
+            "elapsed_candidate_s": frame["elapsed_candidate_s"].to_numpy(dtype=np.float64),
+            "original_time_s": frame["original_time_s"].to_numpy(dtype=np.float64),
+            "source_row_right": frame["source_row_right"].to_numpy(dtype=np.int64),
+        }
+        metadata_selected = {
+            name: values[starts[0] :][selection] for name, values in metadata_full.items()
+        }
+        parts.append((raw[selection], y[selection], mission, metadata_selected))
     return parts
 
 
-def _target_data(parts, length, feature_min, feature_max):
+def _target_data(parts, length, feature_min, feature_max, *, include_metadata=False):
+    """``include_metadata`` must match what ``parts`` was built with (see
+    ``_target_parts``): it only changes whether each part is unpacked as a
+    3- or 4-tuple before scaling x, and is passed straight through to
+    ``_windows`` so the metadata arrays get the identical
+    truncation/reshape as x/y."""
     scale = np.where(feature_max == feature_min, 1.0, feature_max - feature_min)
-    parts = [((x - feature_min) / scale, y, mission) for x, y, mission in parts]
-    return _windows(parts, length)
+    if include_metadata:
+        parts = [
+            ((x - feature_min) / scale, y, mission, metadata)
+            for x, y, mission, metadata in parts
+        ]
+    else:
+        parts = [((x - feature_min) / scale, y, mission) for x, y, mission in parts]
+    return _windows(parts, length, include_metadata=include_metadata)
 
 
 def _loader(x, y, batch_size, shuffle, *, generator=None):
@@ -412,7 +497,9 @@ def _adapt(
 
 
 @torch.no_grad()
-def _evaluate(model, x, y, missions, batch_size, device, *, return_predictions=False):
+def _evaluate(
+    model, x, y, missions, batch_size, device, *, return_predictions=False, metadata=None
+):
     """Existing metric computation (``overall``) is completely unchanged --
     still built from the same ``prediction``/``y`` arrays via the same
     ``compute_metrics`` calls in the same order. The only addition is an
@@ -422,7 +509,18 @@ def _evaluate(model, x, y, missions, batch_size, device, *, return_predictions=F
     signed_error, absolute_error) built read-only from those same
     ``prediction``/``y`` arrays after ``overall`` has already been computed.
     Callers that don't pass ``return_predictions`` get exactly the previous
-    single-value return, so every existing call site is unaffected."""
+    single-value return, so every existing call site is unaffected.
+
+    ``metadata`` (only meaningful together with ``return_predictions=True``)
+    is the optional dict of METADATA_COLUMNS arrays that ``_target_data(...,
+    include_metadata=True)`` returns for the test split -- each array shaped
+    exactly like ``y`` (n_windows, seq_len), built by the SAME
+    truncation/reshape ``_windows`` applied to ``x``/``y`` themselves (see
+    ``_target_parts``/``_windows``), so indexing it at
+    ``[global_window_index, timestep_index]`` is guaranteed aligned to the
+    SOC timestep being recorded -- never a separately-computed guess.
+    ``metadata=None`` (the default, used by any caller not evaluating the
+    test split) simply omits those four fields from each record."""
     model.eval()
     prediction = torch.cat(
         [model(xb.to(device)).cpu() for xb, _ in _loader(x, y, batch_size, False)]
@@ -466,17 +564,29 @@ def _evaluate(model, x, y, missions, batch_size, device, *, return_predictions=F
             for timestep_index in range(x.shape[1]):
                 reference = float(y[global_window_index, timestep_index])
                 predicted = float(prediction[global_window_index, timestep_index])
-                records.append(
-                    {
-                        "mission_cycle_id": mission,
-                        "window_index": local_window_index,
-                        "timestep_index": timestep_index,
-                        "soc_reference": reference,
-                        "soc_prediction": predicted,
-                        "signed_error": predicted - reference,
-                        "absolute_error": abs(predicted - reference),
-                    }
-                )
+                record = {
+                    "mission_cycle_id": mission,
+                    "window_index": local_window_index,
+                    "timestep_index": timestep_index,
+                    "soc_reference": reference,
+                    "soc_prediction": predicted,
+                    "signed_error": predicted - reference,
+                    "absolute_error": abs(predicted - reference),
+                }
+                if metadata is not None:
+                    record["mission_sequence_order"] = int(
+                        metadata["mission_sequence_order"][global_window_index, timestep_index]
+                    )
+                    record["elapsed_candidate_s"] = float(
+                        metadata["elapsed_candidate_s"][global_window_index, timestep_index]
+                    )
+                    record["original_time_s"] = float(
+                        metadata["original_time_s"][global_window_index, timestep_index]
+                    )
+                    record["source_row_right"] = int(
+                        metadata["source_row_right"][global_window_index, timestep_index]
+                    )
+                records.append(record)
         start += count
     return overall, records
 
@@ -648,11 +758,22 @@ def main():
                 adapt_x, adapt_y, adapt_missions = _target_data(
                     adapt_parts, args.sequence_length, source_feature_min, source_feature_max
                 )
+                # include_metadata=True: test_metadata carries
+                # mission_sequence_order/elapsed_candidate_s/
+                # original_time_s/source_row_right per timestep, sliced
+                # and reshaped by the exact same starts/selection/
+                # usable/count logic as test_x/test_y themselves (see
+                # _target_parts/_windows) -- never a second, independent
+                # slicing pass computed after the fact. Only the test
+                # split carries this metadata (adapt/validation data
+                # above/below are unaffected, still 3-tuples).
                 test_parts = _target_parts(
-                    records, test_ids, args.initial_soc, args.adapt_fraction, "test"
+                    records, test_ids, args.initial_soc, args.adapt_fraction, "test",
+                    include_metadata=True,
                 )
-                test_x, test_y, test_missions = _target_data(
-                    test_parts, args.sequence_length, source_feature_min, source_feature_max
+                test_x, test_y, test_missions, test_metadata = _target_data(
+                    test_parts, args.sequence_length, source_feature_min, source_feature_max,
+                    include_metadata=True,
                 )
                 # Diagnostic-only validation data: the existing validation_ids
                 # split (already computed by select_duration_matched_missions
@@ -681,7 +802,7 @@ def main():
                 model.load_state_dict(source_state)
                 source_only, source_only_predictions = _evaluate(
                     model, test_x, test_y, test_missions, args.batch_size, device,
-                    return_predictions=True,
+                    return_predictions=True, metadata=test_metadata,
                 )
                 training, adapt_history = _adapt(
                     model, source_x, source_y, adapt_x, adapt_y, args, device,
@@ -689,7 +810,7 @@ def main():
                 )
                 adapted, adapted_predictions = _evaluate(
                     model, test_x, test_y, test_missions, args.batch_size, device,
-                    return_predictions=True,
+                    return_predictions=True, metadata=test_metadata,
                 )
                 for history_row in adapt_history:
                     training_history_rows.append(
