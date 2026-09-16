@@ -8,6 +8,7 @@ from __future__ import annotations
 import argparse
 import copy
 import json
+import math
 import random
 import sys
 import time
@@ -131,11 +132,27 @@ def _target_data(parts, length, feature_min, feature_max):
     return _windows(parts, length)
 
 
-def _loader(x, y, batch_size, shuffle):
+def _loader(x, y, batch_size, shuffle, *, generator=None):
+    """Unchanged for every existing (training) call site: ``generator``
+    defaults to ``None``, so the DataLoader falls back to consuming
+    ``torch.default_generator`` for its internal base-seed draw exactly as
+    before -- this is what the (pre-existing) shuffled source/target
+    training loaders rely on for their epoch-to-epoch reshuffling.
+
+    ``_validation_diagnostic_metrics`` (diagnostic-only) passes its own
+    local ``torch.Generator()`` instead: PyTorch's DataLoader always draws
+    one value from its generator to seed itself -- even with
+    ``num_workers=0`` and ``shuffle=False`` -- so constructing/iterating a
+    validation loader with the default (``generator=None``) would silently
+    advance ``torch.default_generator`` and perturb every later epoch's
+    training-loader shuffle. Passing a separate, local generator keeps that
+    internal draw off the global RNG stream, so the validation diagnostic
+    cannot affect training determinism."""
     return DataLoader(
         TensorDataset(torch.from_numpy(x), torch.from_numpy(y)),
         batch_size=min(batch_size, len(x)),
         shuffle=shuffle,
+        generator=generator,
     )
 
 
@@ -180,7 +197,41 @@ def _train_source(model, x, y, epochs, batch_size, lr, device):
 LAYER_NAMES = ("cnn2", "bilstm2", "fc")  # matches adaptive_multiscale_mmd's (c2, blstm2, fc) order
 
 
-def _adapt(model, source_x, source_y, target_x, target_y, args, device):
+@torch.no_grad()
+def _validation_diagnostic_metrics(model, x, y, batch_size, device):
+    """Lightweight MAE/RMSE, as [0,1] fractions (NOT percent, unlike
+    _evaluate's overall_mae_percent/overall_rmse_percent), for the periodic
+    validation_mae/validation_rmse diagnostic in training_history.csv only.
+    Never used for early stopping or checkpoint selection. A pure eval-mode
+    forward pass under no_grad; the model's training/eval mode is restored
+    to whatever it was before this call, so the caller's training loop is
+    unaffected either way."""
+
+    was_training = model.training
+    model.eval()
+    # A local, non-global generator: see _loader's docstring -- this keeps
+    # the DataLoader's internal base-seed draw off torch.default_generator,
+    # so this diagnostic call never perturbs the training loaders' RNG
+    # stream (and therefore never perturbs training determinism), whether
+    # or not this call happens at all.
+    validation_generator = torch.Generator()
+    prediction = torch.cat(
+        [
+            model(xb.to(device)).cpu()
+            for xb, _ in _loader(x, y, batch_size, False, generator=validation_generator)
+        ]
+    ).numpy()
+    prediction = np.clip(prediction, 0.0, 1.0)
+    if was_training:
+        model.train()
+    metrics = compute_metrics(y, prediction)
+    return float(metrics["mae"]), float(metrics["rmse"])
+
+
+def _adapt(
+    model, source_x, source_y, target_x, target_y, args, device,
+    *, validation_x=None, validation_y=None,
+):
     """Runs the adaptation loop exactly as before (same batches, same order,
     same optimizer.step() calls, same final-batch return value used for
     ``training_final_batch``). The only addition is a second return value:
@@ -197,12 +248,27 @@ def _adapt(model, source_x, source_y, target_x, target_y, args, device):
     float-extraction/accumulation interleaved with the training steps
     (negligible next to forward/backward/optimizer.step(), and read-only,
     so it doesn't change what's trained -- only how long the epoch's
-    wall-clock is reported as taking).
+    wall-clock is reported as taking). Validation evaluation (below) runs
+    strictly after this timer closes, so it is never counted in
+    runtime_seconds either.
+
+    Validation (diagnostic only, controlled by args.validation_interval):
+    every ``validation_interval`` epochs, plus always on epoch 1 and the
+    final epoch, the current model is evaluated in eval mode under
+    torch.no_grad() on validation_x/validation_y (if given) and then
+    restored to train mode -- a pure forward pass on already-adapted
+    weights. It is never used for early stopping, checkpoint selection, or
+    anything that feeds back into training: no gradients, no
+    optimizer/scheduler interaction, and it runs after optimizer.step() for
+    that epoch has already happened. validation_interval=0, or omitting
+    validation_x/validation_y, disables it entirely (validation_evaluated
+    is False and validation_mae/validation_rmse are NaN on every row).
     """
     source_loader = _loader(source_x, source_y, args.transfer_batch_size, True)
     target_loader = _loader(target_x, target_y, args.transfer_batch_size, True)
     optimizer = torch.optim.Adam(model.parameters(), lr=args.transfer_lr)
     criterion = nn.MSELoss()
+    validation_interval = getattr(args, "validation_interval", 10)
     final = {}
     history = []
     for epoch in range(args.transfer_epochs):
@@ -275,6 +341,34 @@ def _adapt(model, source_x, source_y, target_x, target_y, args, device):
             row["learning_rate"] = optimizer.param_groups[0]["lr"]
             row["runtime_seconds"] = epoch_training_seconds
             row["optimizer_steps"] = epoch_steps
+
+            # Diagnostic only -- runs after optimizer.step() for this epoch
+            # has already happened, so it cannot influence training. Never
+            # used for early stopping or checkpoint selection.
+            epoch_number = epoch + 1
+            should_run_validation = (
+                validation_interval > 0
+                and validation_x is not None
+                and validation_y is not None
+                and len(validation_x) > 0
+                and (
+                    epoch_number == 1
+                    or epoch_number == args.transfer_epochs
+                    or epoch_number % validation_interval == 0
+                )
+            )
+            if should_run_validation:
+                validation_mae, validation_rmse = _validation_diagnostic_metrics(
+                    model, validation_x, validation_y, args.batch_size, device
+                )
+                row["validation_mae"] = validation_mae
+                row["validation_rmse"] = validation_rmse
+                row["validation_evaluated"] = True
+            else:
+                row["validation_mae"] = math.nan
+                row["validation_rmse"] = math.nan
+                row["validation_evaluated"] = False
+
             history.append(row)
     final["optimizer_steps"] = args.transfer_epochs * len(target_loader)
     return final, history
@@ -354,6 +448,15 @@ def parse_args():
     parser.add_argument("--transfer-lr", type=float, default=1e-4)
     parser.add_argument("--target-weight", type=float, default=5.0)
     parser.add_argument("--mmd-weight", type=float, default=0.1)
+    parser.add_argument(
+        "--validation-interval",
+        type=int,
+        default=10,
+        help="record validation_mae/validation_rmse in training_history.csv "
+        "every N adaptation epochs, plus always on epoch 1 and the final "
+        "epoch; diagnostic only, never used for early stopping, checkpoint "
+        "selection, or training. 0 disables validation recording entirely.",
+    )
     parser.add_argument("--budget-seconds", type=float, default=8778.0)
     parser.add_argument("--seed", type=int, default=1)
     parser.add_argument("--device", default="auto")
@@ -416,11 +519,34 @@ def main():
             test_x, test_y, test_missions = _target_data(
                 test_parts, args.sequence_length, source_feature_min, source_feature_max
             )
+            # Diagnostic-only validation data: the existing validation_ids
+            # split (already computed by select_duration_matched_missions
+            # above, previously unused for anything but a mission count),
+            # sliced with the SAME rule as test ("test" portion -- start at
+            # initial_soc, keep the trailing (1 - adapt_fraction) of each
+            # mission). Never touches adapt_ids/adapt_x, so it cannot affect
+            # what the model trains on. A validation split that yields no
+            # complete windows (e.g. very few validation missions) simply
+            # disables the diagnostic for this cell rather than failing the
+            # whole run.
+            validation_x = validation_y = None
+            if validation_ids:
+                try:
+                    validation_parts = _target_parts(
+                        records, validation_ids, args.initial_soc, args.adapt_fraction, "test"
+                    )
+                    validation_x, validation_y, _validation_missions = _target_data(
+                        validation_parts, args.sequence_length,
+                        source_feature_min, source_feature_max,
+                    )
+                except ValueError:
+                    validation_x = validation_y = None
             model = DTNN(2, *widths).to(device)
             model.load_state_dict(source_state)
             source_only = _evaluate(model, test_x, test_y, test_missions, args.batch_size, device)
             training, adapt_history = _adapt(
-                model, source_x, source_y, adapt_x, adapt_y, args, device
+                model, source_x, source_y, adapt_x, adapt_y, args, device,
+                validation_x=validation_x, validation_y=validation_y,
             )
             adapted = _evaluate(model, test_x, test_y, test_missions, args.batch_size, device)
             for history_row in adapt_history:
@@ -468,6 +594,7 @@ def main():
             "layer_mmd_cnn2", "layer_mmd_bilstm2", "layer_mmd_fc",
             "layer_weight_cnn2", "layer_weight_bilstm2", "layer_weight_fc",
             "learning_rate", "runtime_seconds", "optimizer_steps",
+            "validation_mae", "validation_rmse", "validation_evaluated",
         ],
     )
     training_history.to_csv(args.output_root / "training_history.csv", index=False)

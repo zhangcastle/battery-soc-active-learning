@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import importlib.util
+import math
 import sys
 from pathlib import Path
 from types import SimpleNamespace
@@ -34,14 +35,26 @@ def _synthetic_adapt_inputs(
     return source_x, source_y, target_x, target_y
 
 
-def _adapt_args(*, transfer_epochs: int, transfer_batch_size: int) -> SimpleNamespace:
+def _adapt_args(
+    *, transfer_epochs: int, transfer_batch_size: int, batch_size: int = 4,
+    validation_interval: int = 10,
+) -> SimpleNamespace:
     return SimpleNamespace(
         transfer_epochs=transfer_epochs,
         transfer_batch_size=transfer_batch_size,
         transfer_lr=1e-3,
         target_weight=5.0,
         mmd_weight=0.1,
+        batch_size=batch_size,
+        validation_interval=validation_interval,
     )
+
+
+def _synthetic_validation_inputs(*, n: int = 6, seq_len: int = 4, seed: int = 5):
+    rng = np.random.default_rng(seed)
+    validation_x = rng.normal(size=(n, seq_len, 2)).astype(np.float32)
+    validation_y = rng.uniform(0, 1, size=(n, seq_len)).astype(np.float32)
+    return validation_x, validation_y
 
 
 def test_adapt_history_has_one_row_per_epoch_with_expected_columns() -> None:
@@ -352,3 +365,135 @@ def test_train_source_history_matches_the_printed_epoch_mse_and_has_runtime() ->
             loss * size for loss, size in zip(epoch_losses, batch_sizes)
         ) / len(x)
         assert np.isclose(row["source_mse"], expected_source_mse)
+
+
+def test_validation_evaluated_on_epoch_1_last_epoch_and_every_interval() -> None:
+    """validation_evaluated must be True exactly on epoch 1, the final
+    epoch, and every `validation_interval`-th epoch, and False everywhere
+    else; validation_mae/validation_rmse must be finite [0,1]-range numbers
+    when evaluated and NaN when not."""
+
+    torch.manual_seed(0)
+    model = module.DTNN(2, 8, 4, 8)
+    source_x, source_y, target_x, target_y = _synthetic_adapt_inputs()
+    validation_x, validation_y = _synthetic_validation_inputs()
+    args = _adapt_args(transfer_epochs=7, transfer_batch_size=2, validation_interval=3)
+
+    _final, history = module._adapt(
+        model, source_x, source_y, target_x, target_y, args, torch.device("cpu"),
+        validation_x=validation_x, validation_y=validation_y,
+    )
+
+    # epochs 1..7, interval 3, always epoch 1 and epoch 7 (last):
+    # evaluated on {1, 3, 6, 7} (3 and 6 are multiples of 3).
+    expected_evaluated = {1, 3, 6, 7}
+    for row in history:
+        assert row["validation_evaluated"] == (row["epoch"] in expected_evaluated)
+        if row["validation_evaluated"]:
+            assert 0.0 <= row["validation_mae"] <= 1.0
+            assert 0.0 <= row["validation_rmse"] <= 1.0
+        else:
+            assert math.isnan(row["validation_mae"])
+            assert math.isnan(row["validation_rmse"])
+
+
+def test_validation_interval_zero_disables_validation_entirely() -> None:
+    """--validation-interval 0 must turn validation recording off on every
+    epoch, including epoch 1 and the last epoch, even though valid
+    validation_x/validation_y were supplied."""
+
+    torch.manual_seed(0)
+    model = module.DTNN(2, 8, 4, 8)
+    source_x, source_y, target_x, target_y = _synthetic_adapt_inputs()
+    validation_x, validation_y = _synthetic_validation_inputs()
+    args = _adapt_args(transfer_epochs=3, transfer_batch_size=2, validation_interval=0)
+
+    _final, history = module._adapt(
+        model, source_x, source_y, target_x, target_y, args, torch.device("cpu"),
+        validation_x=validation_x, validation_y=validation_y,
+    )
+
+    for row in history:
+        assert row["validation_evaluated"] is False
+        assert math.isnan(row["validation_mae"])
+        assert math.isnan(row["validation_rmse"])
+
+
+def test_validation_diagnostic_metrics_are_fractions_not_percent() -> None:
+    """_validation_diagnostic_metrics must return MAE/RMSE as raw [0,1]
+    fractions (matching compute_metrics' own output), never the *100
+    percent scaling _evaluate() applies for its overall_mae_percent."""
+
+    torch.manual_seed(0)
+    model = module.DTNN(2, 8, 4, 8)
+    validation_x, validation_y = _synthetic_validation_inputs(n=8)
+
+    mae, rmse = module._validation_diagnostic_metrics(
+        model, validation_x, validation_y, batch_size=4, device=torch.device("cpu")
+    )
+
+    model.eval()
+    with torch.no_grad():
+        prediction = torch.cat(
+            [
+                model(xb.to(torch.device("cpu"))).cpu()
+                for xb, _ in module._loader(validation_x, validation_y, 4, False)
+            ]
+        ).numpy()
+    prediction = np.clip(prediction, 0.0, 1.0)
+    expected = module.compute_metrics(validation_y, prediction)
+
+    assert np.isclose(mae, expected["mae"])
+    assert np.isclose(rmse, expected["rmse"])
+    # SOC values live in [0,1], so a fraction-scaled MAE/RMSE must also be
+    # (well) under 1 -- catches an accidental *100 regression immediately.
+    assert mae < 1.0
+    assert rmse < 1.0
+
+
+def test_validation_toggle_does_not_change_final_model_or_predictions() -> None:
+    """Core requirement: turning the validation diagnostic on vs. off must
+    produce a byte-for-byte identical final model and identical
+    predictions on held-out data. Verified two ways -- passing
+    validation_x/validation_y vs. not, and validation_interval>0 vs. 0 --
+    since either one alone disables the diagnostic."""
+
+    def _run(*, with_validation: bool, validation_interval: int) -> torch.nn.Module:
+        torch.manual_seed(123)
+        model = module.DTNN(2, 8, 4, 8)
+        source_x, source_y, target_x, target_y = _synthetic_adapt_inputs(seed=2)
+        validation_x, validation_y = (
+            _synthetic_validation_inputs() if with_validation else (None, None)
+        )
+        args = _adapt_args(
+            transfer_epochs=4, transfer_batch_size=2, validation_interval=validation_interval
+        )
+        module._adapt(
+            model, source_x, source_y, target_x, target_y, args, torch.device("cpu"),
+            validation_x=validation_x, validation_y=validation_y,
+        )
+        return model
+
+    model_with_validation = _run(with_validation=True, validation_interval=1)
+    model_without_validation_data = _run(with_validation=False, validation_interval=1)
+    model_with_interval_zero = _run(with_validation=True, validation_interval=0)
+
+    probe_x = _synthetic_validation_inputs(n=5, seed=77)[0]
+    probe = torch.from_numpy(probe_x)
+
+    state_with = model_with_validation.state_dict()
+    for other in (model_without_validation_data, model_with_interval_zero):
+        state_other = other.state_dict()
+        assert set(state_with) == set(state_other)
+        for key in state_with:
+            assert torch.equal(state_with[key], state_other[key]), f"parameter {key} diverged"
+
+    model_with_validation.eval()
+    model_without_validation_data.eval()
+    model_with_interval_zero.eval()
+    with torch.no_grad():
+        prediction_with = model_with_validation(probe)
+        prediction_without_data = model_without_validation_data(probe)
+        prediction_interval_zero = model_with_interval_zero(probe)
+    assert torch.equal(prediction_with, prediction_without_data)
+    assert torch.equal(prediction_with, prediction_interval_zero)
