@@ -1,0 +1,4 @@
+cell_id,mission_candidate_count,row_count,unique_capacity_count,max_abs_soc_difference,mean_abs_soc_difference,observed_rpt_candidate_count,nominal_fallback_candidate_count
+VAH01,847,512184,18,0.11179353188006536,0.014798099578637921,846,1
+VAH17,1002,252580,21,0.13461927999698287,0.025374266482317318,1001,1
+VAH27,586,152860,13,0.09195038954313617,0.015640183168833637,585,1

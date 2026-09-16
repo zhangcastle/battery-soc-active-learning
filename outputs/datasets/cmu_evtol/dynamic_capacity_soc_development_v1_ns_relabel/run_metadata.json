@@ -1,0 +1,42 @@
+{
+  "dataset_name": "CMU eVTOL Battery Dataset",
+  "article_id": "14226830",
+  "dataset_version": "3",
+  "raw_loader_schema_version": "cmu_evtol_kilthub_v3_raw_v0.1",
+  "dynamic_soc_protocol_version": "cmu_evtol_dynamic_capacity_soc_development_v1",
+  "protocol_path": "configs/datasets/cmu_evtol/protocols/cmu_evtol_dynamic_capacity_soc_development_v1.yaml",
+  "mission_protocol_path": "configs/datasets/cmu_evtol/protocols/cmu_evtol_mission_segmentation_v0_1.yaml",
+  "mission_protocol_sha256": "a3129dd0c6243917dde6853636fb4f298d99ee7b479947ffb575bfc1a26154fa",
+  "mission_candidate_detection": "ns_exact_v1 (take_off/cruise/landing via Ns 4/5/6)",
+  "capacity_lookup_regenerated": true,
+  "capacity_lookup_regeneration_reason": "Ns-exact mission detection finds a strict superset of the old power/duration-heuristic missions (11-47 additional missions per cell, 0 missions lost, across all 7 cells); the previously frozen capacity_lookup.csv could not cover the new missions, so it was regenerated via build_causal_capacity_lookup against the same frozen, unchanged RPT observations.",
+  "rpt_observations_path": "outputs/cmu_evtol_rpt_capacity_v1/capacity_observations.csv",
+  "rpt_observations_sha256": "a54f1c99a1b684eec7679b7bb0c8ebb68c36eb34b076464a70f349cfaa5e5e1e",
+  "rpt_detection_rerun": false,
+  "raw_inputs": {
+    "VAH01": {
+      "path": "data/raw/cmu_evtol_vtc6/figshare_14226830/VAH01.csv",
+      "sha256": "596ab1e1e80eeac3509f789609f751527c2073a4310deec8274cbfaf4fef39c4"
+    },
+    "VAH17": {
+      "path": "data/raw/cmu_evtol_vtc6/figshare_14226830/VAH17.csv",
+      "sha256": "a20cf42e2a58eed8dff3a1d54816012c043664dbf4cfdcee61bf86bd5048b4d8"
+    },
+    "VAH27": {
+      "path": "data/raw/cmu_evtol_vtc6/figshare_14226830/VAH27.csv",
+      "sha256": "c9a2fcdb18a6265cd5b2e0ccba8afc7d5a4051e6bf56590340834df2304a137f"
+    }
+  },
+  "generator": "scripts/datasets/cmu_evtol/build_dynamic_capacity_soc_development_v1_ns_relabel.py",
+  "git_revision": "unknown",
+  "git_dirty": false,
+  "generated_at_utc": "2026-09-16T17:11:04.502949+00:00",
+  "target_cells": [
+    "VAH01",
+    "VAH17",
+    "VAH27"
+  ],
+  "formal_mission_labels": false,
+  "formal_benchmark_eligible": false,
+  "label_is_ground_truth": false
+}
