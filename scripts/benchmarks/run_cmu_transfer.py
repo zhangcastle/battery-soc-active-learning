@@ -283,6 +283,15 @@ def evaluate_target_last(
                     "soc_reference": reference,
                     "soc_prediction": prediction,
                     "absolute_error": abs(prediction - reference),
+                    # Prediction-record fields only -- taken directly from
+                    # existing window metadata (build_cmu_vidal_windows
+                    # already computes these), no new computation beyond
+                    # signed_error. Metric calculation above/below is
+                    # untouched (still soc_reference/soc_prediction only).
+                    "signed_error": prediction - reference,
+                    "mission_sequence_order": int(metadata["sequence_order"]),
+                    "elapsed_candidate_s_end": float(metadata["elapsed_candidate_s_end"]),
+                    "original_time_s_end": float(metadata["original_time_s_end"]),
                 }
             )
     frame = pd.DataFrame(rows)

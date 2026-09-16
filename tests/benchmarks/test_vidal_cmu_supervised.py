@@ -181,3 +181,77 @@ def test_validation_history_diagnostic_skipped_without_validation_windows() -> N
 
     _model, history = _run_train_smoke(True, None)
     assert not ({"validation_mae", "validation_rmse"} & set(history.columns))
+
+
+def _synthetic_prediction_windows():
+    """Two synthetic windows with distinct, known metadata values for
+    evaluate_target_last()'s new prediction-record fields -- these are read
+    straight off build_cmu_vidal_windows' existing per-window metadata, so a
+    short synthetic case (no real CMU parquet/manifest) is enough to prove
+    they're wired through correctly."""
+
+    from battery_benchmark.reproductions.vidal_2019.windows import Case1Windows
+
+    seq_len = 50
+    n = 2
+    rng = np.random.default_rng(7)
+    x = rng.normal(size=(n, seq_len, 3)).astype(np.float32)
+    y = rng.uniform(0, 1, size=(n, seq_len)).astype(np.float32)
+    mask = np.ones((n, seq_len), dtype=bool)
+    metadata = [
+        {
+            "cell_id": "VAH01",
+            "mission_cycle_id": "m1",
+            "source_row_right": 1000,
+            "sequence_order": 3,
+            "elapsed_candidate_s_end": 12.5,
+            "original_time_s_end": 100.0,
+        },
+        {
+            "cell_id": "VAH01",
+            "mission_cycle_id": "m2",
+            "source_row_right": 2000,
+            "sequence_order": 7,
+            "elapsed_candidate_s_end": 45.0,
+            "original_time_s_end": 200.0,
+        },
+    ]
+    return Case1Windows(x, y, mask, metadata, 0)
+
+
+def test_evaluate_target_last_prediction_fields() -> None:
+    """New prediction-record fields (signed_error, mission_sequence_order,
+    elapsed_candidate_s_end, original_time_s_end) must be present, taken
+    verbatim from window metadata, and signed_error must equal
+    soc_prediction - soc_reference row-by-row. Metric calculation itself
+    (overall_mae/rmse etc.) is untouched -- not re-tested here, only the new
+    columns on the returned predictions frame."""
+
+    windows = _synthetic_prediction_windows()
+    torch.manual_seed(0)
+    model = module.VidalLSTM()
+    frame, _result = module.evaluate_target_last(
+        model, windows, phase_by_source_row={}, batch_size=8, device=torch.device("cpu")
+    )
+
+    expected_columns = {
+        "signed_error",
+        "mission_sequence_order",
+        "elapsed_candidate_s_end",
+        "original_time_s_end",
+    }
+    assert expected_columns <= set(frame.columns)
+    assert len(frame) == 2
+
+    assert np.allclose(
+        frame["signed_error"].to_numpy(),
+        (frame["soc_prediction"] - frame["soc_reference"]).to_numpy(),
+    )
+
+    by_mission = frame.set_index("mission_cycle_id")
+    assert by_mission.loc["m1", "mission_sequence_order"] == 3
+    assert by_mission.loc["m1", "elapsed_candidate_s_end"] == 12.5
+    assert by_mission.loc["m1", "original_time_s_end"] == 100.0
+    assert by_mission.loc["m2", "mission_sequence_order"] == 7
+    assert by_mission.loc["m2", "elapsed_candidate_s_end"] == 45.0
+    assert by_mission.loc["m2", "original_time_s_end"] == 200.0
