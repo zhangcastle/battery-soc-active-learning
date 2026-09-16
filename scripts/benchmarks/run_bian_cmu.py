@@ -37,6 +37,7 @@ from battery_benchmark.reproductions.shen_2023.data import (
     load_temperature_cycles_and_range,
 )
 from battery_benchmark.utils.device import get_device
+from battery_benchmark.utils.git_info import get_full_commit_hash, is_dirty
 from battery_benchmark.utils.hashing import sha256_file
 
 CELLS = ("VAH01", "VAH17", "VAH27", "VAH30", "VAH15", "VAH12", "VAH11")
@@ -81,8 +82,39 @@ TEST_PREDICTIONS_SCHEMA = pa.schema(
         ("soc_prediction", pa.float64()),
         ("signed_error", pa.float64()),
         ("absolute_error", pa.float64()),
+        # Appended, not reordered into the block above, so every existing
+        # column keeps its position -- see _load_raw_diagnostic_fields /
+        # BIAN_NS_MISSION_PHASE_MAP. ns_raw is the untouched tester-native
+        # Ns value; mission_phase is a derived, purely diagnostic label
+        # computed from it (never the reverse -- ns_raw is never dropped
+        # in favor of the label). Both nullable, same as the other
+        # diagnostic-join columns.
+        ("ns_raw", pa.int64()),
+        ("mission_phase", pa.string()),
     ]
 )
+
+# Ns -> mission-phase label used ONLY for this DTNN benchmark's diagnostic
+# mission_phase column. Deliberately a DIFFERENT mapping (different label
+# spellings, and an explicit "other_segment" for Ns=2) from
+# battery_benchmark.datasets.cmu_evtol.ns_phase_labeling_v1.NS_MISSION_PHASE_MAP
+# (which uses take_off/rest_1/rest_2 and leaves Ns 2/8 unmapped) -- that
+# module's mapping is a separate, independently-scoped full-raw-timeline
+# diagnostic for the dataset-build step, not to be silently unified with
+# this one. Any Ns value not present as a key here (including 8) maps to
+# None via .map(), never raises, never invents a label.
+BIAN_NS_MISSION_PHASE_MAP: dict[int, str] = {
+    0: "cc_charge",
+    1: "cv_charge",
+    2: "other_segment",
+    3: "pre_mission_rest",
+    4: "takeoff",
+    5: "cruise",
+    6: "landing",
+    7: "post_flight_rest",
+}
+# Flight-phase SOC analysis (notebook/reporting) should focus on these three.
+BIAN_FLIGHT_MISSION_PHASES: tuple[str, ...] = ("takeoff", "cruise", "landing")
 
 # Raw CMU parquet column name -> test_predictions.parquet output field name,
 # for the diagnostic fields joined onto each test timestep by
@@ -98,8 +130,16 @@ RAW_DIAGNOSTIC_SOURCE_COLUMNS = {
     "capacity_ah": "capacity_ah",
     "capacity_source": "capacity_source",
     "source_rpt_id": "source_rpt_id",
+    # Raw tester-native Ns, untouched -- see BIAN_NS_MISSION_PHASE_MAP and
+    # _load_raw_diagnostic_fields (mission_phase is derived FROM this
+    # column, after the rename below, not read from the raw parquet).
+    "Ns": "ns_raw",
 }
-DIAGNOSTIC_METADATA_COLUMNS = tuple(RAW_DIAGNOSTIC_SOURCE_COLUMNS.values())
+# mission_phase is derived (see _load_raw_diagnostic_fields), not a
+# raw-parquet column, so it isn't a value in RAW_DIAGNOSTIC_SOURCE_COLUMNS
+# -- appended here so the rest of the join/cast/schema pipeline (which all
+# key off DIAGNOSTIC_METADATA_COLUMNS) picks it up automatically.
+DIAGNOSTIC_METADATA_COLUMNS = tuple(RAW_DIAGNOSTIC_SOURCE_COLUMNS.values()) + ("mission_phase",)
 
 # How _evaluate() casts each joined diagnostic value when building a
 # prediction record -- applied only to a non-None value (see
@@ -113,6 +153,8 @@ _DIAGNOSTIC_METADATA_CASTERS = {
     "capacity_ah": float,
     "capacity_source": str,
     "source_rpt_id": str,
+    "ns_raw": int,
+    "mission_phase": str,
 }
 
 
@@ -122,16 +164,27 @@ def _load_raw_diagnostic_fields(path: Path) -> pd.DataFrame:
     parquet already hash-verified against the manifest for this cell --
     never from resampled or normalized data. Columns are renamed
     immediately to the test_predictions.parquet output field names via
-    RAW_DIAGNOSTIC_SOURCE_COLUMNS."""
+    RAW_DIAGNOSTIC_SOURCE_COLUMNS.
+
+    ``mission_phase`` is then added as a purely derived column, computed
+    from the just-renamed ``ns_raw`` via ``BIAN_NS_MISSION_PHASE_MAP.get``
+    (``.map()``, vectorized): an unmapped Ns value (there are none besides
+    the 8 keys mapped here, but this never raises) becomes a real ``None``,
+    never a fabricated label. ``ns_raw`` itself is kept as-is alongside
+    it -- the semantic label is additive, never a replacement for the raw
+    value."""
     frame = pd.read_parquet(path, columns=["source_row", *RAW_DIAGNOSTIC_SOURCE_COLUMNS])
     if not frame["source_row"].is_unique:
         raise ValueError(f"{path}: source_row must be unique for a diagnostic join")
-    return frame.rename(columns=RAW_DIAGNOSTIC_SOURCE_COLUMNS)
+    frame = frame.rename(columns=RAW_DIAGNOSTIC_SOURCE_COLUMNS)
+    frame["mission_phase"] = frame["ns_raw"].map(BIAN_NS_MISSION_PHASE_MAP)
+    return frame
 
 
 def _join_diagnostic_fields_by_source_row(source_row_right, raw_diagnostic):
-    """Vectorized (pandas ``DataFrame.merge``) join of the 7 raw-parquet
-    diagnostic columns onto every timestep referenced in
+    """Vectorized (pandas ``DataFrame.merge``) join of DIAGNOSTIC_METADATA_COLUMNS
+    (the raw-parquet diagnostic columns, plus the derived ``mission_phase``
+    already attached by ``_load_raw_diagnostic_fields``) onto every timestep referenced in
     ``source_row_right`` (any shape -- typically (n_windows, seq_len)),
     keyed by source_row_right -> the raw parquet's own source_row. This is
     a single per-cell ``merge`` call, never a Python dict accumulated
@@ -711,7 +764,19 @@ def _build_run_metadata(args, runs):
     (diagnostic-only) validation split's role: it feeds
     validation_mae/validation_rmse in training_history.csv (see _adapt's
     docstring), and nothing else -- never training, adaptation, or
-    checkpoint/model selection."""
+    checkpoint/model selection.
+
+    This is also where DTNN documents the deliberate points of difference
+    from the Vidal CMU benchmark (see scripts/benchmarks/run_cmu_transfer.py)
+    for cross-benchmark comparison/Results & Discussion -- evaluation_unit
+    and metric_units below -- without changing DTNN's own training,
+    adaptation, or evaluation behavior in any way."""
+    cmu_manifest_path = getattr(args, "cmu_manifest", None)
+    cmu_manifest_sha256 = (
+        sha256_file(cmu_manifest_path)
+        if cmu_manifest_path is not None and Path(cmu_manifest_path).exists()
+        else None
+    )
     return {
         "benchmark": "bian_2021_panasonic_multitemperature_to_cmu_supervised_development",
         "architecture": "CNN1->CNN2->two-layer-BiLSTM->FC->sequence-regression",
@@ -722,7 +787,19 @@ def _build_run_metadata(args, runs):
         "feature_order": list(FEATURES),
         "normalization": "source-global min-max applied unchanged to target",
         "target_protocol": "start at initial SOC; first 30% adapt; remaining 70% test",
+        "validation_protocol": (
+            "duration-matched missions disjoint from adapt/test; same "
+            "initial-SOC/trailing-fraction slicing as the test split; "
+            "diagnostic-only (see target_validation_labels_used_for_* below)"
+        ),
         "target_soc_labels_used_for_adaptation": True,
+        # DTNN has no separate purely-supervised target training step
+        # distinct from adaptation -- target_mse (from target_y) is one of
+        # the three terms optimizer.step() backprops on every adaptation
+        # step (see _adapt). So "used for training" and "used for
+        # adaptation" name the same step here; kept as two explicit flags
+        # so a reader comparing run.json files doesn't have to know that.
+        "target_soc_labels_used_for_training": True,
         "target_soc_labels_used_for_checkpoint_selection": False,
         "target_soc_reference_used_for_posthoc_evaluation": True,
         # Metadata only, describing the (diagnostic-only) validation split
@@ -737,8 +814,59 @@ def _build_run_metadata(args, runs):
         "target_validation_labels_used_for_diagnostics": True,
         "target_validation_labels_used_for_training": False,
         "target_validation_labels_used_for_checkpoint_selection": False,
+        # Diagnostic-only, metadata-only: documents (never changes) the
+        # evaluation convention DTNN's existing _evaluate() already uses
+        # (metrics computed over every timestep of every window -- no
+        # last-step slicing anywhere in _evaluate) versus Vidal's
+        # last_step_per_window convention (run_cmu_transfer.py's
+        # evaluate_target_last). Neither script's evaluation behavior is
+        # touched by this field; a future independent canonical post-hoc
+        # evaluator is expected to reconcile the two, not this script.
+        "evaluation_unit": "all_timesteps",
+        "evaluation_unit_note": (
+            "DTNN evaluates every timestep of every test window "
+            "(all_timesteps); the Vidal CMU benchmark "
+            "(run_cmu_transfer.py) evaluates only each window's final "
+            "timestep (last_step_per_window). Unchanged by this run; "
+            "documented here for cross-benchmark comparison only."
+        ),
+        # Diagnostic-only, metadata-only: documents each metric's unit
+        # scale without changing any of them. overall_*_percent/
+        # mission_macro_*_percent in metrics.csv/summary.csv are legacy,
+        # percent-scale ([0,100]) metrics -- unchanged. Every
+        # machine-readable per-timestep/per-epoch diagnostic added by the
+        # Vidal-alignment pass (soc_reference/soc_prediction/signed_error/
+        # absolute_error in test_predictions.parquet, validation_mae/
+        # validation_rmse in training_history.csv) is already a raw [0,1]
+        # fraction, matching Vidal's own prediction-level fields and
+        # compute_metrics' native output -- so no unit change was needed
+        # for those, only this documentation.
+        "metric_units": {
+            "overall_mae_percent": "percent (0-100); legacy, unchanged",
+            "overall_rmse_percent": "percent (0-100); legacy, unchanged",
+            "overall_max_error_percent": "percent (0-100); legacy, unchanged",
+            "overall_bias_percent": "percent (0-100); legacy, unchanged",
+            "mission_macro_mae_percent": "percent (0-100); legacy, unchanged",
+            "mission_macro_rmse_percent": "percent (0-100); legacy, unchanged",
+            "validation_mae": "fraction (0-1)",
+            "validation_rmse": "fraction (0-1)",
+            "soc_reference": "fraction (0-1)",
+            "soc_prediction": "fraction (0-1)",
+            "signed_error": "fraction (0-1)",
+            "absolute_error": "fraction (0-1)",
+        },
         "label_is_ground_truth": False,
         "formal_benchmark_eligible": False,
+        # Git/data provenance -- get_full_commit_hash/is_dirty never raise
+        # (they return "unknown"/False when git is unavailable or the
+        # checkout isn't a git repo, e.g. a CI/sandbox snapshot), and
+        # cmu_manifest_sha256 is None whenever args has no cmu_manifest
+        # attribute or that path doesn't exist (e.g. the unit tests below,
+        # which build `args` as a bare SimpleNamespace) -- so this never
+        # breaks a caller that only supplies the fields it cares about.
+        "git_commit": get_full_commit_hash(REPO_ROOT),
+        "git_dirty": is_dirty(REPO_ROOT),
+        "cmu_manifest_sha256": cmu_manifest_sha256,
         "arguments": {k: str(v) if isinstance(v, Path) else v for k, v in vars(args).items()},
         "runs": runs,
     }

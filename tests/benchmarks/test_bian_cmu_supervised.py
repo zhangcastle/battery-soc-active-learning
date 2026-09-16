@@ -639,6 +639,8 @@ def _sample_prediction_chunk(*, repeat, seed, cell_id, method, n_records=3):
             "soc_prediction": 0.1 * i + 0.01,
             "signed_error": 0.01,
             "absolute_error": 0.01,
+            "ns_raw": i % 8,
+            "mission_phase": module.BIAN_NS_MISSION_PHASE_MAP.get(i % 8),
         }
         for i in range(n_records)
     ]
@@ -1116,6 +1118,8 @@ def test_join_diagnostic_fields_by_source_row_aligns_exact_values() -> None:
             "capacity_ah": [2.50, 2.49, 2.48, 2.47],
             "capacity_source": ["rpt", "rpt", "rpt", "rpt"],
             "source_rpt_id": ["R1", "R1", "R2", "R2"],
+            "ns_raw": [4, 5, 6, 5],
+            "mission_phase": ["takeoff", "cruise", "landing", "cruise"],
         }
     )
     # 2 windows x 3 timesteps; source_row 101 is repeated within one
@@ -1153,6 +1157,8 @@ def test_join_diagnostic_fields_by_source_row_missing_values_are_none_not_nan_st
             "capacity_ah": [None, 2.5],
             "capacity_source": [None, "rpt"],
             "source_rpt_id": [None, "R1"],
+            "ns_raw": [4, 5],
+            "mission_phase": ["takeoff", "cruise"],
         }
     )
     source_row_right = np.array([[200, 201, 999]], dtype=np.int64)  # 999 matches nothing
@@ -1193,11 +1199,156 @@ def test_load_raw_diagnostic_fields_rejects_duplicate_source_row(tmp_path) -> No
             "capacity_ah": [2.5, 2.5],
             "capacity_source": ["rpt", "rpt"],
             "source_rpt_id": ["R1", "R1"],
+            "Ns": [4, 4],
         }
     ).to_parquet(path, index=False)
 
     with pytest.raises(ValueError, match="source_row"):
         module._load_raw_diagnostic_fields(path)
+
+
+def test_load_raw_diagnostic_fields_derives_mission_phase_from_ns_raw_and_keeps_ns_raw(
+    tmp_path,
+) -> None:
+    """Requirement #1: ``ns_raw`` must survive unchanged (the raw Ns value,
+    not just the semantic label), and ``mission_phase`` must be derived
+    from it via BIAN_NS_MISSION_PHASE_MAP -- every one of the 8 mapped Ns
+    values (0-7) round-trips to its documented label, and an unmapped Ns
+    value (8, a real tester-native value that appears in the raw data but
+    has no entry in BIAN_NS_MISSION_PHASE_MAP) becomes a real ``None``,
+    never a fabricated label or a raised error."""
+
+    path = tmp_path / "ns_mission_phase.parquet"
+    ns_values = [0, 1, 2, 3, 4, 5, 6, 7, 8]
+    pd.DataFrame(
+        {
+            "source_row": list(range(len(ns_values))),
+            "development_phase_role": ["x"] * len(ns_values),
+            "voltage_v": [3.6] * len(ns_values),
+            "current_a": [-1.0] * len(ns_values),
+            "Temperature__C": [24.0] * len(ns_values),
+            "capacity_ah": [2.5] * len(ns_values),
+            "capacity_source": ["rpt"] * len(ns_values),
+            "source_rpt_id": ["R1"] * len(ns_values),
+            "Ns": ns_values,
+        }
+    ).to_parquet(path, index=False)
+
+    frame = module._load_raw_diagnostic_fields(path)
+
+    assert frame["ns_raw"].tolist() == ns_values
+    expected_phase = [
+        "cc_charge", "cv_charge", "other_segment", "pre_mission_rest",
+        "takeoff", "cruise", "landing", "post_flight_rest", None,
+    ]
+    actual_phase = [
+        None if pd.isna(value) else value for value in frame["mission_phase"].tolist()
+    ]
+    assert actual_phase == expected_phase
+    # BIAN_FLIGHT_MISSION_PHASES names exactly the three flight-phase labels
+    # the mapping produces for Ns 4/5/6.
+    assert module.BIAN_FLIGHT_MISSION_PHASES == ("takeoff", "cruise", "landing")
+    for ns_value, phase in zip((4, 5, 6), module.BIAN_FLIGHT_MISSION_PHASES):
+        assert module.BIAN_NS_MISSION_PHASE_MAP[ns_value] == phase
+
+
+def test_ns_raw_and_mission_phase_are_diagnostic_only_and_do_not_change_predictions() -> None:
+    """Core requirement #7 for this addition specifically: joining ns_raw/
+    mission_phase into test_metadata (exactly as main() now does, via
+    _load_raw_diagnostic_fields + _join_diagnostic_fields_by_source_row)
+    and passing that richer metadata into _evaluate() must not change a
+    single soc_prediction/soc_reference value, nor the overall metrics --
+    verified by running _evaluate() twice on the identical model/x/y/
+    missions, once with metadata carrying ns_raw/mission_phase and once
+    with metadata=None, and requiring every prediction's soc fields (and
+    the whole `overall` dict) to match exactly."""
+
+    torch.manual_seed(7)
+    model = module.DTNN(2, 8, 4, 8)
+    seq_len = 4
+    x, y, missions = _synthetic_evaluate_inputs(seq_len=seq_len, seed=31)
+    device = torch.device("cpu")
+
+    rng = np.random.default_rng(11)
+    metadata = {
+        "mission_sequence_order": rng.integers(0, 5, size=y.shape).astype(np.int64),
+        "elapsed_candidate_s": rng.uniform(0, 1000, size=y.shape),
+        "original_time_s": rng.uniform(10_000, 20_000, size=y.shape),
+        "source_row_right": rng.integers(0, 100_000, size=y.shape).astype(np.int64),
+        "ns_raw": rng.integers(0, 8, size=y.shape).astype(np.int64),
+        "mission_phase": np.full(y.shape, "cruise", dtype=object),
+    }
+
+    overall_with_ns, records_with_ns = module._evaluate(
+        model, x, y, missions, batch_size=4, device=device,
+        return_predictions=True, metadata=metadata,
+    )
+    overall_without, records_without = module._evaluate(
+        model, x, y, missions, batch_size=4, device=device,
+        return_predictions=True, metadata=None,
+    )
+
+    assert overall_with_ns == overall_without
+    assert len(records_with_ns) == len(records_without)
+    for with_ns, without in zip(records_with_ns, records_without):
+        assert with_ns["soc_reference"] == without["soc_reference"]
+        assert with_ns["soc_prediction"] == without["soc_prediction"]
+        assert with_ns["signed_error"] == without["signed_error"]
+        assert with_ns["absolute_error"] == without["absolute_error"]
+        assert "ns_raw" in with_ns and "mission_phase" in with_ns
+        assert "ns_raw" not in without and "mission_phase" not in without
+
+
+def test_build_run_metadata_records_evaluation_unit_metric_units_and_provenance() -> None:
+    """Requirements #4/#5/#6: run.json must document evaluation_unit
+    ("all_timesteps", vs. Vidal's last_step_per_window), a metric_units
+    dict distinguishing the legacy percent-scale metrics from the
+    fraction-scale machine-readable diagnostics, git commit/dirty
+    provenance, and the target_soc_labels_used_for_training flag -- all
+    pure metadata, added without touching any existing key (checked
+    against the same fixed values test_run_metadata_records_validation_
+    interval_and_label_usage_flags already asserts)."""
+
+    args = SimpleNamespace(
+        validation_interval=7,
+        panasonic_data_root=Path("/data/panasonic"),
+        seed=1,
+        repeats=2,
+    )
+    runs = [{"repeat": 1, "cell_id": "VAH01"}]
+
+    metadata = module._build_run_metadata(args, runs)
+
+    assert metadata["evaluation_unit"] == "all_timesteps"
+    assert "last_step_per_window" in metadata["evaluation_unit_note"]
+    assert metadata["metric_units"]["overall_mae_percent"].startswith("percent")
+    assert metadata["metric_units"]["soc_reference"].startswith("fraction")
+    assert metadata["metric_units"]["validation_mae"].startswith("fraction")
+    assert metadata["target_soc_labels_used_for_training"] is True
+    assert metadata["target_soc_labels_used_for_adaptation"] is True
+    assert isinstance(metadata["git_commit"], str) and metadata["git_commit"]
+    assert isinstance(metadata["git_dirty"], bool)
+    # args here has no cmu_manifest attribute (matching the pre-existing
+    # SimpleNamespace fixtures in this file) -- must degrade to None, never
+    # raise AttributeError/FileNotFoundError.
+    assert metadata["cmu_manifest_sha256"] is None
+    assert "validation_protocol" in metadata
+    json.dumps(metadata)  # still fully JSON-serializable
+
+
+def test_build_run_metadata_computes_cmu_manifest_sha256_when_present(tmp_path) -> None:
+    """When args.cmu_manifest points at a real, existing file, run.json
+    must record its sha256 -- the same hash function already used
+    elsewhere in this benchmark (sha256_file), for the CMU manifest the
+    same way Vidal's run_metadata.json hashes its own manifest_path."""
+
+    manifest_path = tmp_path / "manifest.csv"
+    manifest_path.write_text("cell_id\nVAH01\n", encoding="utf-8")
+    args = SimpleNamespace(validation_interval=1, cmu_manifest=manifest_path)
+
+    metadata = module._build_run_metadata(args, runs=[])
+
+    assert metadata["cmu_manifest_sha256"] == module.sha256_file(manifest_path)
 
 
 def test_diagnostic_join_end_to_end_through_evaluate_with_missing_and_unmatched_rows() -> None:
@@ -1249,6 +1400,10 @@ def test_diagnostic_join_end_to_end_through_evaluate_with_missing_and_unmatched_
             "capacity_ah": [None if r == null_field_row else 2.5 for r in present_rows],
             "capacity_source": [None if r == null_field_row else "rpt" for r in present_rows],
             "source_rpt_id": [None if r == null_field_row else f"R{r}" for r in present_rows],
+            "ns_raw": [4 + (r % 3) for r in present_rows],
+            "mission_phase": [
+                module.BIAN_NS_MISSION_PHASE_MAP.get(4 + (r % 3)) for r in present_rows
+            ],
         }
     )
 
