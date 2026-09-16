@@ -72,6 +72,12 @@ class RunConfig:
     scheduler_step_size: int = 100
     scheduler_gamma: float = 0.5
     num_workers: int = 0
+    # Diagnostic only: per-epoch validation MAE/RMSE written to
+    # training_history.csv. Never used for early stopping or checkpoint
+    # selection -- training (loss, optimizer, scheduler, epoch count 515,
+    # final checkpoint) is byte-for-byte identical whether this is on or
+    # off. Default on; --disable-validation-history turns it off.
+    record_validation_history: bool = True
 
 
 def _cell_path(cell_id: str, base_root: Path, extension_root: Path) -> Path:
@@ -138,11 +144,53 @@ def _load_source_scaler(
     return scaler
 
 
+@torch.no_grad()
+def _validation_diagnostic_metrics(
+    model: VidalLSTM,
+    windows,
+    batch_size: int,
+    device: torch.device,
+) -> tuple[float, float]:
+    """Lightweight last-step MAE/RMSE for the per-epoch training_history.csv
+    diagnostic only. This is NEVER used for early stopping or checkpoint
+    selection -- it exists purely to let a human watch validation error
+    evolve across epochs. Uses the same last-step-per-window convention as
+    evaluate_target_last(), but skips the per-mission/per-phase breakdown
+    that function computes, since only the two aggregate numbers are needed
+    here every epoch.
+
+    Pure eval-mode forward pass under no_grad: does not touch the
+    optimizer, does not backward(), and does not consume the training
+    DataLoader's RNG stream (this uses its own shuffle=False loader). The
+    model is restored to whatever training/eval mode it was in before this
+    call, so the training loop's subsequent behaviour is unaffected.
+    """
+    loader = DataLoader(Case1WindowDataset(windows), batch_size=batch_size, shuffle=False)
+    was_training = model.training
+    model.eval()
+    references: list[float] = []
+    predictions: list[float] = []
+    for x, y, mask, _ in loader:
+        batch_predictions = model(x.to(device)).cpu().numpy()
+        mask_np = mask.numpy()
+        y_np = y.numpy()
+        for row in range(len(mask_np)):
+            target_index = int(mask_np[row].sum()) - 1
+            references.append(float(y_np[row, target_index]))
+            predictions.append(float(batch_predictions[row, target_index]))
+    if was_training:
+        model.train()
+    metric = compute_metrics(np.array(references), np.array(predictions))
+    return float(metric["mae"]), float(metric["rmse"])
+
+
 def _train(
     model: VidalLSTM,
     windows,
     cfg: RunConfig,
     device: torch.device,
+    *,
+    validation_windows=None,
 ) -> tuple[pd.DataFrame, torch.optim.Optimizer, torch.optim.lr_scheduler.StepLR]:
     dataset = Case1WindowDataset(windows)
     generator = torch.Generator().manual_seed(cfg.random_seed)
@@ -164,6 +212,8 @@ def _train(
     if sum(p.numel() for group in optimizer.param_groups for p in group["params"]) != 571:
         raise ValueError("Optimizer must contain exactly 571 trainable parameters")
 
+    record_validation = cfg.record_validation_history and validation_windows is not None
+
     history = []
     model.to(device)
     for epoch in range(cfg.epochs):
@@ -180,14 +230,22 @@ def _train(
             valid = int(mask.sum().item())
             loss_sum += float(loss.item()) * valid
             valid_sum += valid
-        history.append(
-            {
-                "epoch": epoch + 1,
-                "train_mse": loss_sum / max(valid_sum, 1),
-                "learning_rate": optimizer.param_groups[0]["lr"],
-                "runtime_seconds": time.perf_counter() - started,
-            }
-        )
+        # Timed training-only, so runtime_seconds means the same thing
+        # whether or not the validation diagnostic below runs.
+        epoch_training_seconds = time.perf_counter() - started
+        row = {
+            "epoch": epoch + 1,
+            "train_mse": loss_sum / max(valid_sum, 1),
+            "learning_rate": optimizer.param_groups[0]["lr"],
+            "runtime_seconds": epoch_training_seconds,
+        }
+        if record_validation:
+            validation_mae, validation_rmse = _validation_diagnostic_metrics(
+                model, validation_windows, cfg.batch_size, device
+            )
+            row["validation_mae"] = validation_mae
+            row["validation_rmse"] = validation_rmse
+        history.append(row)
         scheduler.step()
     return pd.DataFrame(history), optimizer, scheduler
 
@@ -344,6 +402,12 @@ def run_setting(
             history = pd.DataFrame()
             optimizer = scheduler = None
             train_windows = None
+            validation_windows = build_cmu_vidal_windows(
+                transform_cmu_records(validation_records, scaler),
+                seq_len=cfg.seq_len,
+                stride=cfg.stride,
+                keep_incomplete=False,
+            )
         else:
             scaler = _fit_target_scaler(train_records)
             train_windows = build_cmu_vidal_windows(
@@ -352,16 +416,22 @@ def run_setting(
                 stride=cfg.stride,
                 keep_incomplete=False,
             )
+            # Built before _train() so the per-epoch validation diagnostic
+            # (if enabled) can reuse it; also reused below for the final
+            # post-training validation evaluation, unchanged from before.
+            validation_windows = build_cmu_vidal_windows(
+                transform_cmu_records(validation_records, scaler),
+                seq_len=cfg.seq_len,
+                stride=cfg.stride,
+                keep_incomplete=False,
+            )
             history, optimizer, scheduler = _train(
-                model, train_windows, cfg, device
+                model, train_windows, cfg, device,
+                validation_windows=(
+                    validation_windows if cfg.record_validation_history else None
+                ),
             )
 
-        validation_windows = build_cmu_vidal_windows(
-            transform_cmu_records(validation_records, scaler),
-            seq_len=cfg.seq_len,
-            stride=cfg.stride,
-            keep_incomplete=False,
-        )
         test_windows = build_cmu_vidal_windows(
             transform_cmu_records(test_records, scaler),
             seq_len=cfg.seq_len,
@@ -510,12 +580,20 @@ def main() -> None:
     parser.add_argument("--device", default="auto")
     parser.add_argument("--epochs", type=int, default=515)
     parser.add_argument("--batch-size", type=int, default=512)
+    parser.add_argument(
+        "--disable-validation-history",
+        action="store_true",
+        help="do not compute/record per-epoch validation MAE/RMSE in "
+        "training_history.csv (diagnostic only -- never affects training, "
+        "the optimizer, the epoch count, or the saved checkpoint)",
+    )
     args = parser.parse_args()
     run_setting(
         RunConfig(
             setting=args.setting,
             epochs=args.epochs,
             batch_size=args.batch_size,
+            record_validation_history=not args.disable_validation_history,
         ),
         args.manifest,
         args.base_root,
