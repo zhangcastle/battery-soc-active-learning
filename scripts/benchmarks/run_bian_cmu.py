@@ -189,6 +189,15 @@ def _adapt(model, source_x, source_y, target_x, target_y, args, device):
     read-only bookkeeping on values already computed by the existing
     forward/backward pass -- it does not change what is trained, in what
     order, or the final model weights.
+
+    Timing: exactly one _Timer per epoch (one CUDA synchronize before the
+    epoch's target_loader loop starts, one right after it ends) -- not one
+    per optimizer step. runtime_seconds is therefore the epoch's real
+    adaptation wall-clock time, including the lightweight diagnostic
+    float-extraction/accumulation interleaved with the training steps
+    (negligible next to forward/backward/optimizer.step(), and read-only,
+    so it doesn't change what's trained -- only how long the epoch's
+    wall-clock is reported as taking).
     """
     source_loader = _loader(source_x, source_y, args.transfer_batch_size, True)
     target_loader = _loader(target_x, target_y, args.transfer_batch_size, True)
@@ -206,14 +215,16 @@ def _adapt(model, source_x, source_y, target_x, target_y, args, device):
         epoch_layer_mmd_sum = [0.0] * len(LAYER_NAMES)
         epoch_layer_weight_sum = [0.0] * len(LAYER_NAMES)
         epoch_steps = 0
-        epoch_training_seconds = 0.0
-        for target_batch in target_loader:
-            source_batch = next(source_batches)
-            # Timed region = the actual training step only (data transfer
-            # through optimizer.step()); the diagnostic float-extraction and
-            # accumulation below is excluded so runtime_seconds reflects
-            # pure training compute, not diagnostic bookkeeping overhead.
-            with _Timer(device) as step_timer:
+        # One CUDA sync pair per epoch, not per optimizer step: sync+start
+        # before the epoch's target_loader loop, sync+stop right after it
+        # ends. runtime_seconds is therefore the epoch's actual adaptation
+        # wall-clock time -- training steps plus the lightweight diagnostic
+        # float-extraction/accumulation interleaved with them below, which
+        # is negligible next to the forward/backward/optimizer.step() cost
+        # and is read-only bookkeeping that never feeds back into training.
+        with _Timer(device) as epoch_timer:
+            for target_batch in target_loader:
+                source_batch = next(source_batches)
                 sx, sy = (item.to(device) for item in source_batch)
                 tx, ty = (item.to(device) for item in target_batch)
                 optimizer.zero_grad(set_to_none=True)
@@ -225,28 +236,30 @@ def _adapt(model, source_x, source_y, target_x, target_y, args, device):
                 loss = source_loss + args.target_weight * target_loss + args.mmd_weight * mmd
                 loss.backward()
                 optimizer.step()
-            epoch_training_seconds += step_timer.seconds
-            layer_mmd_values = [float(v) for v in layer_mmd.detach().cpu()]
-            layer_weight_values = [float(v) for v in weights.cpu()]
-            final = {
-                "source_mse": float(source_loss.detach()),
-                "target_mse": float(target_loss.detach()),
-                "adaptive_mmd": float(mmd.detach()),
-                "layer_mmd": layer_mmd_values,
-                "layer_weights": layer_weight_values,
-            }
-            # Diagnostic-only accumulation for the per-epoch average below --
-            # reads values already produced by the step above, does not
-            # feed back into the model, optimizer, or loss in any way.
-            epoch_source_mse_sum += final["source_mse"]
-            epoch_target_mse_sum += final["target_mse"]
-            epoch_adaptive_mmd_sum += final["adaptive_mmd"]
-            epoch_total_loss_sum += float(loss.detach())
-            for index, value in enumerate(layer_mmd_values):
-                epoch_layer_mmd_sum[index] += value
-            for index, value in enumerate(layer_weight_values):
-                epoch_layer_weight_sum[index] += value
-            epoch_steps += 1
+                layer_mmd_values = [float(v) for v in layer_mmd.detach().cpu()]
+                layer_weight_values = [float(v) for v in weights.cpu()]
+                final = {
+                    "source_mse": float(source_loss.detach()),
+                    "target_mse": float(target_loss.detach()),
+                    "adaptive_mmd": float(mmd.detach()),
+                    "layer_mmd": layer_mmd_values,
+                    "layer_weights": layer_weight_values,
+                }
+                # Diagnostic-only accumulation for the per-epoch average
+                # below -- reads values already produced by the step above,
+                # does not feed back into the model, optimizer, or loss in
+                # any way. Left inside the timed region (see epoch_timer
+                # above) rather than given its own synchronize/timer.
+                epoch_source_mse_sum += final["source_mse"]
+                epoch_target_mse_sum += final["target_mse"]
+                epoch_adaptive_mmd_sum += final["adaptive_mmd"]
+                epoch_total_loss_sum += float(loss.detach())
+                for index, value in enumerate(layer_mmd_values):
+                    epoch_layer_mmd_sum[index] += value
+                for index, value in enumerate(layer_weight_values):
+                    epoch_layer_weight_sum[index] += value
+                epoch_steps += 1
+        epoch_training_seconds = epoch_timer.seconds
         if epoch_steps:
             row = {
                 "epoch": epoch + 1,
