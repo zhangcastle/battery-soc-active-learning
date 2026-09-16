@@ -34,6 +34,7 @@ import copy
 import json
 import random
 import sys
+import time
 from pathlib import Path
 
 import numpy as np
@@ -88,6 +89,26 @@ def _seed(value: int) -> None:
     random.seed(value)
     np.random.seed(value)
     torch.manual_seed(value)
+
+
+class _Timer:
+    """Wall-clock stopwatch. CUDA ops are async, so any timed block that ran
+    on GPU is synced before stopping -- otherwise the measured duration would
+    just be launch-overhead, not actual compute time."""
+
+    def __init__(self, device: torch.device) -> None:
+        self.device = device
+
+    def __enter__(self) -> "_Timer":
+        if self.device.type == "cuda":
+            torch.cuda.synchronize()
+        self._start = time.perf_counter()
+        return self
+
+    def __exit__(self, *exc) -> None:
+        if self.device.type == "cuda":
+            torch.cuda.synchronize()
+        self.seconds = time.perf_counter() - self._start
 
 
 def _windows(parts: list[tuple[np.ndarray, np.ndarray, str]], length: int):
@@ -258,6 +279,29 @@ def parse_args() -> argparse.Namespace:
     return parser.parse_args()
 
 
+def _save_timing(seed_root: Path, name: str, *, seconds: float | None, epochs: int | None, device: str) -> None:
+    """Persist a timing record so it survives --resume: if this run resumed
+    from a checkpoint (or an already-loaded cell's records) instead of
+    redoing the work, we still want the original run's timing available for
+    the rows written this time."""
+
+    seed_root.mkdir(parents=True, exist_ok=True)
+    path = seed_root / f"{name}_timing.json"
+    if seconds is None:
+        return  # nothing new measured this run; leave any existing file alone
+    path.write_text(
+        json.dumps({"seconds": seconds, "epochs": epochs, "device": device}, indent=2),
+        encoding="utf-8",
+    )
+
+
+def _load_timing(seed_root: Path, name: str) -> dict:
+    path = seed_root / f"{name}_timing.json"
+    if path.is_file():
+        return json.loads(path.read_text(encoding="utf-8"))
+    return {"seconds": None, "epochs": None, "device": None}
+
+
 def _rebuild_cell_metrics(output_root: Path) -> pd.DataFrame:
     """Aggregate every per-(model, seed, cell, budget) result JSON under output_root.
 
@@ -280,6 +324,7 @@ def _rebuild_cell_metrics(output_root: Path) -> pd.DataFrame:
 
 
 def main() -> None:
+    run_start = time.perf_counter()
     args = parse_args()
     device = get_device(args.device)
     args.output_root.mkdir(parents=True, exist_ok=True)
@@ -301,16 +346,25 @@ def main() -> None:
             model = ModelRegistry.build(model_name, MODEL_CONFIG).to(device)
             param_counts[model_name] = model.count_parameters()
 
+            source_pretrain_seconds = None
             if args.resume and source_checkpoint.is_file():
                 model.load_state_dict(torch.load(source_checkpoint, map_location=device))
                 print(f"=== {model_name} / seed {seed}: resumed source checkpoint from {source_checkpoint} ===")
             else:
                 _seed(seed)
                 print(f"=== {model_name} / seed {seed}: pretraining on {len(source_x)} source windows ===")
-                _train(model, source_x, source_y, args.source_epochs, args.batch_size, args.lr, device, "source")
+                with _Timer(device) as timer:
+                    _train(model, source_x, source_y, args.source_epochs, args.batch_size, args.lr, device, "source")
+                source_pretrain_seconds = timer.seconds
+                print(f"    done in {source_pretrain_seconds:.1f}s")
                 if not args.no_save_checkpoints:
                     seed_root.mkdir(parents=True, exist_ok=True)
                     torch.save(model.state_dict(), source_checkpoint)
+            _save_timing(
+                seed_root, "source_pretrain",
+                seconds=source_pretrain_seconds, epochs=args.source_epochs, device=str(device),
+            )
+            source_pretrain_timing = _load_timing(seed_root, "source_pretrain")
             source_state = copy.deepcopy(model.state_dict())
 
             for cell in args.cells:
@@ -318,6 +372,7 @@ def main() -> None:
                 path = None
                 records = None
                 actual = None
+                cell_data_load_seconds = None
 
                 for budget in args.budgets:
                     result_path = cell_root / f"{budget}.json"
@@ -327,14 +382,28 @@ def main() -> None:
                         continue
 
                     if records is None:
-                        path = _cell_path(cell, args.cmu_base_root, args.cmu_condition_root)
-                        expected = set(
-                            manifest.loc[manifest["cell_id"] == cell, "source_artifact_sha256"].astype(str)
-                        )
-                        actual = sha256_file(path)
-                        if expected != {actual}:
-                            raise ValueError(f"{cell}: CMU input hash does not match manifest")
-                        records = load_cmu_dynamic_soc_for_vidal([path], target_hz=1.0).records
+                        with _Timer(device) as data_timer:
+                            path = _cell_path(cell, args.cmu_base_root, args.cmu_condition_root)
+                            expected = set(
+                                manifest.loc[manifest["cell_id"] == cell, "source_artifact_sha256"].astype(str)
+                            )
+                            actual = sha256_file(path)
+                            if expected != {actual}:
+                                raise ValueError(f"{cell}: CMU input hash does not match manifest")
+                            records = load_cmu_dynamic_soc_for_vidal([path], target_hz=1.0).records
+                        cell_data_load_seconds = data_timer.seconds
+                    cell_root.mkdir(parents=True, exist_ok=True)
+                    # Stored at seed_root (not cell_root) with the cell name in
+                    # the filename: cell_root already holds <budget>.json result
+                    # files, and _rebuild_cell_metrics globs *every* json file
+                    # four levels under output_root -- a timing file living
+                    # inside cell_root would get silently ingested as a bogus
+                    # result row.
+                    _save_timing(
+                        seed_root, f"{cell}_data_load",
+                        seconds=cell_data_load_seconds, epochs=None, device=str(device),
+                    )
+                    cell_data_load_timing = _load_timing(seed_root, f"{cell}_data_load")
 
                     adapt_ids, test_ids = _budget_mission_ids(manifest, cell, budget)
                     test_x, test_y, test_missions = _target_windows(
@@ -343,22 +412,36 @@ def main() -> None:
                     eval_model = ModelRegistry.build(model_name, MODEL_CONFIG).to(device)
                     eval_model.load_state_dict(source_state)
                     adapt_missions = 0
+                    adapt_seconds = None
                     if budget != "zero_shot":
                         adapt_x, adapt_y, adapt_mission_ids = _target_windows(
                             records, adapt_ids, feature_min, feature_max, args.sequence_length
                         )
                         adapt_missions = len(adapt_mission_ids)
                         _seed(seed)
-                        _train(
-                            eval_model, adapt_x, adapt_y, args.transfer_epochs,
-                            args.batch_size, args.transfer_lr, device, budget,
-                        )
-                    metrics = _evaluate(eval_model, test_x, test_y, test_missions, args.batch_size, device)
+                        with _Timer(device) as adapt_timer:
+                            _train(
+                                eval_model, adapt_x, adapt_y, args.transfer_epochs,
+                                args.batch_size, args.transfer_lr, device, budget,
+                            )
+                        adapt_seconds = adapt_timer.seconds
+                    with _Timer(device) as eval_timer:
+                        metrics = _evaluate(eval_model, test_x, test_y, test_missions, args.batch_size, device)
+                    row_seconds = sum(
+                        s for s in (cell_data_load_seconds, adapt_seconds, eval_timer.seconds) if s is not None
+                    )
                     row = {
                         "model": model_name,
                         "cell_id": cell,
                         "budget": budget,
                         "seed": seed,
+                        "device": str(device),
+                        "source_pretrain_seconds": source_pretrain_timing["seconds"],
+                        "source_pretrain_epochs": source_pretrain_timing["epochs"],
+                        "cell_data_load_seconds": cell_data_load_timing["seconds"],
+                        "adapt_seconds": adapt_seconds,
+                        "eval_seconds": eval_timer.seconds,
+                        "row_seconds": row_seconds,
                         "cmu_input_sha256": actual,
                         "adaptation_missions": adapt_missions,
                         "n_parameters": param_counts[model_name],
@@ -368,10 +451,9 @@ def main() -> None:
                     }
                     print(
                         f"  {cell}/{budget}: MAE={metrics['overall_mae_percent']:.3f}% "
-                        f"RMSE={metrics['overall_rmse_percent']:.3f}%"
+                        f"RMSE={metrics['overall_rmse_percent']:.3f}% ({row_seconds:.1f}s)"
                     )
 
-                    cell_root.mkdir(parents=True, exist_ok=True)
                     result_path.write_text(json.dumps(row, indent=2), encoding="utf-8")
                     if not args.no_save_checkpoints and budget != "zero_shot":
                         torch.save(eval_model.state_dict(), cell_root / f"{budget}.pt")
@@ -414,6 +496,13 @@ def main() -> None:
         "formal_benchmark_eligible": False,
         "git_commit": get_full_commit_hash(REPO_ROOT),
         "git_dirty": is_dirty(REPO_ROOT),
+        # Wall-clock time spent by *this invocation* only -- with --resume,
+        # anything skipped because a result file already existed is not
+        # counted here. Per-row timing breakdowns (pretrain/data-load/adapt/
+        # eval seconds, plus the device they ran on) live in cell_metrics.csv,
+        # which is cumulative across every invocation.
+        "this_invocation_wall_seconds": time.perf_counter() - run_start,
+        "device": str(device),
     }
     metadata_path = args.output_root / "run_metadata.json"
     if metadata_path.is_file():
@@ -425,6 +514,7 @@ def main() -> None:
         metadata["n_parameters"] = {**previous.get("n_parameters", {}), **metadata["n_parameters"]}
     metadata_path.write_text(json.dumps(metadata, indent=2), encoding="utf-8")
     print(table.to_string(index=False))
+    print(f"\nthis invocation took {metadata['this_invocation_wall_seconds']:.1f}s wall-clock")
 
 
 if __name__ == "__main__":
