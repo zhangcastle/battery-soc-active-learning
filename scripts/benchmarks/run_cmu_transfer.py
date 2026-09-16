@@ -350,7 +350,7 @@ def evaluate_target_last(
             np.mean([metric["rmse"] for metric in mission_metrics])
         ),
     }
-    for role in ("high_1", "lower", "high_2"):
+    for role in ("take_off", "cruise", "landing"):
         group = frame.loc[frame["development_phase_role"] == role]
         role_metric = (
             compute_metrics(group["soc_reference"], group["soc_prediction"])

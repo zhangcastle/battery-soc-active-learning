@@ -86,8 +86,13 @@ def integrate_rpt_capacity(rows: pd.DataFrame) -> tuple[float, float]:
         raise ValueError("RPT candidate contains non-finite current")
     if len(time_s) < 2 or not np.all(np.diff(time_s) > 0):
         raise ValueError("RPT candidate time_s must be strictly increasing")
-    net = -float(np.trapz(current_a, time_s)) / 3600.0
-    discharge_only = float(np.trapz(np.maximum(-current_a, 0.0), time_s)) / 3600.0
+    # np.trapz was removed in NumPy 2.x (deprecated alias for np.trapezoid,
+    # same signature/semantics) -- this is a pre-existing environment
+    # incompatibility unrelated to the Ns-based rewrite, found only because
+    # this fix's own synthetic-RPT-window smoke check exercised the
+    # previously-untested "an RPT window is actually found" code path.
+    net = -float(np.trapezoid(current_a, time_s)) / 3600.0
+    discharge_only = float(np.trapezoid(np.maximum(-current_a, 0.0), time_s)) / 3600.0
     return net, discharge_only
 
 

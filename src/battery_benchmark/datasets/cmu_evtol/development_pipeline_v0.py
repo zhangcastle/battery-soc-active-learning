@@ -5,12 +5,16 @@ from __future__ import annotations
 import json
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Iterable, Sequence
+from typing import Iterable
 
 import numpy as np
 import pandas as pd
 import yaml
 
+from battery_benchmark.datasets.cmu_evtol.ns_phase_labeling_v1 import (
+    MISSION_FLIGHT_NS_SEQUENCE,
+    MISSION_FLIGHT_PHASE_ROLES,
+)
 from battery_benchmark.datasets.cmu_evtol.raw import (
     CANONICAL_COLUMNS,
     load_cmu_v3_main_file,
@@ -28,7 +32,11 @@ from battery_benchmark.utils.git_info import get_full_commit_hash, is_dirty
 BASELINE_CELLS = ("VAH01", "VAH17", "VAH27")
 SUPPORTED_CELLS = (*BASELINE_CELLS, "VAH30", "VAH15", "VAH12", "VAH11")
 PIPELINE_STATUS = "development_only"
-PHASE_ROLES = ("high_1", "lower", "high_2")
+# Renamed from the old ("high_1", "lower", "high_2") power-heuristic roles:
+# a mission candidate is now detected by an EXACT Ns sequence match
+# (take_off=4, cruise=5, landing=6; see ns_phase_labeling_v1), so the role
+# names are the actual protocol phase names rather than power-shape guesses.
+PHASE_ROLES = MISSION_FLIGHT_PHASE_ROLES
 MANIFEST_COLUMNS = (
     "development_candidate_id", "cell_id", "continuous_block_id",
     "start_source_row", "end_source_row", "start_time_s", "end_time_s",
@@ -109,92 +117,52 @@ def load_diagnostic_protocol(path: str | Path) -> tuple[dict, str]:
     return protocol, sha256_file(path)
 
 
-def _between(value: float, bounds: Sequence[float]) -> bool:
-    return bool(bounds[0] <= value <= bounds[1])
-
-
-def _rpt_like(run: pd.Series, thresholds: dict) -> bool:
-    return all((
-        _between(run.discharge_power_median_W, thresholds["rpt_like_discharge_power_W"]),
-        run.duration_s >= thresholds["rpt_like_minimum_duration_s"],
-        run.start_voltage_V - run.end_voltage_V >= thresholds["rpt_like_minimum_voltage_drop_V"],
-        run.end_voltage_V <= thresholds["rpt_like_maximum_end_voltage_V"],
-        run.discharge_fraction >= thresholds["minimum_discharge_fraction"],
-    ))
-
-
-def _classify_reasons(
-    protocol: dict,
-    hard_reasons: Iterable[str],
-    uncertain_reasons: Iterable[str],
-) -> tuple[str, str, str]:
-    configured = protocol["classification"]["reason_codes"]
-    triggered = set(hard_reasons) | set(uncertain_reasons)
-    ordered = [
-        code
-        for status in protocol["classification"]["precedence"]
-        for code in configured[status]
-        if code in triggered
-    ]
-    status = primary = None
-    for configured_status in protocol["classification"]["precedence"]:
-        matching = [code for code in configured[configured_status] if code in triggered]
-        if matching:
-            status, primary = configured_status, matching[0]
-            break
-    if status is None:
-        status, primary = "accept", configured["accept"][0]
-        ordered = [primary]
-    status = "diagnostic_screening_match" if status == "accept" else status
-    return status, primary, json.dumps(ordered, separators=(",", ":"))
-
-
 def enumerate_diagnostic_candidates(runs: pd.DataFrame, protocol: dict) -> pd.DataFrame:
-    """Enumerate draft high/lower/high candidates, retaining non-match reasons."""
-    t = protocol["diagnostic_screening_thresholds"]
+    """Enumerate exact take_off/cruise/landing (Ns 4,5,6) mission candidates.
+
+    Detection is purely Ns-sequence based on the run table
+    ``contiguous_ns_runs`` already produces: a candidate is three
+    POSITIONALLY ADJACENT rows of ``runs`` -- mirroring the old code's
+    ``runs.iloc[index:index+3]`` -- within a single ``continuous_block_id``,
+    whose ``ns_value`` sequence is exactly ``MISSION_FLIGHT_NS_SEQUENCE``
+    (4, 5, 6). ``Ns`` is a stable, protocol-level tester column (see
+    ``ns_phase_labeling_v1``), so this match is exact rather than
+    thresholded, and each run may be claimed by at most one candidate
+    (mirrors the old code's ``claimed_runs`` non-overlap guard).
+
+    Because the match is exact, there is no longer an ambiguous "was this
+    candidate but had wrong power/duration" case to retain the old
+    fine-grained hard/soft rejection-reason taxonomy for: only genuine
+    (4, 5, 6) matches are enumerated here. Non-matching runs simply produce
+    no manifest row (see the module docstring / task notes for why this is
+    the simpler and more honest choice for exact Ns matching).
+
+    ``protocol`` is still required and still accepted positionally exactly
+    as before, so ``rpt.py``'s call site and ``load_diagnostic_protocol``'s
+    YAML-loading/governance contract (``implementation_authorized is
+    False``) keep working unchanged; its ``diagnostic_screening_thresholds``
+    content is simply no longer consulted, since Ns-sequence matching needs
+    no power/duration thresholds.
+    """
+    del protocol
     records: list[dict[str, object]] = []
     claimed_runs: set[int] = set()
-    for index, first in runs.iterrows():
-        if not (
-            first.discharge_fraction >= t["minimum_discharge_fraction"]
-            and _between(first.discharge_power_median_W, t["high_discharge_power_W"])
-            and _between(first.duration_s, t["first_high_duration_s"])
-        ):
+    run_count = len(runs)
+    for index in range(max(run_count - 2, 0)):
+        if index in claimed_runs:
             continue
         triple = runs.iloc[index : index + 3]
-        hard_reasons: list[str] = []
-        uncertain_reasons: list[str] = []
-        if len(triple) < 3:
-            uncertain_reasons.append("missing_required_segment")
-        else:
-            first, middle, last = triple.itertuples(index=False)
-            if len({first.continuous_block_id, middle.continuous_block_id, last.continuous_block_id}) != 1:
-                hard_reasons.append("crosses_continuous_block")
-            if min(first.duration_s, middle.duration_s, last.duration_s) <= 0:
-                hard_reasons.append("segment_duration_zero_or_negative")
-            if min(first.discharge_fraction, middle.discharge_fraction, last.discharge_fraction) < t["minimum_discharge_fraction"]:
-                hard_reasons.append("severe_charge_or_rest_contamination")
-            if any(_rpt_like(run, t) for run in triple.itertuples(index=False)):
-                hard_reasons.append("clearly_matches_long_low_rate_diagnostic_evidence")
-            if _between(middle.discharge_power_median_W, t["high_discharge_power_W"]) or _between(last.discharge_power_median_W, t["lower_discharge_power_W"]):
-                hard_reasons.append("segment_order_definitively_incorrect")
-            thresholds_match = all((
-                _between(middle.discharge_power_median_W, t["lower_discharge_power_W"]),
-                _between(last.discharge_power_median_W, t["high_discharge_power_W"]),
-                _between(middle.duration_s, t["lower_duration_s"]),
-                _between(last.duration_s, t["last_high_duration_s"]),
-            ))
-            if not thresholds_match:
-                uncertain_reasons.append("power_or_duration_near_but_not_within_screening_range")
-            if thresholds_match and claimed_runs.intersection(range(index, index + 3)):
-                uncertain_reasons.append("overlaps_earlier_candidate")
-            if not hard_reasons and not uncertain_reasons:
-                claimed_runs.update(range(index, index + 3))
+        first, middle, last = triple.itertuples(index=False)
+        if (first.ns_value, middle.ns_value, last.ns_value) != MISSION_FLIGHT_NS_SEQUENCE:
+            continue
+        if len({first.continuous_block_id, middle.continuous_block_id, last.continuous_block_id}) != 1:
+            continue
+        triple_indices = range(index, index + 3)
+        if claimed_runs.intersection(triple_indices):
+            continue
+        claimed_runs.update(triple_indices)
 
-        status, primary_reason, all_reason_codes = _classify_reasons(
-            protocol, hard_reasons, uncertain_reasons
-        )
-        last = triple.iloc[-1]
+        primary_reason = "ns_sequence_take_off_cruise_landing_matched"
         record: dict[str, object] = {
             "development_candidate_id": (
                 f"cmu_v3_dev_candidate_v0:{first.cell_id}:b{int(first.continuous_block_id)}:"
@@ -207,16 +175,16 @@ def enumerate_diagnostic_candidates(runs: pd.DataFrame, protocol: dict) -> pd.Da
             "start_time_s": float(first.time_start_s),
             "end_time_s": float(last.time_end_s),
             "row_count": int(triple["row_count"].sum()),
-            "screening_status": status,
+            "screening_status": "diagnostic_screening_match",
             "primary_reason": primary_reason,
-            "all_reason_codes": all_reason_codes,
+            "all_reason_codes": json.dumps([primary_reason], separators=(",", ":")),
         }
         for position, role in enumerate(PHASE_ROLES):
-            run = triple.iloc[position] if position < len(triple) else None
-            record[f"{role}_source_row_start"] = int(run.source_row_start) if run is not None else None
-            record[f"{role}_source_row_end"] = int(run.source_row_end) if run is not None else None
-            record[f"{role}_duration_s"] = float(run.duration_s) if run is not None else None
-            record[f"{role}_median_power_W"] = float(run.discharge_power_median_W) if run is not None else None
+            run = triple.iloc[position]
+            record[f"{role}_source_row_start"] = int(run.source_row_start)
+            record[f"{role}_source_row_end"] = int(run.source_row_end)
+            record[f"{role}_duration_s"] = float(run.duration_s)
+            record[f"{role}_median_power_W"] = float(run.discharge_power_median_W)
         records.append(record)
     return pd.DataFrame.from_records(records, columns=MANIFEST_COLUMNS)
 
