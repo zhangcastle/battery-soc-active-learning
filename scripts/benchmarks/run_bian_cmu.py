@@ -64,12 +64,108 @@ TEST_PREDICTIONS_SCHEMA = pa.schema(
         ("elapsed_candidate_s", pa.float64()),
         ("original_time_s", pa.float64()),
         ("source_row_right", pa.int64()),
+        # Raw-parquet diagnostic fields, joined per cell by source_row_right
+        # (see _load_raw_diagnostic_fields / _join_diagnostic_fields_by_
+        # source_row below). All nullable: a genuinely missing
+        # capacity_source/source_rpt_id (or, defensively, an unmatched
+        # source_row_right) round-trips as a real parquet null, never the
+        # text "nan".
+        ("development_phase_role", pa.string()),
+        ("voltage_v_raw", pa.float64()),
+        ("current_a_raw", pa.float64()),
+        ("temperature_c_raw", pa.float64()),
+        ("capacity_ah", pa.float64()),
+        ("capacity_source", pa.string()),
+        ("source_rpt_id", pa.string()),
         ("soc_reference", pa.float64()),
         ("soc_prediction", pa.float64()),
         ("signed_error", pa.float64()),
         ("absolute_error", pa.float64()),
     ]
 )
+
+# Raw CMU parquet column name -> test_predictions.parquet output field name,
+# for the diagnostic fields joined onto each test timestep by
+# source_row_right. voltage_v/current_a/Temperature__C are deliberately
+# read straight from the raw parquet here (never from the resampled/
+# normalized x used for training/adaptation/prediction) and renamed to
+# *_raw so they can't be mistaken for model-input features.
+RAW_DIAGNOSTIC_SOURCE_COLUMNS = {
+    "development_phase_role": "development_phase_role",
+    "voltage_v": "voltage_v_raw",
+    "current_a": "current_a_raw",
+    "Temperature__C": "temperature_c_raw",
+    "capacity_ah": "capacity_ah",
+    "capacity_source": "capacity_source",
+    "source_rpt_id": "source_rpt_id",
+}
+DIAGNOSTIC_METADATA_COLUMNS = tuple(RAW_DIAGNOSTIC_SOURCE_COLUMNS.values())
+
+# How _evaluate() casts each joined diagnostic value when building a
+# prediction record -- applied only to a non-None value (see
+# _DIAGNOSTIC_METADATA_CASTERS' use in _evaluate: a real null from the join
+# is passed through as None, never cast).
+_DIAGNOSTIC_METADATA_CASTERS = {
+    "development_phase_role": str,
+    "voltage_v_raw": float,
+    "current_a_raw": float,
+    "temperature_c_raw": float,
+    "capacity_ah": float,
+    "capacity_source": str,
+    "source_rpt_id": str,
+}
+
+
+def _load_raw_diagnostic_fields(path: Path) -> pd.DataFrame:
+    """One per-cell read of the raw CMU parquet's diagnostic columns (plus
+    source_row, the join key), read directly from ``path`` -- the same raw
+    parquet already hash-verified against the manifest for this cell --
+    never from resampled or normalized data. Columns are renamed
+    immediately to the test_predictions.parquet output field names via
+    RAW_DIAGNOSTIC_SOURCE_COLUMNS."""
+    frame = pd.read_parquet(path, columns=["source_row", *RAW_DIAGNOSTIC_SOURCE_COLUMNS])
+    if not frame["source_row"].is_unique:
+        raise ValueError(f"{path}: source_row must be unique for a diagnostic join")
+    return frame.rename(columns=RAW_DIAGNOSTIC_SOURCE_COLUMNS)
+
+
+def _join_diagnostic_fields_by_source_row(source_row_right, raw_diagnostic):
+    """Vectorized (pandas ``DataFrame.merge``) join of the 7 raw-parquet
+    diagnostic columns onto every timestep referenced in
+    ``source_row_right`` (any shape -- typically (n_windows, seq_len)),
+    keyed by source_row_right -> the raw parquet's own source_row. This is
+    a single per-cell ``merge`` call, never a Python dict accumulated
+    across timesteps, cells, or the whole experiment: ``raw_diagnostic``
+    (see _load_raw_diagnostic_fields) is loaded once per cell, and this
+    function is called once per cell with the full array of that cell's
+    test-split source_row_right values.
+
+    A ``source_row_right`` with no matching row in ``raw_diagnostic``
+    (should not happen in practice -- source_row_right always comes from
+    this same cell's own raw parquet -- but handled defensively rather
+    than silently producing a bogus value) yields real nulls (``None``)
+    for that timestep's diagnostic fields. A genuinely missing individual
+    field value (e.g. an absent source_rpt_id/capacity_source, matching
+    the existing convention already used for the Vidal CMU script) is
+    also a real ``None`` -- constructed via ``pd.isna()`` + a vectorized
+    boolean-mask assignment, never ``.astype(str)``, which would turn a
+    missing value into the literal string ``"nan"``."""
+    shape = source_row_right.shape
+    left = pd.DataFrame({"source_row": source_row_right.reshape(-1)})
+    merged = left.merge(
+        raw_diagnostic[["source_row", *DIAGNOSTIC_METADATA_COLUMNS]],
+        on="source_row",
+        how="left",
+        sort=False,
+    )
+    if len(merged) != len(left):
+        raise ValueError("source_row_right diagnostic join changed row count")
+    result = {}
+    for column in DIAGNOSTIC_METADATA_COLUMNS:
+        values = merged[column].to_numpy(dtype=object).copy()
+        values[pd.isna(values)] = None
+        result[column] = values.reshape(shape)
+    return result
 
 
 def _write_prediction_chunk(writer: pq.ParquetWriter, rows: list[dict]) -> None:
@@ -520,7 +616,13 @@ def _evaluate(
     ``[global_window_index, timestep_index]`` is guaranteed aligned to the
     SOC timestep being recorded -- never a separately-computed guess.
     ``metadata=None`` (the default, used by any caller not evaluating the
-    test split) simply omits those four fields from each record."""
+    test split) simply omits those four fields from each record.
+    ``metadata`` may also carry any of DIAGNOSTIC_METADATA_COLUMNS (see
+    _join_diagnostic_fields_by_source_row) -- present keys are copied into
+    each record the same way, with a real ``None`` passed straight through
+    (never cast) whenever the joined value was itself a null; keys not in
+    ``metadata`` are simply skipped, so this stays compatible with a
+    ``metadata`` dict that only has the four geometry columns."""
     model.eval()
     prediction = torch.cat(
         [model(xb.to(device)).cpu() for xb, _ in _loader(x, y, batch_size, False)]
@@ -586,6 +688,11 @@ def _evaluate(
                     record["source_row_right"] = int(
                         metadata["source_row_right"][global_window_index, timestep_index]
                     )
+                    for name, caster in _DIAGNOSTIC_METADATA_CASTERS.items():
+                        if name not in metadata:
+                            continue
+                        raw_value = metadata[name][global_window_index, timestep_index]
+                        record[name] = None if raw_value is None else caster(raw_value)
                 records.append(record)
         start += count
     return overall, records
@@ -775,6 +882,24 @@ def main():
                     test_parts, args.sequence_length, source_feature_min, source_feature_max,
                     include_metadata=True,
                 )
+                # Diagnostic-only: join development_phase_role/voltage_v_raw/
+                # current_a_raw/temperature_c_raw/capacity_ah/capacity_source/
+                # source_rpt_id onto every test timestep by source_row_right,
+                # straight from this cell's raw parquet at `path` (the same
+                # file already hash-verified above) -- never from x (the
+                # scaler-normalized model input) or from resampled data. One
+                # per-cell vectorized merge (_join_diagnostic_fields_by_
+                # source_row), not a Python dict accumulated across the
+                # experiment; test_metadata['source_row_right'] is exactly
+                # what _target_parts/_windows already built above, so the
+                # join key is the same one used for the geometry columns.
+                raw_diagnostic = _load_raw_diagnostic_fields(path)
+                test_metadata = {
+                    **test_metadata,
+                    **_join_diagnostic_fields_by_source_row(
+                        test_metadata["source_row_right"], raw_diagnostic
+                    ),
+                }
                 # Diagnostic-only validation data: the existing validation_ids
                 # split (already computed by select_duration_matched_missions
                 # above, previously unused for anything but a mission count),

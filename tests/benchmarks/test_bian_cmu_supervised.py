@@ -628,6 +628,13 @@ def _sample_prediction_chunk(*, repeat, seed, cell_id, method, n_records=3):
             "elapsed_candidate_s": 1.0 * i,
             "original_time_s": 100.0 + i,
             "source_row_right": 1000 + i,
+            "development_phase_role": "high_1" if i % 2 == 0 else None,
+            "voltage_v_raw": 3.5 + 0.01 * i,
+            "current_a_raw": -1.0 - 0.01 * i,
+            "temperature_c_raw": 25.0 + 0.1 * i,
+            "capacity_ah": 2.5 if i % 3 else None,
+            "capacity_source": "rpt" if i % 3 else None,
+            "source_rpt_id": f"rpt-{i}" if i % 3 else None,
             "soc_reference": 0.1 * i,
             "soc_prediction": 0.1 * i + 0.01,
             "signed_error": 0.01,
@@ -1088,3 +1095,251 @@ def test_evaluate_prediction_records_carry_aligned_metadata_across_missions() ->
                     float(y[global_window_index, timestep_index]),
                 )
         start += count
+
+
+def test_join_diagnostic_fields_by_source_row_aligns_exact_values() -> None:
+    """Core alignment requirement for the diagnostic join: every position
+    in `source_row_right` must get exactly the raw_diagnostic row whose
+    source_row matches -- checked here with a REPEATED source_row inside
+    `source_row_right` (two different timesteps mapping to the same raw
+    row, as can genuinely happen when several resampled timesteps fall
+    between the same pair of original rows), to prove the vectorized
+    merge isn't just a coincidental 1:1 index correspondence."""
+
+    raw_diagnostic = pd.DataFrame(
+        {
+            "source_row": [100, 101, 102, 103],
+            "development_phase_role": ["high_1", "lower", "high_2", "lower"],
+            "voltage_v_raw": [3.60, 3.55, 3.50, 3.45],
+            "current_a_raw": [-1.0, -1.1, -1.2, -1.3],
+            "temperature_c_raw": [24.0, 24.5, 25.0, 25.5],
+            "capacity_ah": [2.50, 2.49, 2.48, 2.47],
+            "capacity_source": ["rpt", "rpt", "rpt", "rpt"],
+            "source_rpt_id": ["R1", "R1", "R2", "R2"],
+        }
+    )
+    # 2 windows x 3 timesteps; source_row 101 is repeated within one
+    # window and source_row 103 is repeated within the other.
+    source_row_right = np.array([[100, 101, 101], [102, 103, 103]], dtype=np.int64)
+
+    result = module._join_diagnostic_fields_by_source_row(source_row_right, raw_diagnostic)
+
+    assert result["voltage_v_raw"].shape == source_row_right.shape
+    expected_voltage = np.array([[3.60, 3.55, 3.55], [3.50, 3.45, 3.45]])
+    assert np.allclose(result["voltage_v_raw"].astype(float), expected_voltage)
+    assert result["development_phase_role"].tolist() == [
+        ["high_1", "lower", "lower"],
+        ["high_2", "lower", "lower"],
+    ]
+    assert result["source_rpt_id"].tolist() == [["R1", "R1", "R1"], ["R2", "R2", "R2"]]
+    assert result["capacity_source"].tolist() == [["rpt", "rpt", "rpt"], ["rpt", "rpt", "rpt"]]
+
+
+def test_join_diagnostic_fields_by_source_row_missing_values_are_none_not_nan_string() -> None:
+    """Two kinds of missing values must both round-trip as real Python
+    None, never the literal string "nan": (a) a matched source_row whose
+    individual field (capacity_ah/capacity_source/source_rpt_id) is
+    genuinely null in the raw parquet, and (b) a source_row_right with NO
+    matching row in raw_diagnostic at all (defensive -- should not happen
+    in practice, but must not silently fabricate a value)."""
+
+    raw_diagnostic = pd.DataFrame(
+        {
+            "source_row": [200, 201],
+            "development_phase_role": ["high_1", "lower"],
+            "voltage_v_raw": [3.6, 3.5],
+            "current_a_raw": [-1.0, -1.1],
+            "temperature_c_raw": [24.0, 24.5],
+            "capacity_ah": [None, 2.5],
+            "capacity_source": [None, "rpt"],
+            "source_rpt_id": [None, "R1"],
+        }
+    )
+    source_row_right = np.array([[200, 201, 999]], dtype=np.int64)  # 999 matches nothing
+
+    result = module._join_diagnostic_fields_by_source_row(source_row_right, raw_diagnostic)
+
+    # (a) matched row, individually-null fields.
+    assert result["capacity_ah"][0, 0] is None
+    assert result["capacity_source"][0, 0] is None
+    assert result["source_rpt_id"][0, 0] is None
+    assert result["development_phase_role"][0, 0] == "high_1"  # non-null field still comes through
+    # (b) unmatched source_row -- every diagnostic field is null.
+    for name in module.DIAGNOSTIC_METADATA_COLUMNS:
+        assert result[name][0, 2] is None
+    # Matched row with everything present.
+    assert result["capacity_ah"][0, 1] == pytest.approx(2.5)
+    assert result["source_rpt_id"][0, 1] == "R1"
+
+    # Never the literal string "nan" anywhere.
+    for name in module.DIAGNOSTIC_METADATA_COLUMNS:
+        for value in result[name].reshape(-1):
+            assert value != "nan"
+
+
+def test_load_raw_diagnostic_fields_rejects_duplicate_source_row(tmp_path) -> None:
+    """Defensive guard: a raw parquet with a duplicated source_row would
+    silently multiply rows through the join (a plain merge duplicates left
+    rows for each right-side match) -- must fail loudly instead."""
+
+    path = tmp_path / "duplicate_source_row.parquet"
+    pd.DataFrame(
+        {
+            "source_row": [1, 1],
+            "development_phase_role": ["high_1", "high_1"],
+            "voltage_v": [3.6, 3.6],
+            "current_a": [-1.0, -1.0],
+            "Temperature__C": [24.0, 24.0],
+            "capacity_ah": [2.5, 2.5],
+            "capacity_source": ["rpt", "rpt"],
+            "source_rpt_id": ["R1", "R1"],
+        }
+    ).to_parquet(path, index=False)
+
+    with pytest.raises(ValueError, match="source_row"):
+        module._load_raw_diagnostic_fields(path)
+
+
+def test_diagnostic_join_end_to_end_through_evaluate_with_missing_and_unmatched_rows() -> None:
+    """Full pipeline: fake target records -> _target_parts/_target_data
+    (include_metadata=True, giving test_metadata['source_row_right']) ->
+    _join_diagnostic_fields_by_source_row -> merged into test_metadata ->
+    _evaluate(..., metadata=..., return_predictions=True). Two missions of
+    different lengths (one with a dropped trailing window), a genuinely
+    missing capacity_ah/capacity_source/source_rpt_id on one matched row,
+    and one source_row with NO row at all in raw_diagnostic (defensive) --
+    every prediction record's diagnostic fields must match raw_diagnostic
+    at that record's own source_row_right, verified against an
+    independently-built expectation, not the production join re-run."""
+
+    initial_soc = 1.0
+    fraction = 0.0
+    length = 3
+
+    soc_a = np.linspace(0.9, 0.1, 9)  # usable=9 -> 3 whole windows, nothing dropped
+    soc_b = np.linspace(0.8, 0.2, 7)  # usable=6 -> 2 windows, last timestep dropped
+    source_row_a = np.arange(9, dtype=np.int64) + 1000
+    source_row_b = np.arange(7, dtype=np.int64) + 5000
+    record_a = _fake_target_record(
+        mission="MA", sequence_order=0, soc=soc_a, source_row_right=source_row_a
+    )
+    record_b = _fake_target_record(
+        mission="MB", sequence_order=1, soc=soc_b, source_row_right=source_row_b
+    )
+
+    parts = module._target_parts(
+        [record_a, record_b], {"MA", "MB"}, initial_soc, fraction, "test", include_metadata=True
+    )
+    test_x, test_y, missions, test_metadata = module._target_data(
+        parts, length, feature_min=np.array([0.0, 0.0]), feature_max=np.array([20.0, 120.0]),
+        include_metadata=True,
+    )
+
+    all_rows = np.concatenate([source_row_a, source_row_b])
+    missing_row = int(all_rows[3])  # dropped from raw_diagnostic entirely -> unmatched
+    present_rows = [int(r) for r in all_rows if r != missing_row]
+    null_field_row = present_rows[0]  # matched, but with null capacity_ah/source/rpt_id
+    raw_diagnostic = pd.DataFrame(
+        {
+            "source_row": present_rows,
+            "development_phase_role": ["high_1"] * len(present_rows),
+            "voltage_v_raw": [3.5 + 0.001 * r for r in present_rows],
+            "current_a_raw": [-1.0 - 0.001 * r for r in present_rows],
+            "temperature_c_raw": [25.0 + 0.001 * r for r in present_rows],
+            "capacity_ah": [None if r == null_field_row else 2.5 for r in present_rows],
+            "capacity_source": [None if r == null_field_row else "rpt" for r in present_rows],
+            "source_rpt_id": [None if r == null_field_row else f"R{r}" for r in present_rows],
+        }
+    )
+
+    diagnostic_fields = module._join_diagnostic_fields_by_source_row(
+        test_metadata["source_row_right"], raw_diagnostic
+    )
+    test_metadata = {**test_metadata, **diagnostic_fields}
+
+    torch.manual_seed(4)
+    model = module.DTNN(2, 8, 4, 8)
+    _, records = module._evaluate(
+        model, test_x, test_y, missions, batch_size=4, device=torch.device("cpu"),
+        return_predictions=True, metadata=test_metadata,
+    )
+
+    raw_lookup = raw_diagnostic.set_index("source_row")
+    checked_missing_field_row = False
+    checked_unmatched_row = False
+    for record in records:
+        row = record["source_row_right"]
+        for name in module.DIAGNOSTIC_METADATA_COLUMNS:
+            assert record[name] != "nan"
+        if row == missing_row:
+            checked_unmatched_row = True
+            for name in module.DIAGNOSTIC_METADATA_COLUMNS:
+                assert record[name] is None
+            continue
+        expected = raw_lookup.loc[row]
+        if row == null_field_row:
+            checked_missing_field_row = True
+            assert record["capacity_ah"] is None
+            assert record["capacity_source"] is None
+            assert record["source_rpt_id"] is None
+        else:
+            assert record["capacity_ah"] == pytest.approx(float(expected["capacity_ah"]))
+            assert record["capacity_source"] == expected["capacity_source"]
+            assert record["source_rpt_id"] == expected["source_rpt_id"]
+        assert record["development_phase_role"] == expected["development_phase_role"]
+        assert record["voltage_v_raw"] == pytest.approx(float(expected["voltage_v_raw"]))
+        assert record["current_a_raw"] == pytest.approx(float(expected["current_a_raw"]))
+        assert record["temperature_c_raw"] == pytest.approx(float(expected["temperature_c_raw"]))
+
+    assert checked_missing_field_row
+    assert checked_unmatched_row
+
+
+def test_multi_chunk_write_preserves_diagnostic_fields_and_nulls(tmp_path) -> None:
+    """Requirement #4/#5 together: the diagnostic columns are part of the
+    same fixed TEST_PREDICTIONS_SCHEMA and go through the same streaming
+    ParquetWriter chunk-at-a-time mechanism as every other column -- write
+    several repeat x cell x method chunks (some rows with real nulls in
+    the diagnostic fields, matching what _sample_prediction_chunk already
+    produces), close, and read back: every value must survive, and a null
+    must come back as a real pandas/pyarrow null, never the string
+    "nan"."""
+
+    tmp_output = tmp_path / "test_predictions.parquet.incomplete"
+    writer = pq.ParquetWriter(tmp_output, module.TEST_PREDICTIONS_SCHEMA)
+    chunks = [
+        _sample_prediction_chunk(repeat=1, seed=1, cell_id="VAH01", method="Source only", n_records=4),
+        _sample_prediction_chunk(repeat=1, seed=1, cell_id="VAH01", method="Bian MDA", n_records=4),
+        _sample_prediction_chunk(repeat=2, seed=2, cell_id="VAH17", method="Source only", n_records=5),
+    ]
+    for chunk in chunks:
+        module._write_prediction_chunk(writer, chunk)
+    writer.close()
+    final_path = tmp_path / "test_predictions.parquet"
+    tmp_output.replace(final_path)
+
+    frame = pq.read_table(final_path).to_pandas()
+    expected = pd.DataFrame([row for chunk in chunks for row in chunk])
+
+    assert len(frame) == len(expected)
+    diagnostic_columns = (
+        "development_phase_role", "voltage_v_raw", "current_a_raw", "temperature_c_raw",
+        "capacity_ah", "capacity_source", "source_rpt_id",
+    )
+    for column in diagnostic_columns:
+        assert column in frame.columns
+        for value in frame[column]:
+            assert value != "nan"
+    # _sample_prediction_chunk sets development_phase_role/capacity_ah/
+    # capacity_source/source_rpt_id to None for some rows (i % 2 == 0 or
+    # i % 3 == 0) -- at least one such row must exist in this chunk set,
+    # and it must read back as a real null, never the text "nan".
+    for column in ("development_phase_role", "capacity_ah", "capacity_source", "source_rpt_id"):
+        assert frame[column].isna().any()
+
+    # And every non-null value round-trips exactly.
+    frame_sorted = frame.sort_values(list(frame.columns)).reset_index(drop=True)
+    expected_sorted = expected[list(frame.columns)].sort_values(list(frame.columns)).reset_index(
+        drop=True
+    )
+    pd.testing.assert_frame_equal(frame_sorted, expected_sorted, check_dtype=False)
