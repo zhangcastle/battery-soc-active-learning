@@ -189,3 +189,101 @@ def test_adapt_history_does_not_change_final_result_or_optimizer_step_count() ->
     assert final["optimizer_steps"] == args.transfer_epochs * steps_per_epoch
     assert isinstance(final["layer_mmd"], list) and len(final["layer_mmd"]) == 3
     assert isinstance(final["layer_weights"], list) and len(final["layer_weights"]) == 3
+
+
+def test_adapt_history_includes_positive_runtime_seconds() -> None:
+    """runtime_seconds on each training_history.csv row must be present,
+    a real positive wall-clock measurement (not a placeholder/zero), and
+    must not include the diagnostic bookkeeping cost -- verified indirectly
+    by confirming it scales up when more optimizer steps run in the epoch
+    (a fixed/placeholder value would not)."""
+
+    torch.manual_seed(0)
+    model_small = module.DTNN(2, 8, 4, 8)
+    source_x, source_y, target_x_small, target_y_small = _synthetic_adapt_inputs(
+        source_n=6, target_n=4, seq_len=4
+    )
+    args_small = _adapt_args(transfer_epochs=2, transfer_batch_size=4)  # 1 step/epoch
+    _final_small, history_small = module._adapt(
+        model_small, source_x, source_y, target_x_small, target_y_small, args_small,
+        torch.device("cpu"),
+    )
+    for row in history_small:
+        assert "runtime_seconds" in row
+        assert isinstance(row["runtime_seconds"], float)
+        assert row["runtime_seconds"] > 0
+
+    torch.manual_seed(0)
+    model_large = module.DTNN(2, 8, 4, 8)
+    _source_x2, _source_y2, target_x_large, target_y_large = _synthetic_adapt_inputs(
+        source_n=6, target_n=40, seq_len=4, seed=1
+    )
+    args_large = _adapt_args(transfer_epochs=2, transfer_batch_size=4)  # 10 steps/epoch
+    _final_large, history_large = module._adapt(
+        model_large, source_x, source_y, target_x_large, target_y_large, args_large,
+        torch.device("cpu"),
+    )
+    for row in history_large:
+        assert row["runtime_seconds"] > 0
+
+    # 10x the optimizer steps per epoch should take meaningfully longer than
+    # 1x -- catches a bug where runtime_seconds is timed around the wrong
+    # (per-step-only, not accumulated) scope, or is a constant/no-op.
+    mean_small = float(np.mean([row["runtime_seconds"] for row in history_small]))
+    mean_large = float(np.mean([row["runtime_seconds"] for row in history_large]))
+    assert mean_large > mean_small
+
+
+def test_train_source_history_matches_the_printed_epoch_mse_and_has_runtime() -> None:
+    """_train_source's returned per-epoch history must carry the exact same
+    source_mse the function already computed for its print statement (a
+    len(xb)-weighted mean over the epoch's batches, not just the last
+    batch), plus a constant learning_rate (no scheduler here) and a
+    positive per-epoch runtime_seconds -- all without changing what
+    _train_source actually trains."""
+
+    torch.manual_seed(0)
+    model = module.DTNN(2, 8, 4, 8)
+    rng = np.random.default_rng(3)
+    x = rng.normal(size=(9, 4, 2)).astype(np.float32)
+    y = rng.uniform(0, 1, size=(9, 4)).astype(np.float32)
+    epochs, batch_size, lr = 3, 4, 5e-3
+
+    mse_calls: list[float] = []
+    original_mseloss = module.nn.MSELoss
+
+    class _RecordingMSELoss(nn.Module):
+        def forward(self, prediction: torch.Tensor, target: torch.Tensor) -> torch.Tensor:
+            value = ((prediction - target) ** 2).mean()
+            mse_calls.append(float(value.detach()))
+            return value
+
+    module.nn.MSELoss = lambda *a, **kw: _RecordingMSELoss()
+    try:
+        history = module._train_source(model, x, y, epochs, batch_size, lr, torch.device("cpu"))
+    finally:
+        module.nn.MSELoss = original_mseloss
+
+    steps_per_epoch = -(-len(x) // batch_size)  # ceil
+    assert len(history) == epochs
+    assert len(mse_calls) == epochs * steps_per_epoch
+
+    # Reproduce the exact len(xb)-weighted-mean formula _train_source uses,
+    # from independently-recorded per-batch losses, using the loader's own
+    # batch sizes (last batch of 9 items at batch_size=4 is smaller: 4,4,1).
+    remaining = len(x)
+    batch_sizes = []
+    for _ in range(steps_per_epoch):
+        batch_sizes.append(min(batch_size, remaining))
+        remaining -= batch_sizes[-1]
+
+    for epoch_index, row in enumerate(history):
+        assert row["epoch"] == epoch_index + 1
+        assert row["learning_rate"] == lr
+        assert row["runtime_seconds"] > 0
+        start, stop = epoch_index * steps_per_epoch, (epoch_index + 1) * steps_per_epoch
+        epoch_losses = mse_calls[start:stop]
+        expected_source_mse = sum(
+            loss * size for loss, size in zip(epoch_losses, batch_sizes)
+        ) / len(x)
+        assert np.isclose(row["source_mse"], expected_source_mse)

@@ -10,6 +10,7 @@ import copy
 import json
 import random
 import sys
+import time
 from itertools import cycle
 from pathlib import Path
 
@@ -45,6 +46,27 @@ def _seed(value: int) -> None:
     random.seed(value)
     np.random.seed(value)
     torch.manual_seed(value)
+
+
+class _Timer:
+    """Wall-clock stopwatch. CUDA ops are async, so a timed block that ran
+    on GPU is synced before stopping -- otherwise the measured duration
+    would just be launch overhead, not actual compute time. Diagnostic
+    only: never wraps anything that changes what gets trained."""
+
+    def __init__(self, device: torch.device) -> None:
+        self.device = device
+
+    def __enter__(self) -> "_Timer":
+        if self.device.type == "cuda":
+            torch.cuda.synchronize()
+        self._start = time.perf_counter()
+        return self
+
+    def __exit__(self, *exc) -> None:
+        if self.device.type == "cuda":
+            torch.cuda.synchronize()
+        self.seconds = time.perf_counter() - self._start
 
 
 def _windows(parts: list[tuple[np.ndarray, np.ndarray, str]], length: int):
@@ -118,21 +140,41 @@ def _loader(x, y, batch_size, shuffle):
 
 
 def _train_source(model, x, y, epochs, batch_size, lr, device):
+    """Runs source pretraining exactly as before (same loader, same
+    optimizer, same loss, same epoch count). The only addition is a
+    per-epoch diagnostic history list returned alongside training -- pure
+    bookkeeping (a wall-clock timer around the existing training-only loop,
+    plus the same weighted-mean MSE that was already computed for the
+    print statement) that does not change what is trained or in what
+    order."""
     loader = _loader(x, y, batch_size, True)
     optimizer = torch.optim.Adam(model.parameters(), lr=lr)
     criterion = nn.MSELoss()
+    history = []
     for epoch in range(epochs):
         model.train()
         total = 0.0
-        for xb, yb in loader:
-            xb, yb = xb.to(device), yb.to(device)
-            optimizer.zero_grad(set_to_none=True)
-            loss = criterion(model(xb), yb)
-            loss.backward()
-            optimizer.step()
-            total += float(loss.detach()) * len(xb)
+        with _Timer(device) as timer:
+            for xb, yb in loader:
+                xb, yb = xb.to(device), yb.to(device)
+                optimizer.zero_grad(set_to_none=True)
+                loss = criterion(model(xb), yb)
+                loss.backward()
+                optimizer.step()
+                total += float(loss.detach()) * len(xb)
+        runtime_seconds = timer.seconds
+        source_mse = total / len(x)
+        history.append(
+            {
+                "epoch": epoch + 1,
+                "source_mse": source_mse,
+                "learning_rate": optimizer.param_groups[0]["lr"],
+                "runtime_seconds": runtime_seconds,
+            }
+        )
         if epoch == 0 or epoch + 1 == epochs or (epoch + 1) % max(epochs // 10, 1) == 0:
-            print(f"  source epoch {epoch + 1}/{epochs}: mse={total / len(x):.6f}")
+            print(f"  source epoch {epoch + 1}/{epochs}: mse={source_mse:.6f}")
+    return history
 
 
 LAYER_NAMES = ("cnn2", "bilstm2", "fc")  # matches adaptive_multiscale_mmd's (c2, blstm2, fc) order
@@ -164,19 +206,26 @@ def _adapt(model, source_x, source_y, target_x, target_y, args, device):
         epoch_layer_mmd_sum = [0.0] * len(LAYER_NAMES)
         epoch_layer_weight_sum = [0.0] * len(LAYER_NAMES)
         epoch_steps = 0
+        epoch_training_seconds = 0.0
         for target_batch in target_loader:
             source_batch = next(source_batches)
-            sx, sy = (item.to(device) for item in source_batch)
-            tx, ty = (item.to(device) for item in target_batch)
-            optimizer.zero_grad(set_to_none=True)
-            sp, sf = model(sx, return_features=True)
-            tp, tf = model(tx, return_features=True)
-            source_loss = criterion(sp, sy)
-            target_loss = criterion(tp, ty)
-            mmd, layer_mmd, weights = adaptive_multiscale_mmd(sf, tf)
-            loss = source_loss + args.target_weight * target_loss + args.mmd_weight * mmd
-            loss.backward()
-            optimizer.step()
+            # Timed region = the actual training step only (data transfer
+            # through optimizer.step()); the diagnostic float-extraction and
+            # accumulation below is excluded so runtime_seconds reflects
+            # pure training compute, not diagnostic bookkeeping overhead.
+            with _Timer(device) as step_timer:
+                sx, sy = (item.to(device) for item in source_batch)
+                tx, ty = (item.to(device) for item in target_batch)
+                optimizer.zero_grad(set_to_none=True)
+                sp, sf = model(sx, return_features=True)
+                tp, tf = model(tx, return_features=True)
+                source_loss = criterion(sp, sy)
+                target_loss = criterion(tp, ty)
+                mmd, layer_mmd, weights = adaptive_multiscale_mmd(sf, tf)
+                loss = source_loss + args.target_weight * target_loss + args.mmd_weight * mmd
+                loss.backward()
+                optimizer.step()
+            epoch_training_seconds += step_timer.seconds
             layer_mmd_values = [float(v) for v in layer_mmd.detach().cpu()]
             layer_weight_values = [float(v) for v in weights.cpu()]
             final = {
@@ -211,6 +260,7 @@ def _adapt(model, source_x, source_y, target_x, target_y, args, device):
             for index, name in enumerate(LAYER_NAMES):
                 row[f"layer_weight_{name}"] = epoch_layer_weight_sum[index] / epoch_steps
             row["learning_rate"] = optimizer.param_groups[0]["lr"]
+            row["runtime_seconds"] = epoch_training_seconds
             row["optimizer_steps"] = epoch_steps
             history.append(row)
     final["optimizer_steps"] = args.transfer_epochs * len(target_loader)
@@ -312,7 +362,7 @@ def main():
     )
     manifest = pd.read_csv(args.cmu_manifest)
     args.output_root.mkdir(parents=True, exist_ok=True)
-    rows, runs, training_history_rows = [], [], []
+    rows, runs, training_history_rows, source_training_history_rows = [], [], [], []
     widths = (64, 32, 64) if args.lightweight else (256, 64, 256)
 
     for repeat in range(args.repeats):
@@ -320,9 +370,13 @@ def main():
         _seed(seed)
         print(f"repeat {repeat + 1}/{args.repeats}: pretraining on {len(source_x)} source windows")
         source_model = DTNN(2, *widths).to(device)
-        _train_source(
+        source_history = _train_source(
             source_model, source_x, source_y, args.source_epochs, args.batch_size, args.lr, device
         )
+        for history_row in source_history:
+            source_training_history_rows.append(
+                {"repeat": repeat + 1, "seed": seed, **history_row}
+            )
         source_state = copy.deepcopy(source_model.state_dict())
 
         for cell in args.cells:
@@ -400,10 +454,17 @@ def main():
             "source_mse", "target_mse", "adaptive_mmd", "total_loss",
             "layer_mmd_cnn2", "layer_mmd_bilstm2", "layer_mmd_fc",
             "layer_weight_cnn2", "layer_weight_bilstm2", "layer_weight_fc",
-            "learning_rate", "optimizer_steps",
+            "learning_rate", "runtime_seconds", "optimizer_steps",
         ],
     )
     training_history.to_csv(args.output_root / "training_history.csv", index=False)
+    source_training_history = pd.DataFrame(
+        source_training_history_rows,
+        columns=["repeat", "seed", "epoch", "source_mse", "learning_rate", "runtime_seconds"],
+    )
+    source_training_history.to_csv(
+        args.output_root / "source_training_history.csv", index=False
+    )
     summary = (
         table.groupby(["cell_id", "initial_soc_percent", "method"], sort=False)
         .mean(numeric_only=True)
