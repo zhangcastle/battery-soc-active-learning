@@ -7,6 +7,9 @@ from pathlib import Path
 from types import SimpleNamespace
 
 import numpy as np
+import pandas as pd
+import pyarrow.parquet as pq
+import pytest
 import torch
 from torch import nn
 
@@ -599,3 +602,169 @@ def test_evaluate_predictions_recompute_mae_rmse_matches_evaluate_result() -> No
 
     assert np.isclose(recomputed["mae"] * 100, overall["overall_mae_percent"])
     assert np.isclose(recomputed["rmse"] * 100, overall["overall_rmse_percent"])
+
+
+def _sample_prediction_chunk(*, repeat, seed, cell_id, method, n_records=3):
+    """A small, schema-shaped chunk of prediction rows -- the same shape
+    _write_prediction_chunk receives from main() for one repeat x cell x
+    method, but built directly here so these tests exercise the streaming
+    writer without needing real CMU/Panasonic data or running main()."""
+
+    return [
+        {
+            "framework": "bian_2021",
+            "method": method,
+            "repeat": repeat,
+            "seed": seed,
+            "cell_id": cell_id,
+            "condition": "baseline_protocol",
+            "split": "test",
+            "mission_cycle_id": f"{cell_id}-mission-{i % 2}",
+            "window_index": i,
+            "timestep_index": 0,
+            "soc_reference": 0.1 * i,
+            "soc_prediction": 0.1 * i + 0.01,
+            "signed_error": 0.01,
+            "absolute_error": 0.01,
+        }
+        for i in range(n_records)
+    ]
+
+
+def test_write_prediction_chunk_multi_chunk_roundtrip_preserves_schema_and_rows(
+    tmp_path,
+) -> None:
+    """Core requirement: writing several repeat x cell x method chunks
+    through ParquetWriter/_write_prediction_chunk (never accumulating them
+    in one big list first), then closing the writer and reading the file
+    back, must preserve every row, both methods, and the exact fixed
+    TEST_PREDICTIONS_SCHEMA column order/types -- regardless of how many
+    separate write_table() calls it took to get there."""
+
+    tmp_output = tmp_path / "test_predictions.parquet.incomplete"
+    writer = pq.ParquetWriter(tmp_output, module.TEST_PREDICTIONS_SCHEMA)
+    chunks = [
+        _sample_prediction_chunk(repeat=1, seed=1, cell_id="VAH01", method="Source only", n_records=2),
+        _sample_prediction_chunk(repeat=1, seed=1, cell_id="VAH01", method="Bian MDA", n_records=2),
+        _sample_prediction_chunk(repeat=1, seed=1, cell_id="VAH17", method="Source only", n_records=3),
+        _sample_prediction_chunk(repeat=1, seed=1, cell_id="VAH17", method="Bian MDA", n_records=3),
+        _sample_prediction_chunk(repeat=2, seed=2, cell_id="VAH01", method="Source only", n_records=1),
+        _sample_prediction_chunk(repeat=2, seed=2, cell_id="VAH01", method="Bian MDA", n_records=1),
+    ]
+    for chunk in chunks:
+        module._write_prediction_chunk(writer, chunk)
+    writer.close()
+
+    final_path = tmp_path / "test_predictions.parquet"
+    tmp_output.replace(final_path)
+
+    read_back = pq.read_table(final_path)
+    assert read_back.schema.equals(module.TEST_PREDICTIONS_SCHEMA)
+
+    frame = read_back.to_pandas()
+    expected_total = sum(len(chunk) for chunk in chunks)
+    assert len(frame) == expected_total
+
+    assert set(frame["method"]) == {"Source only", "Bian MDA"}
+    assert set(frame["cell_id"]) == {"VAH01", "VAH17"}
+    assert set(frame["repeat"]) == {1, 2}
+
+    # Every individual row from every chunk must be present, unchanged, in
+    # the file read back -- not just matching totals/sets.
+    expected_rows = pd.DataFrame([row for chunk in chunks for row in chunk])
+    expected_rows = expected_rows[list(frame.columns)]
+    frame_sorted = frame.sort_values(list(frame.columns)).reset_index(drop=True)
+    expected_sorted = expected_rows.sort_values(list(frame.columns)).reset_index(drop=True)
+    pd.testing.assert_frame_equal(frame_sorted, expected_sorted, check_dtype=False)
+
+
+def test_write_prediction_chunk_empty_chunk_is_a_no_op(tmp_path) -> None:
+    """An empty per-repeat-x-cell-x-method chunk (e.g. a cell/method that
+    happened to produce zero prediction records) must not write a
+    malformed or zero-row record batch -- it's simply skipped."""
+
+    tmp_output = tmp_path / "test_predictions.parquet.incomplete"
+    writer = pq.ParquetWriter(tmp_output, module.TEST_PREDICTIONS_SCHEMA)
+    module._write_prediction_chunk(writer, [])
+    module._write_prediction_chunk(
+        writer, _sample_prediction_chunk(repeat=1, seed=1, cell_id="VAH01", method="Source only")
+    )
+    writer.close()
+
+    frame = pq.read_table(tmp_output).to_pandas()
+    assert len(frame) == 3
+
+
+def test_streaming_writer_success_path_renames_to_final_name(tmp_path) -> None:
+    """Mirrors main()'s own try/finally around test_predictions_writer:
+    on a clean run (no exception), the writer is closed and the
+    ".incomplete" temp file is atomically replaced onto the final
+    "test_predictions.parquet" name -- and only that final name exists
+    afterward."""
+
+    tmp_output = tmp_path / "test_predictions.parquet.incomplete"
+    final_output = tmp_path / "test_predictions.parquet"
+    writer = pq.ParquetWriter(tmp_output, module.TEST_PREDICTIONS_SCHEMA)
+    completed = False
+    try:
+        for repeat in (1, 2):
+            for method in ("Source only", "Bian MDA"):
+                module._write_prediction_chunk(
+                    writer,
+                    _sample_prediction_chunk(
+                        repeat=repeat, seed=repeat, cell_id="VAH01", method=method
+                    ),
+                )
+        completed = True
+    finally:
+        writer.close()
+        if completed:
+            tmp_output.replace(final_output)
+
+    assert final_output.exists()
+    assert not tmp_output.exists()
+    frame = pq.read_table(final_output).to_pandas()
+    assert len(frame) == 3 * 2 * 2
+
+
+def test_streaming_writer_failure_path_leaves_incomplete_file_and_raises(tmp_path) -> None:
+    """Core requirement: if something raises partway through writing chunks
+    (simulating a mid-run crash in main()), the writer must still be
+    closed (so the temp file is readable, not a truncated/corrupt parquet
+    file), the temp file must be left at its ".incomplete" name, NO file
+    must exist at the final "test_predictions.parquet" name (never a
+    partial file masquerading as complete), and the original exception
+    must still propagate rather than being swallowed."""
+
+    tmp_output = tmp_path / "test_predictions.parquet.incomplete"
+    final_output = tmp_path / "test_predictions.parquet"
+    writer = pq.ParquetWriter(tmp_output, module.TEST_PREDICTIONS_SCHEMA)
+    completed = False
+
+    class _BoomError(RuntimeError):
+        pass
+
+    def _run():
+        nonlocal completed
+        try:
+            module._write_prediction_chunk(
+                writer,
+                _sample_prediction_chunk(repeat=1, seed=1, cell_id="VAH01", method="Source only"),
+            )
+            raise _BoomError("simulated mid-run failure after one chunk")
+        finally:
+            writer.close()
+            if completed:
+                tmp_output.replace(final_output)
+
+    with pytest.raises(_BoomError):
+        _run()
+
+    assert not completed
+    assert not final_output.exists()
+    assert tmp_output.exists()
+    # The temp file must still be a valid, readable parquet file (the
+    # writer was properly closed despite the exception), containing
+    # exactly the one chunk written before the failure.
+    frame = pq.read_table(tmp_output).to_pandas()
+    assert len(frame) == 3

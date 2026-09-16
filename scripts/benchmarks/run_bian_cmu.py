@@ -17,6 +17,8 @@ from pathlib import Path
 
 import numpy as np
 import pandas as pd
+import pyarrow as pa
+import pyarrow.parquet as pq
 import torch
 from torch import nn
 from torch.utils.data import DataLoader, TensorDataset
@@ -41,6 +43,41 @@ CELLS = ("VAH01", "VAH17", "VAH27", "VAH30", "VAH15", "VAH12", "VAH11")
 BASELINE_CELLS = {"VAH01", "VAH17", "VAH27"}
 SOURCE_PROFILES = ("Cycle_1", "Cycle_2", "Cycle_3", "Cycle_4", "NN", "US06", "HWFET")
 FEATURES = ("current", "voltage")
+
+# Fixed schema for test_predictions.parquet, shared by every chunk written
+# via _write_prediction_chunk below -- guarantees identical column order
+# and types across all repeat x cell x method chunks (and across separate
+# runs), regardless of which cells/methods happened to produce rows first.
+TEST_PREDICTIONS_SCHEMA = pa.schema(
+    [
+        ("framework", pa.string()),
+        ("method", pa.string()),
+        ("repeat", pa.int64()),
+        ("seed", pa.int64()),
+        ("cell_id", pa.string()),
+        ("condition", pa.string()),
+        ("split", pa.string()),
+        ("mission_cycle_id", pa.string()),
+        ("window_index", pa.int64()),
+        ("timestep_index", pa.int64()),
+        ("soc_reference", pa.float64()),
+        ("soc_prediction", pa.float64()),
+        ("signed_error", pa.float64()),
+        ("absolute_error", pa.float64()),
+    ]
+)
+
+
+def _write_prediction_chunk(writer: pq.ParquetWriter, rows: list[dict]) -> None:
+    """Writes one repeat x cell x method chunk of prediction records to an
+    already-open ParquetWriter, using TEST_PREDICTIONS_SCHEMA so every
+    chunk (from this call or any other) has identical column order/types.
+    A no-op on an empty chunk (pa.Table.from_pylist tolerates it, but there
+    is nothing to write and nothing to gain from writing a zero-row
+    record batch)."""
+    if not rows:
+        return
+    writer.write_table(pa.Table.from_pylist(rows, schema=TEST_PREDICTIONS_SCHEMA))
 
 
 def _seed(value: int) -> None:
@@ -518,112 +555,131 @@ def main():
     manifest = pd.read_csv(args.cmu_manifest)
     args.output_root.mkdir(parents=True, exist_ok=True)
     rows, runs, training_history_rows, source_training_history_rows = [], [], [], []
-    test_prediction_rows = []
     widths = (64, 32, 64) if args.lightweight else (256, 64, 256)
 
-    for repeat in range(args.repeats):
-        seed = args.seed + repeat
-        _seed(seed)
-        print(f"repeat {repeat + 1}/{args.repeats}: pretraining on {len(source_x)} source windows")
-        source_model = DTNN(2, *widths).to(device)
-        source_history = _train_source(
-            source_model, source_x, source_y, args.source_epochs, args.batch_size, args.lr, device
-        )
-        for history_row in source_history:
-            source_training_history_rows.append(
-                {"repeat": repeat + 1, "seed": seed, **history_row}
+    # test_predictions.parquet is written incrementally, one repeat x cell x
+    # method chunk at a time -- never by accumulating every per-timestep
+    # record for the whole experiment in memory (test_prediction_rows was
+    # removed). Chunks go to a ".incomplete" temp file via ParquetWriter;
+    # only after every chunk below has been written without error is the
+    # writer closed and the temp file atomically replaced onto the final
+    # "test_predictions.parquet" name. On any exception the writer is still
+    # closed (so the temp file has a valid parquet footer and is readable
+    # for inspection) but is left at the ".incomplete" name -- an explicit,
+    # unambiguous marker that the file is a partial write, never silently
+    # promoted to the final name.
+    test_predictions_tmp_path = args.output_root / "test_predictions.parquet.incomplete"
+    test_predictions_final_path = args.output_root / "test_predictions.parquet"
+    test_predictions_writer = pq.ParquetWriter(test_predictions_tmp_path, TEST_PREDICTIONS_SCHEMA)
+    test_predictions_completed = False
+    try:
+        for repeat in range(args.repeats):
+            seed = args.seed + repeat
+            _seed(seed)
+            print(
+                f"repeat {repeat + 1}/{args.repeats}: pretraining on {len(source_x)} source windows"
             )
-        source_state = copy.deepcopy(source_model.state_dict())
+            source_model = DTNN(2, *widths).to(device)
+            source_history = _train_source(
+                source_model, source_x, source_y, args.source_epochs, args.batch_size, args.lr, device
+            )
+            for history_row in source_history:
+                source_training_history_rows.append(
+                    {"repeat": repeat + 1, "seed": seed, **history_row}
+                )
+            source_state = copy.deepcopy(source_model.state_dict())
 
-        for cell in args.cells:
-            path = _cell_path(cell, args.cmu_base_root, args.cmu_condition_root)
-            expected = set(
-                manifest.loc[manifest["cell_id"] == cell, "source_artifact_sha256"].astype(str)
-            )
-            actual = sha256_file(path)
-            if expected != {actual}:
-                raise ValueError(f"{cell}: CMU input hash does not match manifest")
-            adapt_ids, validation_ids, test_ids, budget = select_duration_matched_missions(
-                manifest, cell, budget_seconds=args.budget_seconds
-            )
-            records = load_cmu_dynamic_soc_for_vidal([path], target_hz=1.0).records
-            adapt_parts = _target_parts(
-                records, adapt_ids, args.initial_soc, args.adapt_fraction, "adapt"
-            )
-            adapt_x, adapt_y, adapt_missions = _target_data(
-                adapt_parts, args.sequence_length, source_feature_min, source_feature_max
-            )
-            test_parts = _target_parts(
-                records, test_ids, args.initial_soc, args.adapt_fraction, "test"
-            )
-            test_x, test_y, test_missions = _target_data(
-                test_parts, args.sequence_length, source_feature_min, source_feature_max
-            )
-            # Diagnostic-only validation data: the existing validation_ids
-            # split (already computed by select_duration_matched_missions
-            # above, previously unused for anything but a mission count),
-            # sliced with the SAME rule as test ("test" portion -- start at
-            # initial_soc, keep the trailing (1 - adapt_fraction) of each
-            # mission). Never touches adapt_ids/adapt_x, so it cannot affect
-            # what the model trains on. A validation split that yields no
-            # complete windows (e.g. very few validation missions) simply
-            # disables the diagnostic for this cell rather than failing the
-            # whole run.
-            validation_x = validation_y = None
-            if validation_ids:
-                try:
-                    validation_parts = _target_parts(
-                        records, validation_ids, args.initial_soc, args.adapt_fraction, "test"
-                    )
-                    validation_x, validation_y, _validation_missions = _target_data(
-                        validation_parts, args.sequence_length,
-                        source_feature_min, source_feature_max,
-                    )
-                except ValueError:
-                    validation_x = validation_y = None
-            condition = str(manifest.loc[manifest["cell_id"] == cell, "condition"].iloc[0])
-            model = DTNN(2, *widths).to(device)
-            model.load_state_dict(source_state)
-            source_only, source_only_predictions = _evaluate(
-                model, test_x, test_y, test_missions, args.batch_size, device,
-                return_predictions=True,
-            )
-            training, adapt_history = _adapt(
-                model, source_x, source_y, adapt_x, adapt_y, args, device,
-                validation_x=validation_x, validation_y=validation_y,
-            )
-            adapted, adapted_predictions = _evaluate(
-                model, test_x, test_y, test_missions, args.batch_size, device,
-                return_predictions=True,
-            )
-            for history_row in adapt_history:
-                training_history_rows.append(
-                    {"repeat": repeat + 1, "seed": seed, "cell_id": cell, **history_row}
+            for cell in args.cells:
+                path = _cell_path(cell, args.cmu_base_root, args.cmu_condition_root)
+                expected = set(
+                    manifest.loc[manifest["cell_id"] == cell, "source_artifact_sha256"].astype(str)
                 )
-            for method, metrics in (("Source only", source_only), ("Bian MDA", adapted)):
-                rows.append(
-                    {
-                        "repeat": repeat + 1,
-                        "seed": seed,
-                        "cell_id": cell,
-                        "initial_soc_percent": int(round(args.initial_soc * 100)),
-                        "method": method,
-                        **metrics,
-                    }
+                actual = sha256_file(path)
+                if expected != {actual}:
+                    raise ValueError(f"{cell}: CMU input hash does not match manifest")
+                adapt_ids, validation_ids, test_ids, budget = select_duration_matched_missions(
+                    manifest, cell, budget_seconds=args.budget_seconds
                 )
-            # Diagnostic/reporting only: per-timestep prediction records for
-            # test_predictions.parquet, unified across methods with the same
-            # framework/method/repeat/seed/cell_id/condition/split columns
-            # used elsewhere in this benchmark suite. Built from the same
-            # per-timestep records _evaluate() already computed above (see
-            # its return_predictions=True branch) -- does not change any
-            # metric computation, only tags and collects those records.
-            for method, predictions in (
-                ("Source only", source_only_predictions),
-                ("Bian MDA", adapted_predictions),
-            ):
-                for record in predictions:
-                    test_prediction_rows.append(
+                records = load_cmu_dynamic_soc_for_vidal([path], target_hz=1.0).records
+                adapt_parts = _target_parts(
+                    records, adapt_ids, args.initial_soc, args.adapt_fraction, "adapt"
+                )
+                adapt_x, adapt_y, adapt_missions = _target_data(
+                    adapt_parts, args.sequence_length, source_feature_min, source_feature_max
+                )
+                test_parts = _target_parts(
+                    records, test_ids, args.initial_soc, args.adapt_fraction, "test"
+                )
+                test_x, test_y, test_missions = _target_data(
+                    test_parts, args.sequence_length, source_feature_min, source_feature_max
+                )
+                # Diagnostic-only validation data: the existing validation_ids
+                # split (already computed by select_duration_matched_missions
+                # above, previously unused for anything but a mission count),
+                # sliced with the SAME rule as test ("test" portion -- start at
+                # initial_soc, keep the trailing (1 - adapt_fraction) of each
+                # mission). Never touches adapt_ids/adapt_x, so it cannot affect
+                # what the model trains on. A validation split that yields no
+                # complete windows (e.g. very few validation missions) simply
+                # disables the diagnostic for this cell rather than failing the
+                # whole run.
+                validation_x = validation_y = None
+                if validation_ids:
+                    try:
+                        validation_parts = _target_parts(
+                            records, validation_ids, args.initial_soc, args.adapt_fraction, "test"
+                        )
+                        validation_x, validation_y, _validation_missions = _target_data(
+                            validation_parts, args.sequence_length,
+                            source_feature_min, source_feature_max,
+                        )
+                    except ValueError:
+                        validation_x = validation_y = None
+                condition = str(manifest.loc[manifest["cell_id"] == cell, "condition"].iloc[0])
+                model = DTNN(2, *widths).to(device)
+                model.load_state_dict(source_state)
+                source_only, source_only_predictions = _evaluate(
+                    model, test_x, test_y, test_missions, args.batch_size, device,
+                    return_predictions=True,
+                )
+                training, adapt_history = _adapt(
+                    model, source_x, source_y, adapt_x, adapt_y, args, device,
+                    validation_x=validation_x, validation_y=validation_y,
+                )
+                adapted, adapted_predictions = _evaluate(
+                    model, test_x, test_y, test_missions, args.batch_size, device,
+                    return_predictions=True,
+                )
+                for history_row in adapt_history:
+                    training_history_rows.append(
+                        {"repeat": repeat + 1, "seed": seed, "cell_id": cell, **history_row}
+                    )
+                for method, metrics in (("Source only", source_only), ("Bian MDA", adapted)):
+                    rows.append(
+                        {
+                            "repeat": repeat + 1,
+                            "seed": seed,
+                            "cell_id": cell,
+                            "initial_soc_percent": int(round(args.initial_soc * 100)),
+                            "method": method,
+                            **metrics,
+                        }
+                    )
+                # Diagnostic/reporting only: per-timestep prediction records for
+                # test_predictions.parquet, unified across methods with the same
+                # framework/method/repeat/seed/cell_id/condition/split columns
+                # used elsewhere in this benchmark suite. Built from the same
+                # per-timestep records _evaluate() already computed above (see
+                # its return_predictions=True branch) -- does not change any
+                # metric computation. Written immediately as one chunk per
+                # repeat x cell x method rather than accumulated in memory
+                # for the whole experiment (see test_predictions_writer
+                # above).
+                for method, predictions in (
+                    ("Source only", source_only_predictions),
+                    ("Bian MDA", adapted_predictions),
+                ):
+                    chunk_rows = [
                         {
                             "framework": "bian_2021",
                             "method": method,
@@ -634,26 +690,41 @@ def main():
                             "split": "test",
                             **record,
                         }
-                    )
-            runs.append(
-                {
-                    "repeat": repeat + 1,
-                    "seed": seed,
-                    "cell_id": cell,
-                    "initial_soc_percent": int(round(args.initial_soc * 100)),
-                    "cmu_input_sha256": actual,
-                    "adaptation_budget": budget,
-                    "adaptation_fraction_within_mission": args.adapt_fraction,
-                    "adaptation_missions": len(adapt_missions),
-                    "adaptation_windows": len(adapt_x),
-                    "validation_missions_unused": len(validation_ids),
-                    "training_final_batch": training,
-                }
-            )
-            print(
-                f"  {cell}: source={source_only['overall_rmse_percent']:.3f}% "
-                f"MDA={adapted['overall_rmse_percent']:.3f}%"
-            )
+                        for record in predictions
+                    ]
+                    _write_prediction_chunk(test_predictions_writer, chunk_rows)
+                runs.append(
+                    {
+                        "repeat": repeat + 1,
+                        "seed": seed,
+                        "cell_id": cell,
+                        "initial_soc_percent": int(round(args.initial_soc * 100)),
+                        "cmu_input_sha256": actual,
+                        "adaptation_budget": budget,
+                        "adaptation_fraction_within_mission": args.adapt_fraction,
+                        "adaptation_missions": len(adapt_missions),
+                        "adaptation_windows": len(adapt_x),
+                        "validation_missions_unused": len(validation_ids),
+                        "training_final_batch": training,
+                    }
+                )
+                print(
+                    f"  {cell}: source={source_only['overall_rmse_percent']:.3f}% "
+                    f"MDA={adapted['overall_rmse_percent']:.3f}%"
+                )
+        test_predictions_completed = True
+    finally:
+        # Always close the writer, even on failure, so the temp file has a
+        # valid parquet footer and can be opened for inspection. Only a
+        # clean, exception-free completion of every chunk above is
+        # promoted (via an atomic replace) to the final
+        # "test_predictions.parquet" name -- on any exception the file
+        # stays at its ".incomplete" name, and the exception itself still
+        # propagates (no except clause here) so the run is reported as
+        # failed rather than silently swallowed.
+        test_predictions_writer.close()
+        if test_predictions_completed:
+            test_predictions_tmp_path.replace(test_predictions_final_path)
 
     table = pd.DataFrame(rows)
     table.to_csv(args.output_root / "metrics.csv", index=False)
@@ -676,15 +747,6 @@ def main():
     source_training_history.to_csv(
         args.output_root / "source_training_history.csv", index=False
     )
-    test_predictions = pd.DataFrame(
-        test_prediction_rows,
-        columns=[
-            "framework", "method", "repeat", "seed", "cell_id", "condition", "split",
-            "mission_cycle_id", "window_index", "timestep_index",
-            "soc_reference", "soc_prediction", "signed_error", "absolute_error",
-        ],
-    )
-    test_predictions.to_parquet(args.output_root / "test_predictions.parquet", index=False)
     summary = (
         table.groupby(["cell_id", "initial_soc_percent", "method"], sort=False)
         .mean(numeric_only=True)
