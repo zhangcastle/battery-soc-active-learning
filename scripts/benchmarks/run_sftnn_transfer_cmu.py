@@ -369,10 +369,47 @@ def main() -> None:
                             threshold=args.pseudo_threshold, lookahead=args.pseudo_lookahead,
                         )
                     if len(dataset) == 0:
-                        raise RuntimeError(
-                            f"{cell}: no pseudo-labels survived confidence filtering; "
-                            "try a higher --pseudo-threshold"
+                        # Zero-shot source predictions on this cell are too
+                        # noisy/discontinuous for any window to survive the
+                        # smoothness filter (this can legitimately happen --
+                        # MED's own Algorithm 1 has no fallback for it). Do
+                        # NOT crash the whole multi-cell sweep over one cell:
+                        # record it as an honest failed/skipped row (no
+                        # metrics, status flagged) and move on, the same way
+                        # a formal_benchmark_eligible=false row already
+                        # signals "don't trust this number" elsewhere in this
+                        # repo.
+                        print(
+                            f"  {cell}/med: WARNING -- no pseudo-label windows survived "
+                            f"confidence filtering (threshold={args.pseudo_threshold}, "
+                            f"{info.get('total_windows', 0)} candidate windows, 0 passed). "
+                            "Recording as a failed/skipped row instead of aborting the run."
                         )
+                        row = {
+                            "method": method,
+                            "cell_id": cell,
+                            "seed": seed,
+                            "device": str(device),
+                            "med_source_pretrain_seconds": med_pretrain_timing["seconds"],
+                            "med_source_pretrain_epochs": med_pretrain_timing["epochs"],
+                            "dann_source_pretrain_seconds": dann_pretrain_timing["seconds"],
+                            "dann_source_pretrain_epochs": dann_pretrain_timing["epochs"],
+                            "pseudo_label_seconds": pseudo_timer.seconds,
+                            "adapt_seconds": None,
+                            "eval_seconds": None,
+                            "cmu_input_sha256": actual,
+                            "n_train_missions": len(train_cycles),
+                            "n_test_missions": len(test_cycles),
+                            "label_is_ground_truth": False,
+                            "formal_benchmark_eligible": False,
+                            "pseudo_label_info": info,
+                            "pseudo_label_collapsed": True,
+                            "epochs_completed": 0,
+                        }
+                        cell_root.mkdir(parents=True, exist_ok=True)
+                        result_path.write_text(json.dumps(row, indent=2), encoding="utf-8")
+                        _rebuild_cell_metrics(args.output_root)
+                        continue
                     with _Timer(device) as adapt_timer:
                         adapted, history = med_adapt(
                             med_source, dataset,
