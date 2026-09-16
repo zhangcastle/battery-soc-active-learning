@@ -375,7 +375,17 @@ def _adapt(
 
 
 @torch.no_grad()
-def _evaluate(model, x, y, missions, batch_size, device):
+def _evaluate(model, x, y, missions, batch_size, device, *, return_predictions=False):
+    """Existing metric computation (``overall``) is completely unchanged --
+    still built from the same ``prediction``/``y`` arrays via the same
+    ``compute_metrics`` calls in the same order. The only addition is an
+    optional second return value: when ``return_predictions=True``, also
+    return a list of per-timestep prediction records (mission_cycle_id,
+    window_index, timestep_index, soc_reference, soc_prediction,
+    signed_error, absolute_error) built read-only from those same
+    ``prediction``/``y`` arrays after ``overall`` has already been computed.
+    Callers that don't pass ``return_predictions`` get exactly the previous
+    single-value return, so every existing call site is unaffected."""
     model.eval()
     prediction = torch.cat(
         [model(xb.to(device)).cpu() for xb, _ in _loader(x, y, batch_size, False)]
@@ -402,7 +412,36 @@ def _evaluate(model, x, y, missions, batch_size, device):
             "test_windows": len(x),
         }
     )
-    return overall
+    if not return_predictions:
+        return overall
+
+    # Diagnostic/reporting only, from here down: per-timestep prediction
+    # records for the saved test_predictions.parquet. Read-only reuse of
+    # the ``prediction``/``y`` arrays already computed above -- does not
+    # recompute or alter anything ``overall`` reports. ``window_index`` is
+    # the window's position within its own mission (0-based), matching
+    # ``timestep_index`` being the position within that window (0-based).
+    records = []
+    start = 0
+    for mission, count in missions:
+        for local_window_index in range(count):
+            global_window_index = start + local_window_index
+            for timestep_index in range(x.shape[1]):
+                reference = float(y[global_window_index, timestep_index])
+                predicted = float(prediction[global_window_index, timestep_index])
+                records.append(
+                    {
+                        "mission_cycle_id": mission,
+                        "window_index": local_window_index,
+                        "timestep_index": timestep_index,
+                        "soc_reference": reference,
+                        "soc_prediction": predicted,
+                        "signed_error": predicted - reference,
+                        "absolute_error": abs(predicted - reference),
+                    }
+                )
+        start += count
+    return overall, records
 
 
 def _cell_path(cell, base_root, condition_root):
@@ -479,6 +518,7 @@ def main():
     manifest = pd.read_csv(args.cmu_manifest)
     args.output_root.mkdir(parents=True, exist_ok=True)
     rows, runs, training_history_rows, source_training_history_rows = [], [], [], []
+    test_prediction_rows = []
     widths = (64, 32, 64) if args.lightweight else (256, 64, 256)
 
     for repeat in range(args.repeats):
@@ -541,14 +581,21 @@ def main():
                     )
                 except ValueError:
                     validation_x = validation_y = None
+            condition = str(manifest.loc[manifest["cell_id"] == cell, "condition"].iloc[0])
             model = DTNN(2, *widths).to(device)
             model.load_state_dict(source_state)
-            source_only = _evaluate(model, test_x, test_y, test_missions, args.batch_size, device)
+            source_only, source_only_predictions = _evaluate(
+                model, test_x, test_y, test_missions, args.batch_size, device,
+                return_predictions=True,
+            )
             training, adapt_history = _adapt(
                 model, source_x, source_y, adapt_x, adapt_y, args, device,
                 validation_x=validation_x, validation_y=validation_y,
             )
-            adapted = _evaluate(model, test_x, test_y, test_missions, args.batch_size, device)
+            adapted, adapted_predictions = _evaluate(
+                model, test_x, test_y, test_missions, args.batch_size, device,
+                return_predictions=True,
+            )
             for history_row in adapt_history:
                 training_history_rows.append(
                     {"repeat": repeat + 1, "seed": seed, "cell_id": cell, **history_row}
@@ -564,6 +611,30 @@ def main():
                         **metrics,
                     }
                 )
+            # Diagnostic/reporting only: per-timestep prediction records for
+            # test_predictions.parquet, unified across methods with the same
+            # framework/method/repeat/seed/cell_id/condition/split columns
+            # used elsewhere in this benchmark suite. Built from the same
+            # per-timestep records _evaluate() already computed above (see
+            # its return_predictions=True branch) -- does not change any
+            # metric computation, only tags and collects those records.
+            for method, predictions in (
+                ("Source only", source_only_predictions),
+                ("Bian MDA", adapted_predictions),
+            ):
+                for record in predictions:
+                    test_prediction_rows.append(
+                        {
+                            "framework": "bian_2021",
+                            "method": method,
+                            "repeat": repeat + 1,
+                            "seed": seed,
+                            "cell_id": cell,
+                            "condition": condition,
+                            "split": "test",
+                            **record,
+                        }
+                    )
             runs.append(
                 {
                     "repeat": repeat + 1,
@@ -605,6 +676,15 @@ def main():
     source_training_history.to_csv(
         args.output_root / "source_training_history.csv", index=False
     )
+    test_predictions = pd.DataFrame(
+        test_prediction_rows,
+        columns=[
+            "framework", "method", "repeat", "seed", "cell_id", "condition", "split",
+            "mission_cycle_id", "window_index", "timestep_index",
+            "soc_reference", "soc_prediction", "signed_error", "absolute_error",
+        ],
+    )
+    test_predictions.to_parquet(args.output_root / "test_predictions.parquet", index=False)
     summary = (
         table.groupby(["cell_id", "initial_soc_percent", "method"], sort=False)
         .mean(numeric_only=True)

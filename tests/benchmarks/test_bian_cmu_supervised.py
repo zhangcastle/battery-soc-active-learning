@@ -497,3 +497,105 @@ def test_validation_toggle_does_not_change_final_model_or_predictions() -> None:
         prediction_interval_zero = model_with_interval_zero(probe)
     assert torch.equal(prediction_with, prediction_without_data)
     assert torch.equal(prediction_with, prediction_interval_zero)
+
+
+def _synthetic_evaluate_inputs(*, seq_len: int = 4, seed: int = 9):
+    """Windows spread across missions with UNEQUAL window counts per
+    mission (2 then 1 then 3), so per-mission window_index bookkeeping in
+    _evaluate()'s prediction records is actually exercised rather than
+    trivially uniform."""
+
+    rng = np.random.default_rng(seed)
+    n = 2 + 1 + 3
+    x = rng.normal(size=(n, seq_len, 2)).astype(np.float32)
+    y = rng.uniform(0, 1, size=(n, seq_len)).astype(np.float32)
+    missions = [("mission-a", 2), ("mission-b", 1), ("mission-c", 3)]
+    return x, y, missions
+
+
+def test_evaluate_return_predictions_false_matches_previous_single_value_return() -> None:
+    """Backward compatibility: every existing call site calls _evaluate()
+    without return_predictions and expects a single dict back, exactly as
+    before this change. Also checked byte-for-byte against the `overall`
+    half of the return_predictions=True call, so the metric computation
+    itself is provably identical either way."""
+
+    torch.manual_seed(0)
+    model = module.DTNN(2, 8, 4, 8)
+    x, y, missions = _synthetic_evaluate_inputs()
+    device = torch.device("cpu")
+
+    overall_only = module._evaluate(model, x, y, missions, batch_size=4, device=device)
+    assert isinstance(overall_only, dict)
+
+    overall_with_records, records = module._evaluate(
+        model, x, y, missions, batch_size=4, device=device, return_predictions=True
+    )
+    assert overall_only == overall_with_records
+    assert isinstance(records, list) and records
+
+
+def test_evaluate_predictions_have_expected_shape_and_fields() -> None:
+    """One prediction record per (window, timestep), with mission_cycle_id/
+    window_index/timestep_index reconstructing exactly the windows/missions
+    layout _evaluate() was given -- window_index restarts at 0 for each
+    mission, timestep_index runs 0..seq_len-1 within each window."""
+
+    torch.manual_seed(1)
+    model = module.DTNN(2, 8, 4, 8)
+    seq_len = 4
+    x, y, missions = _synthetic_evaluate_inputs(seq_len=seq_len)
+    device = torch.device("cpu")
+
+    _, records = module._evaluate(
+        model, x, y, missions, batch_size=4, device=device, return_predictions=True
+    )
+
+    assert len(records) == len(x) * seq_len
+    expected_fields = {
+        "mission_cycle_id", "window_index", "timestep_index",
+        "soc_reference", "soc_prediction", "signed_error", "absolute_error",
+    }
+    for record in records:
+        assert expected_fields <= set(record.keys())
+        assert math.isclose(
+            record["signed_error"], record["soc_prediction"] - record["soc_reference"]
+        )
+        assert math.isclose(record["absolute_error"], abs(record["signed_error"]))
+
+    # Rebuild (mission_cycle_id -> set of window_index -> set of
+    # timestep_index) from the records and compare against what the input
+    # `missions` list says it should be.
+    seen: dict[str, dict[int, set[int]]] = {}
+    for record in records:
+        by_window = seen.setdefault(record["mission_cycle_id"], {})
+        by_window.setdefault(record["window_index"], set()).add(record["timestep_index"])
+    for mission, count in missions:
+        assert set(seen[mission]) == set(range(count))
+        for timesteps in seen[mission].values():
+            assert timesteps == set(range(seq_len))
+
+
+def test_evaluate_predictions_recompute_mae_rmse_matches_evaluate_result() -> None:
+    """Required determinism-of-reporting check: independently recomputing
+    MAE/RMSE from the saved per-timestep prediction records (soc_reference/
+    soc_prediction only, exactly as they'd be read back from
+    test_predictions.parquet) must reproduce _evaluate()'s own
+    overall_mae_percent/overall_rmse_percent -- proving the saved records
+    are a faithful, lossless record of what was actually evaluated."""
+
+    torch.manual_seed(2)
+    model = module.DTNN(2, 8, 4, 8)
+    x, y, missions = _synthetic_evaluate_inputs(seed=17)
+    device = torch.device("cpu")
+
+    overall, records = module._evaluate(
+        model, x, y, missions, batch_size=4, device=device, return_predictions=True
+    )
+
+    reference = np.array([r["soc_reference"] for r in records])
+    prediction = np.array([r["soc_prediction"] for r in records])
+    recomputed = module.compute_metrics(reference, prediction)
+
+    assert np.isclose(recomputed["mae"] * 100, overall["overall_mae_percent"])
+    assert np.isclose(recomputed["rmse"] * 100, overall["overall_rmse_percent"])
