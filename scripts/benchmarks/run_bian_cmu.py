@@ -135,15 +135,35 @@ def _train_source(model, x, y, epochs, batch_size, lr, device):
             print(f"  source epoch {epoch + 1}/{epochs}: mse={total / len(x):.6f}")
 
 
+LAYER_NAMES = ("cnn2", "bilstm2", "fc")  # matches adaptive_multiscale_mmd's (c2, blstm2, fc) order
+
+
 def _adapt(model, source_x, source_y, target_x, target_y, args, device):
+    """Runs the adaptation loop exactly as before (same batches, same order,
+    same optimizer.step() calls, same final-batch return value used for
+    ``training_final_batch``). The only addition is a second return value:
+    one diagnostic row per epoch, each field averaged over every optimizer
+    step that ran within that epoch (not just the last batch). This is
+    read-only bookkeeping on values already computed by the existing
+    forward/backward pass -- it does not change what is trained, in what
+    order, or the final model weights.
+    """
     source_loader = _loader(source_x, source_y, args.transfer_batch_size, True)
     target_loader = _loader(target_x, target_y, args.transfer_batch_size, True)
     optimizer = torch.optim.Adam(model.parameters(), lr=args.transfer_lr)
     criterion = nn.MSELoss()
     final = {}
-    for _ in range(args.transfer_epochs):
+    history = []
+    for epoch in range(args.transfer_epochs):
         model.train()
         source_batches = cycle(source_loader)
+        epoch_source_mse_sum = 0.0
+        epoch_target_mse_sum = 0.0
+        epoch_adaptive_mmd_sum = 0.0
+        epoch_total_loss_sum = 0.0
+        epoch_layer_mmd_sum = [0.0] * len(LAYER_NAMES)
+        epoch_layer_weight_sum = [0.0] * len(LAYER_NAMES)
+        epoch_steps = 0
         for target_batch in target_loader:
             source_batch = next(source_batches)
             sx, sy = (item.to(device) for item in source_batch)
@@ -157,15 +177,44 @@ def _adapt(model, source_x, source_y, target_x, target_y, args, device):
             loss = source_loss + args.target_weight * target_loss + args.mmd_weight * mmd
             loss.backward()
             optimizer.step()
+            layer_mmd_values = [float(v) for v in layer_mmd.detach().cpu()]
+            layer_weight_values = [float(v) for v in weights.cpu()]
             final = {
                 "source_mse": float(source_loss.detach()),
                 "target_mse": float(target_loss.detach()),
                 "adaptive_mmd": float(mmd.detach()),
-                "layer_mmd": [float(v) for v in layer_mmd.detach().cpu()],
-                "layer_weights": [float(v) for v in weights.cpu()],
+                "layer_mmd": layer_mmd_values,
+                "layer_weights": layer_weight_values,
             }
+            # Diagnostic-only accumulation for the per-epoch average below --
+            # reads values already produced by the step above, does not
+            # feed back into the model, optimizer, or loss in any way.
+            epoch_source_mse_sum += final["source_mse"]
+            epoch_target_mse_sum += final["target_mse"]
+            epoch_adaptive_mmd_sum += final["adaptive_mmd"]
+            epoch_total_loss_sum += float(loss.detach())
+            for index, value in enumerate(layer_mmd_values):
+                epoch_layer_mmd_sum[index] += value
+            for index, value in enumerate(layer_weight_values):
+                epoch_layer_weight_sum[index] += value
+            epoch_steps += 1
+        if epoch_steps:
+            row = {
+                "epoch": epoch + 1,
+                "source_mse": epoch_source_mse_sum / epoch_steps,
+                "target_mse": epoch_target_mse_sum / epoch_steps,
+                "adaptive_mmd": epoch_adaptive_mmd_sum / epoch_steps,
+                "total_loss": epoch_total_loss_sum / epoch_steps,
+            }
+            for index, name in enumerate(LAYER_NAMES):
+                row[f"layer_mmd_{name}"] = epoch_layer_mmd_sum[index] / epoch_steps
+            for index, name in enumerate(LAYER_NAMES):
+                row[f"layer_weight_{name}"] = epoch_layer_weight_sum[index] / epoch_steps
+            row["learning_rate"] = optimizer.param_groups[0]["lr"]
+            row["optimizer_steps"] = epoch_steps
+            history.append(row)
     final["optimizer_steps"] = args.transfer_epochs * len(target_loader)
-    return final
+    return final, history
 
 
 @torch.no_grad()
@@ -263,7 +312,7 @@ def main():
     )
     manifest = pd.read_csv(args.cmu_manifest)
     args.output_root.mkdir(parents=True, exist_ok=True)
-    rows, runs = [], []
+    rows, runs, training_history_rows = [], [], []
     widths = (64, 32, 64) if args.lightweight else (256, 64, 256)
 
     for repeat in range(args.repeats):
@@ -303,8 +352,14 @@ def main():
             model = DTNN(2, *widths).to(device)
             model.load_state_dict(source_state)
             source_only = _evaluate(model, test_x, test_y, test_missions, args.batch_size, device)
-            training = _adapt(model, source_x, source_y, adapt_x, adapt_y, args, device)
+            training, adapt_history = _adapt(
+                model, source_x, source_y, adapt_x, adapt_y, args, device
+            )
             adapted = _evaluate(model, test_x, test_y, test_missions, args.batch_size, device)
+            for history_row in adapt_history:
+                training_history_rows.append(
+                    {"repeat": repeat + 1, "seed": seed, "cell_id": cell, **history_row}
+                )
             for method, metrics in (("Source only", source_only), ("Bian MDA", adapted)):
                 rows.append(
                     {
@@ -338,6 +393,17 @@ def main():
 
     table = pd.DataFrame(rows)
     table.to_csv(args.output_root / "metrics.csv", index=False)
+    training_history = pd.DataFrame(
+        training_history_rows,
+        columns=[
+            "repeat", "seed", "cell_id", "epoch",
+            "source_mse", "target_mse", "adaptive_mmd", "total_loss",
+            "layer_mmd_cnn2", "layer_mmd_bilstm2", "layer_mmd_fc",
+            "layer_weight_cnn2", "layer_weight_bilstm2", "layer_weight_fc",
+            "learning_rate", "optimizer_steps",
+        ],
+    )
+    training_history.to_csv(args.output_root / "training_history.csv", index=False)
     summary = (
         table.groupby(["cell_id", "initial_soc_percent", "method"], sort=False)
         .mean(numeric_only=True)
