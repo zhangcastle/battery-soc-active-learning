@@ -192,11 +192,14 @@ def test_adapt_history_does_not_change_final_result_or_optimizer_step_count() ->
 
 
 def test_adapt_history_includes_positive_runtime_seconds() -> None:
-    """runtime_seconds on each training_history.csv row must be present,
-    a real positive wall-clock measurement (not a placeholder/zero), and
-    must not include the diagnostic bookkeeping cost -- verified indirectly
-    by confirming it scales up when more optimizer steps run in the epoch
-    (a fixed/placeholder value would not)."""
+    """runtime_seconds on each training_history.csv row must be present and
+    a real positive wall-clock measurement (not a placeholder/zero) -- the
+    epoch's actual adaptation wall-clock time, timed with a single _Timer
+    (one sync+start before the epoch's target_loader loop, one sync+stop
+    right after), which may include the lightweight diagnostic
+    float-extraction/accumulation interleaved with the training steps.
+    Verified indirectly by confirming it scales up when more optimizer
+    steps run in the epoch (a fixed/placeholder value would not)."""
 
     torch.manual_seed(0)
     model_small = module.DTNN(2, 8, 4, 8)
@@ -232,6 +235,68 @@ def test_adapt_history_includes_positive_runtime_seconds() -> None:
     mean_small = float(np.mean([row["runtime_seconds"] for row in history_small]))
     mean_large = float(np.mean([row["runtime_seconds"] for row in history_large]))
     assert mean_large > mean_small
+
+
+def test_timer_synchronizes_exactly_once_on_enter_and_once_on_exit_for_cuda() -> None:
+    """_Timer itself must call torch.cuda.synchronize() exactly once in
+    __enter__ and exactly once in __exit__ when device.type == 'cuda' (one
+    sync pair per `with _Timer(...)` block), and never on a CPU device."""
+
+    sync_calls = []
+    original_synchronize = torch.cuda.synchronize
+    torch.cuda.synchronize = lambda *a, **kw: sync_calls.append(1)
+    try:
+        cuda_like_device = SimpleNamespace(type="cuda")
+        with module._Timer(cuda_like_device):
+            pass
+        assert len(sync_calls) == 2  # one on __enter__, one on __exit__
+
+        sync_calls.clear()
+        with module._Timer(torch.device("cpu")):
+            pass
+        assert len(sync_calls) == 0
+    finally:
+        torch.cuda.synchronize = original_synchronize
+
+
+def test_adapt_opens_exactly_one_timer_per_epoch_not_per_step() -> None:
+    """The fix under test: _adapt must construct exactly one _Timer per
+    epoch (wrapping the whole target_loader loop), not one per optimizer
+    step. Verified by monkeypatching module._Timer with a subclass that
+    counts its own instantiations while still behaving identically, then
+    checking the count equals transfer_epochs -- NOT
+    transfer_epochs * steps_per_epoch, which is what a per-step timer would
+    produce."""
+
+    instantiation_count = 0
+    real_timer = module._Timer
+
+    class _CountingTimer(real_timer):
+        def __init__(self, device):
+            nonlocal instantiation_count
+            instantiation_count += 1
+            super().__init__(device)
+
+    torch.manual_seed(0)
+    model = module.DTNN(2, 8, 4, 8)
+    source_x, source_y, target_x, target_y = _synthetic_adapt_inputs(
+        source_n=6, target_n=9, seq_len=4  # batch_size=2 -> 5 steps/epoch
+    )
+    args = _adapt_args(transfer_epochs=3, transfer_batch_size=2)
+    steps_per_epoch = -(-len(target_x) // args.transfer_batch_size)
+    assert steps_per_epoch > 1  # otherwise this test can't distinguish the two schemes
+
+    module._Timer = _CountingTimer
+    try:
+        _final, history = module._adapt(
+            model, source_x, source_y, target_x, target_y, args, torch.device("cpu")
+        )
+    finally:
+        module._Timer = real_timer
+
+    assert len(history) == args.transfer_epochs
+    assert instantiation_count == args.transfer_epochs
+    assert instantiation_count != args.transfer_epochs * steps_per_epoch
 
 
 def test_train_source_history_matches_the_printed_epoch_mse_and_has_runtime() -> None:
