@@ -25,6 +25,7 @@ from __future__ import annotations
 import json
 import math
 import random
+import time
 from copy import deepcopy
 from pathlib import Path
 
@@ -60,6 +61,30 @@ def seed_everything(seed: int) -> None:
 
 def _improved(value: float, best: float, min_delta: float) -> bool:
     return not math.isfinite(best) or value < best * (1.0 - min_delta)
+
+
+class _EpochTimer:
+    """Opt-in, diagnostic-only per-epoch wall-clock timer for the training
+    loops below. Entirely inert unless a caller passes
+    ``record_epoch_seconds=True`` -- when it is not requested, this class
+    is never constructed and adds zero overhead to the default (backward-
+    compatible) code path. CUDA ops are async, so a timed block that ran
+    on GPU is synced before both the start and end timestamps -- at most
+    one synchronize() pair per epoch, skipped entirely on CPU."""
+
+    def __init__(self, device: torch.device) -> None:
+        self.device = device
+
+    def __enter__(self) -> "_EpochTimer":
+        if self.device.type == "cuda":
+            torch.cuda.synchronize()
+        self._start = time.perf_counter()
+        return self
+
+    def __exit__(self, *exc) -> None:
+        if self.device.type == "cuda":
+            torch.cuda.synchronize()
+        self.seconds = time.perf_counter() - self._start
 
 
 def _loader(x: np.ndarray, y: np.ndarray, batch_size: int, shuffle: bool) -> DataLoader:
@@ -111,6 +136,104 @@ def save_json(path: str | Path, payload: object) -> None:
     path.write_text(json.dumps(payload, indent=2), encoding="utf-8")
 
 
+def _snapshot_training_modes(model: torch.nn.Module) -> dict[int, bool]:
+    """Capture every submodule's exact ``.training`` boolean, keyed by
+    ``id()``. Used by ``_validation_metrics`` to restore a deliberately
+    mixed train/eval configuration (e.g. ``med_adapt`` keeps
+    ``target_extractor`` in ``.train()`` while ``source_extractor``/the
+    heads stay frozen in ``.eval()`` for the whole adaptation loop) --
+    a single top-level ``model.training`` flag cannot capture this."""
+
+    return {id(module): module.training for module in model.modules()}
+
+
+def _restore_training_modes(model: torch.nn.Module, modes: dict[int, bool]) -> None:
+    for module in model.modules():
+        if id(module) in modes:
+            module.training = modes[id(module)]
+
+
+def _diagnostic_loader(x: np.ndarray, y: np.ndarray, batch_size: int) -> DataLoader:
+    """Read-only loader for ``_validation_metrics`` only.
+
+    Identical construction to ``_loader`` (``shuffle=False``) except it
+    passes an explicit LOCAL ``torch.Generator()`` instead of relying on
+    PyTorch's global default generator. This matters even with
+    ``shuffle=False``: constructing a ``DataLoader`` iterator always draws
+    one value from its generator to derive worker/base seeding, even with
+    ``num_workers=0`` -- so without an explicit local generator here, every
+    validation probe would silently advance ``torch.default_generator`` and
+    perturb the exact shuffle order of whichever training loader
+    (``med_adapt``'s/``adapt_dann_mmd``'s own ``shuffle=True`` loaders,
+    seeded via ``seed_everything``) runs afterward. This is the same
+    precaution used by the CMU DARM benchmark's own
+    ``_validation_loader``."""
+
+    if not len(x):
+        raise ValueError("Cannot construct a diagnostic loader from zero windows")
+    return DataLoader(
+        TensorDataset(torch.from_numpy(x), torch.from_numpy(y)),
+        batch_size=min(batch_size, len(x)),
+        shuffle=False,
+        generator=torch.Generator(),
+    )
+
+
+@torch.no_grad()
+def _validation_metrics(
+    model: MEDNet | DANNBaselineNet,
+    cycles: list[ShenCycle],
+    device: torch.device,
+    tensor_layout: str = "paper",
+    branch: str = "target",
+) -> tuple[float, float]:
+    """Read-only, diagnostic-only validation probe used by ``med_adapt``
+    and ``adapt_dann_mmd``.
+
+    This is intentionally NOT a thin wrapper around ``predict()`` left as
+    a black box: ``predict()`` unconditionally calls ``model.eval()``,
+    which recursively forces *every* submodule into eval mode. During
+    adaptation, ``med_adapt``/``adapt_dann_mmd`` deliberately keep some
+    submodules frozen in ``.eval()`` while others stay in ``.train()`` --
+    calling ``model.eval()`` without restoring that exact per-submodule
+    state afterward would silently change dropout behavior (``MEDNet``'s
+    ``FeatureExtractor`` has active ``nn.Dropout`` layers) on the very next
+    training epoch. So this helper snapshots every submodule's exact mode
+    first, runs the probe in full eval mode for deterministic metrics, and
+    restores the exact prior configuration before returning -- regardless
+    of exceptions. It also builds its own loader via ``_diagnostic_loader``
+    (a LOCAL generator, never the global one -- see that function's
+    docstring) instead of ``predict``'s shared ``_loader``, so this probe
+    can never perturb the global RNG stream a later training-loader
+    shuffle depends on.
+
+    Never computes gradients (``@torch.no_grad()``) and never updates any
+    parameter. Returns ``(mae_percent, rmse_percent)`` to match the
+    percent-scale convention already used for MAE/RMSE throughout the CMU
+    transfer scripts (see ``run_sftnn_transfer_cmu.py``'s ``_evaluate``).
+    """
+
+    modes = _snapshot_training_modes(model)
+    try:
+        model.eval()
+        predictions, labels = [], []
+        for cycle in cycles:
+            x, y = windows([cycle], tensor_layout)
+            for xb, yb in _diagnostic_loader(x, y, 64):
+                xb = xb.to(device)
+                output = (
+                    model.estimate_source(xb) if branch == "source" else model(xb)
+                )
+                predictions.append(output.cpu().numpy())
+                labels.append(yb.numpy())
+        truth = np.concatenate(labels).ravel()
+        estimate = np.concatenate(predictions).ravel()
+    finally:
+        _restore_training_modes(model, modes)
+    metrics = compute_metrics(truth, estimate)
+    return metrics["mae"] * 100.0, metrics["rmse"] * 100.0
+
+
 # ---------------------------------------------------------------------------
 # MED: the paper's proposed source-free method (Algorithm 1).
 # ---------------------------------------------------------------------------
@@ -129,7 +252,8 @@ def pretrain_med(
     min_epochs: int = 0,
     min_delta: float = 1e-4,
     tensor_layout: str = "paper",
-) -> tuple[MEDNet, list[float]]:
+    record_epoch_seconds: bool = False,
+) -> tuple[MEDNet, list[float]] | tuple[MEDNet, list[float], list[float]]:
     """Joint supervised pretraining of the shared extractor + both heads.
 
     Both heads see the same batches and the same labels; the only thing
@@ -137,6 +261,15 @@ def pretrain_med(
     ``SOCHead``). No diversity-promoting loss term is used -- that mirrors
     the paper, which describes divergent initialization as the mechanism,
     not an extra objective.
+
+    ``record_epoch_seconds`` defaults to False, preserving the exact
+    original behavior and 2-tuple return for every existing caller
+    (``suite.py``'s in-paper cross-temperature runs, and any other
+    unmodified call site). When explicitly set True, this ALSO returns a
+    third element: a ``list[float]`` of real per-epoch wall-clock seconds
+    (see ``_EpochTimer``), aligned index-for-index with ``history`` --
+    purely diagnostic, never read by the training loop itself, never
+    changes what is trained, in what order, or with what hyperparameters.
     """
 
     seed_everything(seed)
@@ -163,10 +296,14 @@ def pretrain_med(
         else None
     )
     history, best_loss, best_state, stale_epochs = [], math.inf, None, 0
+    epoch_seconds: list[float] = []
     model.source_extractor.train()
     model.head1.train()
     model.head2.train()
     for _ in range(epochs):
+        timer = _EpochTimer(device) if record_epoch_seconds else None
+        if timer is not None:
+            timer.__enter__()
         total, samples = 0.0, 0
         for xb, yb in loader:
             xb, yb = xb.to(device), yb.to(device)
@@ -179,6 +316,9 @@ def pretrain_med(
             samples += 2 * len(xb)
         epoch_loss = total / max(samples, 1)
         history.append(epoch_loss)
+        if timer is not None:
+            timer.__exit__()
+            epoch_seconds.append(timer.seconds)
         if scheduler is not None:
             scheduler.step(epoch_loss)
         if _improved(epoch_loss, best_loss, min_delta):
@@ -215,6 +355,8 @@ def pretrain_med(
             },
             path,
         )
+    if record_epoch_seconds:
+        return model, history, epoch_seconds
     return model, history
 
 
@@ -305,6 +447,10 @@ def med_adapt(
     early_stopping_patience: int | None = None,
     min_epochs: int = 0,
     min_delta: float = 1e-4,
+    record_epoch_seconds: bool = False,
+    validation_cycles: list[ShenCycle] | None = None,
+    validation_interval: int = 1,
+    tensor_layout: str = "paper",
 ) -> tuple[MEDNet, list[dict[str, float]]]:
     """Source-free transfer (Algorithm 1): only ``target_extractor`` trains.
 
@@ -312,6 +458,22 @@ def med_adapt(
     below and stay frozen for the entire loop -- no source data and no real
     target labels are used anywhere in this function, only the fixed
     pseudo-labels already baked into ``target_dataset``.
+
+    ``record_epoch_seconds`` and ``validation_cycles``/``validation_interval``
+    are purely diagnostic and default to inert (``False``/``None``), so the
+    default call signature and returned ``history`` schema are unchanged
+    for every existing caller (``suite.py``'s in-paper runs). When
+    ``record_epoch_seconds=True``, each ``epoch_metrics`` dict gains a real
+    ``runtime_seconds`` key (at most one CUDA sync pair per epoch -- see
+    ``_EpochTimer``); this never changes what is trained, in what order, or
+    with what hyperparameters. When ``validation_cycles`` is supplied, every
+    ``validation_interval``-th epoch also runs a read-only diagnostic probe
+    (see ``_validation_metrics``) against those cycles and records
+    ``validation_mae``/``validation_rmse``/``validation_evaluated`` -- this
+    is evaluated *after* the epoch's optimizer step and never feeds back
+    into training, pseudo-labeling, the scheduler, early stopping,
+    checkpoint selection, or model selection, all of which continue to use
+    only the training objective exactly as before.
     """
 
     if len(target_dataset) == 0:
@@ -336,8 +498,12 @@ def med_adapt(
     )
     lambda_soc, lambda_dis = lambdas
     history, best_loss, best_state, stale_epochs = [], math.inf, None, 0
+    validation_interval = max(validation_interval, 1)
 
-    for _ in range(epochs):
+    for epoch_index in range(epochs):
+        timer = _EpochTimer(device) if record_epoch_seconds else None
+        if timer is not None:
+            timer.__enter__()
         model.target_extractor.train()
         model.source_extractor.eval()
         model.head1.eval()
@@ -361,6 +527,20 @@ def med_adapt(
             batches += 1
         epoch_metrics = {name: value / max(batches, 1) for name, value in totals.items()}
         epoch_metrics["learning_rate"] = optimizer.param_groups[0]["lr"]
+        if timer is not None:
+            timer.__exit__()
+            epoch_metrics["runtime_seconds"] = timer.seconds
+        if validation_cycles and (epoch_index + 1) % validation_interval == 0:
+            validation_mae, validation_rmse = _validation_metrics(
+                model, validation_cycles, device, tensor_layout, branch="target"
+            )
+            epoch_metrics["validation_mae"] = validation_mae
+            epoch_metrics["validation_rmse"] = validation_rmse
+            epoch_metrics["validation_evaluated"] = True
+        else:
+            epoch_metrics["validation_mae"] = None
+            epoch_metrics["validation_rmse"] = None
+            epoch_metrics["validation_evaluated"] = False
         history.append(epoch_metrics)
         if scheduler is not None:
             scheduler.step(epoch_metrics["total"])
@@ -468,8 +648,13 @@ def train_source(
     min_epochs: int = 0,
     min_delta: float = 1e-4,
     tensor_layout: str = "paper",
-) -> tuple[DANNBaselineNet, list[float]]:
-    """Single-head source pretraining for the DANN+MMD baseline only."""
+    record_epoch_seconds: bool = False,
+) -> tuple[DANNBaselineNet, list[float]] | tuple[DANNBaselineNet, list[float], list[float]]:
+    """Single-head source pretraining for the DANN+MMD baseline only.
+
+    ``record_epoch_seconds`` defaults to False (unchanged 2-tuple return
+    for every existing caller). See ``pretrain_med``'s docstring for the
+    exact same opt-in, backward-compatible convention."""
 
     seed_everything(seed)
     x, y = windows([cycles[p] for p in PROFILES if p in cycles], tensor_layout)
@@ -491,9 +676,13 @@ def train_source(
         else None
     )
     history, best_loss, best_state, stale_epochs = [], math.inf, None, 0
+    epoch_seconds: list[float] = []
     model.source_extractor.train()
     model.predictor.train()
     for _ in range(epochs):
+        timer = _EpochTimer(device) if record_epoch_seconds else None
+        if timer is not None:
+            timer.__enter__()
         total, samples = 0.0, 0
         for xb, yb in loader:
             xb, yb = xb.to(device), yb.to(device)
@@ -505,6 +694,9 @@ def train_source(
             samples += len(xb)
         epoch_loss = total / max(samples, 1)
         history.append(epoch_loss)
+        if timer is not None:
+            timer.__exit__()
+            epoch_seconds.append(timer.seconds)
         if scheduler is not None:
             scheduler.step(epoch_loss)
         if _improved(epoch_loss, best_loss, min_delta):
@@ -539,6 +731,8 @@ def train_source(
             },
             path,
         )
+    if record_epoch_seconds:
+        return model, history, epoch_seconds
     return model, history
 
 
@@ -653,7 +847,20 @@ def adapt_dann_mmd(
     min_epochs: int = 0,
     min_delta: float = 1e-4,
     tensor_layout: str = "paper",
+    record_epoch_seconds: bool = False,
+    validation_cycles: list[ShenCycle] | None = None,
+    validation_interval: int = 1,
 ) -> tuple[DANNBaselineNet, list[dict[str, float]], dict[str, int | str | None]]:
+    """DANN + MMD baseline adaptation.
+
+    ``record_epoch_seconds`` and ``validation_cycles``/``validation_interval``
+    are purely diagnostic and default to inert, so the default call
+    signature and returned ``history`` schema are unchanged for every
+    existing caller. See ``med_adapt``'s docstring for the exact same
+    opt-in, backward-compatible convention -- the same guarantee applies
+    here: this never changes training data, batch order, the adversarial/
+    MMD objective, the scheduler, early stopping, or model selection."""
+
     seed_everything(seed)
     model = deepcopy(source_model).to(device)
     model.initialize_target()
@@ -686,8 +893,12 @@ def adapt_dann_mmd(
     )
     estimate_weight, adversarial_weight, mmd_weight = lambdas
     history, best_loss, best_state, stale_epochs = [], math.inf, None, 0
+    validation_interval = max(validation_interval, 1)
 
-    for _ in range(epochs):
+    for epoch_index in range(epochs):
+        timer = _EpochTimer(device) if record_epoch_seconds else None
+        if timer is not None:
+            timer.__enter__()
         model.target_extractor.train()
         model.discriminator.train()
         model.source_extractor.eval()
@@ -738,6 +949,20 @@ def adapt_dann_mmd(
             batches += 1
         epoch_metrics = {name: value / max(batches, 1) for name, value in totals.items()}
         epoch_metrics["learning_rate"] = extractor_optimizer.param_groups[0]["lr"]
+        if timer is not None:
+            timer.__exit__()
+            epoch_metrics["runtime_seconds"] = timer.seconds
+        if validation_cycles and (epoch_index + 1) % validation_interval == 0:
+            validation_mae, validation_rmse = _validation_metrics(
+                model, validation_cycles, device, tensor_layout, branch="target"
+            )
+            epoch_metrics["validation_mae"] = validation_mae
+            epoch_metrics["validation_rmse"] = validation_rmse
+            epoch_metrics["validation_evaluated"] = True
+        else:
+            epoch_metrics["validation_mae"] = None
+            epoch_metrics["validation_rmse"] = None
+            epoch_metrics["validation_evaluated"] = False
         history.append(epoch_metrics)
         if scheduler is not None:
             scheduler.step(epoch_metrics["total"])

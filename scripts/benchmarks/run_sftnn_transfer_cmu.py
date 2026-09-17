@@ -192,6 +192,61 @@ def _check_resume_cmu_input_sha256(result_path: Path, expected_sha256: str) -> N
         )
 
 
+def _check_resume_result_sidecars(
+    *, result_path: Path, cell_root: Path, seed_root: Path, method: str
+) -> None:
+    """Resume-safety check, run at the SAME point as
+    ``_check_resume_cmu_input_sha256`` and in ADDITION to it: verifies the
+    sidecar files a complete result actually depends on are still present
+    on disk, never trusting a result JSON alone. A prior run could have
+    been interrupted after writing ``<method>.json`` but before its
+    prediction/training-history sidecars finished, or (with
+    ``--no-save-checkpoints``) its source checkpoint may legitimately be
+    absent while its source-pretraining history sidecar still exists (or
+    vice versa) -- in every such case, silently resuming would leave the
+    aggregated cell_metrics.csv/test_predictions.parquet/
+    training_history.csv looking complete while actually missing fields.
+    Raises ValueError immediately instead of skipping, overwriting, or
+    deleting anything."""
+    existing = json.loads(result_path.read_text(encoding="utf-8"))
+    if existing.get("pseudo_label_collapsed"):
+        # A genuinely collapsed pseudo-label run (0 windows survived
+        # confidence filtering) never produced a prediction/training-
+        # history sidecar in the first place -- that is the CORRECT,
+        # honestly-recorded outcome (see the `dataset` == 0 branch in
+        # main()), not a missing artifact.
+        return
+    predictions_path = cell_root / f"{method}_predictions.parquet"
+    if not predictions_path.is_file():
+        raise ValueError(
+            f"{result_path}: --resume would skip this row, but its "
+            f"prediction sidecar {predictions_path} is missing. Rerun "
+            "without --resume, or use a fresh --output-root."
+        )
+    if method in ("med", "dann_mmd"):
+        history_path = cell_root / f"{method}_training_history.csv"
+        if not history_path.is_file():
+            raise ValueError(
+                f"{result_path}: --resume would skip this row, but its "
+                f"adaptation training-history sidecar {history_path} is "
+                "missing. Rerun without --resume, or use a fresh "
+                "--output-root."
+            )
+        source_name = "med_source" if method == "med" else "dann_mmd_source"
+        source_history = seed_root / f"{source_name}_pretrain_training_history.csv"
+        source_checkpoint = seed_root / (
+            "med_source.pt" if method == "med" else "dann_source.pt"
+        )
+        if not source_history.is_file() and not source_checkpoint.is_file():
+            raise ValueError(
+                f"{result_path}: --resume would skip this row, but neither "
+                f"its source-pretraining history {source_history} nor "
+                f"checkpoint {source_checkpoint} is present -- this "
+                "method's source pretraining cannot be verified. Rerun "
+                "without --resume, or use a fresh --output-root."
+            )
+
+
 def _cell_path(cell: str, base_root: Path, condition_root: Path) -> Path:
     root = base_root if cell in BASELINE_CELLS else condition_root
     return root / f"{cell}_dynamic_soc.parquet"
@@ -417,7 +472,15 @@ def _build_prediction_rows(
     return rows
 
 
-def _flatten_scalar_history(history: list[float], *, framework: str, method: str, seed: int, learning_rate: float) -> list[dict]:
+def _flatten_scalar_history(
+    history: list[float],
+    *,
+    framework: str,
+    method: str,
+    seed: int,
+    learning_rate: float,
+    epoch_seconds: list[float] | None = None,
+) -> list[dict]:
     """For pretrain_med/train_dann_source, whose returned ``history`` is
     just a per-epoch scalar loss (see shen_2023/train.py) -- exports it
     as-is, without retraining, and without inventing a per-epoch learning
@@ -426,7 +489,19 @@ def _flatten_scalar_history(history: list[float], *, framework: str, method: str
     scheduler here since early_stopping_patience drives a
     ReduceLROnPlateau only for the *adaptation* loops, not source
     pretraining -- see the checkpoint's own "learning_rate" field, which
-    stays fixed for these two functions)."""
+    stays fixed for these two functions).
+
+    ``epoch_seconds``, when supplied, is ``pretrain_med``'s/
+    ``train_source``'s own real per-epoch wall-clock list (returned only
+    when the caller passes ``record_epoch_seconds=True``), aligned
+    index-for-index with ``history`` -- exported as-is, never re-measured
+    or invented here. ``validation_mae``/``validation_rmse``/
+    ``validation_evaluated`` stay None/False unconditionally for source
+    pretraining: this is zero_shot/source-pretraining diagnostic history,
+    which must never fabricate a validation trace (only MED/DANN+MMD
+    *adaptation* records real validation diagnostics -- see
+    ``_flatten_dict_history``)."""
+    seconds = epoch_seconds if epoch_seconds is not None else [None] * len(history)
     return [
         {
             "framework": framework,
@@ -435,7 +510,7 @@ def _flatten_scalar_history(history: list[float], *, framework: str, method: str
             "epoch": epoch + 1,
             "learning_rate": learning_rate,
             "train_loss": value,
-            "runtime_seconds": None,
+            "runtime_seconds": seconds[epoch],
             "validation_mae": None,
             "validation_rmse": None,
             "validation_evaluated": False,
@@ -452,7 +527,18 @@ def _flatten_dict_history(
     "total","learning_rate"} for MED, {"estimate","adversarial","mmd",
     "total","learning_rate"} for DANN+MMD) -- exports every key genuinely
     present, never inventing a field the code doesn't compute, and never
-    conflating MED's field names with DANN+MMD's."""
+    conflating MED's field names with DANN+MMD's.
+
+    When the caller passed ``record_epoch_seconds=True``/
+    ``validation_cycles=...`` into ``med_adapt``/``adapt_dann_mmd``, each
+    ``entry`` dict already carries real ``runtime_seconds``/
+    ``validation_mae``/``validation_rmse``/``validation_evaluated`` values
+    (see ``_validation_metrics`` in shen_2023/train.py) -- ``row.update
+    (entry)`` below picks those up automatically, overriding the
+    placeholder defaults set first. If the caller omitted those flags,
+    ``entry`` simply doesn't contain those keys and the None/False
+    defaults survive untouched -- this function needs no branching on
+    which mode was requested."""
     rows = []
     for epoch, entry in enumerate(history):
         row = {
@@ -471,18 +557,33 @@ def _flatten_dict_history(
     return rows
 
 
-def _budget_mission_ids(manifest: pd.DataFrame, cell_id: str) -> tuple[set[str], set[str]]:
+def _budget_mission_ids(
+    manifest: pd.DataFrame, cell_id: str
+) -> tuple[set[str], set[str], set[str]]:
     """Every train-split mission is unlabeled adaptation data for MED (no
-    label budget applies -- MED never uses target labels for training)."""
+    label budget applies -- MED never uses target labels for training).
+
+    ``validation_ids`` (the manifest's EXISTING ``split == "validation"``
+    missions) is diagnostic-only: read-only labels used exclusively by the
+    ``_validation_metrics`` probe wired into ``med_adapt``/
+    ``adapt_dann_mmd`` below (see ``validation_cycles=``), never for
+    training, pseudo-labeling, the scheduler, early stopping, checkpoint
+    selection, or model selection, and never mixed into ``train_ids``/
+    ``test_ids``. An empty validation set for a cell is not an error --
+    the diagnostic probe is simply skipped for that cell (unlike
+    ``train_ids``, which every cell must have)."""
 
     rows = manifest.loc[manifest["cell_id"] == cell_id]
     if rows.empty:
         raise ValueError(f"{cell_id}: no manifest rows")
     train_ids = set(rows.loc[rows["split"] == "train", "mission_cycle_id"].astype(str))
     test_ids = set(rows.loc[rows["split"] == "test", "mission_cycle_id"].astype(str))
+    validation_ids = set(
+        rows.loc[rows["split"] == "validation", "mission_cycle_id"].astype(str)
+    )
     if not train_ids:
         raise ValueError(f"{cell_id}: empty train-split mission set")
-    return train_ids, test_ids
+    return train_ids, test_ids, validation_ids
 
 
 @torch.no_grad()
@@ -506,6 +607,100 @@ def _evaluate(model, cycles: list[ShenCycle], device: torch.device, branch: str 
     }
 
 
+# Canonical Ns -> mission-phase vocabulary this benchmark's phase-level
+# summaries cover -- matches the canonical Ns mapping recorded in
+# run_metadata.json's "phase_definition" field. Rows whose mission_phase
+# is None (unmapped Ns) or any other phase are excluded from both
+# summaries below.
+PHASE_SUMMARY_PHASES = ("take_off", "cruise", "landing")
+
+
+def _compute_phase_metrics(predictions_path: Path) -> pd.DataFrame:
+    """Diagnostic-only summary, built by READING BACK the final, top-level
+    (post-merge) test_predictions.parquet -- never re-derived from live
+    model state, never a second evaluation set -- grouped by cell_id/
+    condition/method/mission_phase and restricted to
+    PHASE_SUMMARY_PHASES (take_off/cruise/landing). Every value here is
+    directly, exactly recomputable from that same parquet's
+    soc_reference/soc_prediction/mission_phase columns, mirroring
+    run_liu_cmu_darm.py's ``_compute_phase_metrics``."""
+    frame = pd.read_parquet(
+        predictions_path,
+        columns=[
+            "cell_id", "condition", "method", "mission_phase",
+            "mission_cycle_id", "soc_reference", "soc_prediction",
+        ],
+    )
+    frame = frame.loc[frame["mission_phase"].isin(PHASE_SUMMARY_PHASES)].copy()
+    frame["signed_error"] = frame["soc_prediction"] - frame["soc_reference"]
+    frame["absolute_error"] = frame["signed_error"].abs()
+    grouped = frame.groupby(
+        ["cell_id", "condition", "method", "mission_phase"], sort=False, as_index=False
+    )
+    summary = grouped.agg(
+        n_points=("soc_reference", "size"),
+        n_missions=("mission_cycle_id", "nunique"),
+        mae_percent=("absolute_error", lambda s: float(s.mean()) * 100),
+        rmse_percent=("signed_error", lambda s: float(np.sqrt((s**2).mean())) * 100),
+        mean_signed_error_percent=("signed_error", lambda s: float(s.mean()) * 100),
+    )
+    return summary
+
+
+def _compute_phase_transfer_effects(phase_metrics: pd.DataFrame) -> pd.DataFrame:
+    """Diagnostic-only: pairs each (cell_id, condition, mission_phase)'s
+    ``zero_shot`` row from ``phase_metrics`` (see ``_compute_phase_metrics``)
+    against ``med``'s and, separately, ``dann_mmd``'s row -- one merge per
+    adapted method, never mixing the two -- and reports the
+    adapted-minus-zero_shot deltas plus a boolean negative-transfer flag
+    for both MAE and RMSE. ``reference_method`` is always "zero_shot".
+    delta = adapted - zero_shot, so a POSITIVE delta means adaptation made
+    this (cell, condition, mission_phase) worse than zero-shot, i.e.
+    negative transfer. A (cell_id, condition, mission_phase) group missing
+    either method is simply dropped (inner merge) rather than producing a
+    bogus delta."""
+    columns = [
+        "cell_id", "condition", "method", "reference_method", "mission_phase",
+        "zero_shot_mae_percent", "adapted_mae_percent", "delta_mae_percent",
+        "zero_shot_rmse_percent", "adapted_rmse_percent", "delta_rmse_percent",
+        "negative_transfer_mae", "negative_transfer_rmse",
+    ]
+    if phase_metrics.empty:
+        return pd.DataFrame(columns=columns)
+    zero_shot = phase_metrics.loc[phase_metrics["method"] == "zero_shot"]
+    frames = []
+    for adapted_method in ("med", "dann_mmd"):
+        adapted = phase_metrics.loc[phase_metrics["method"] == adapted_method]
+        if zero_shot.empty or adapted.empty:
+            continue
+        merged = zero_shot.merge(
+            adapted,
+            on=["cell_id", "condition", "mission_phase"],
+            suffixes=("_zero_shot", "_adapted"),
+            how="inner",
+        )
+        if merged.empty:
+            continue
+        merged["method"] = adapted_method
+        merged["reference_method"] = "zero_shot"
+        merged["zero_shot_mae_percent"] = merged["mae_percent_zero_shot"]
+        merged["adapted_mae_percent"] = merged["mae_percent_adapted"]
+        merged["delta_mae_percent"] = (
+            merged["mae_percent_adapted"] - merged["mae_percent_zero_shot"]
+        )
+        merged["zero_shot_rmse_percent"] = merged["rmse_percent_zero_shot"]
+        merged["adapted_rmse_percent"] = merged["rmse_percent_adapted"]
+        merged["delta_rmse_percent"] = (
+            merged["rmse_percent_adapted"] - merged["rmse_percent_zero_shot"]
+        )
+        merged["negative_transfer_mae"] = merged["delta_mae_percent"] > 0
+        merged["negative_transfer_rmse"] = merged["delta_rmse_percent"] > 0
+        frames.append(merged[columns])
+    if not frames:
+        return pd.DataFrame(columns=columns)
+    return pd.concat(frames, ignore_index=True)
+
+
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument(
@@ -527,13 +722,16 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument(
         "--output-root", type=Path,
-        # Isolated from the pre-_ns_relabel results (previously
-        # ".../sftnn_med_transfer") -- a --resume against this new
-        # directory can never accidentally pick up a result produced from
-        # the old CMU data version, since that directory is never written
-        # to or read from by this default. The old directory itself is
-        # left exactly as it was: never deleted, overwritten, or migrated.
-        default=REPO_ROOT / "outputs/benchmarks/panasonic_to_cmu_evtol/sftnn_med_transfer_ns_relabel_v1",
+        # Isolated from BOTH the pre-_ns_relabel results (previously
+        # ".../sftnn_med_transfer") AND from the pre-diagnostics
+        # "_ns_relabel_v1" results (which predate per-epoch runtime,
+        # diagnostic-only validation, and phase-level summaries) -- a
+        # --resume against this new "_v2" directory can never
+        # accidentally pick up a result produced before these diagnostics
+        # existed, since v1 is never written to or read from by this
+        # default. v1 itself is left exactly as it was: never deleted,
+        # overwritten, or migrated.
+        default=REPO_ROOT / "outputs/benchmarks/panasonic_to_cmu_evtol/sftnn_med_transfer_ns_relabel_v2",
     )
     parser.add_argument("--cells", nargs="+", choices=CELLS, default=list(CELLS))
     parser.add_argument("--methods", nargs="+", choices=METHOD_CHOICES, default=["zero_shot", "med"])
@@ -544,6 +742,14 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--lr", type=float, default=1e-3)
     parser.add_argument("--transfer-lr", type=float, default=1e-4)
     parser.add_argument("--early-stopping-patience", type=int, default=30)
+    parser.add_argument(
+        "--validation-interval", type=int, default=1,
+        help="run the diagnostic-only validation probe (manifest 'validation'-"
+        "split missions) every N adaptation epochs, for MED and DANN+MMD "
+        "adaptation only -- never zero-shot or source pretraining. Read-only: "
+        "never affects training, pseudo-labeling, the scheduler, early "
+        "stopping, checkpoint, or model selection.",
+    )
     parser.add_argument("--pseudo-threshold", type=float, default=0.08)
     parser.add_argument("--pseudo-lookahead", type=int, default=200)
     parser.add_argument("--med-lambda-soc", type=float, default=1.0)
@@ -652,7 +858,7 @@ def main() -> None:
         else:
             print(f"=== seed {seed}: MED source pretraining, max {args.source_epochs} epochs ===")
             with _Timer(device) as timer:
-                med_source, med_pretrain_history = pretrain_med(
+                med_source, med_pretrain_history, med_pretrain_epoch_seconds = pretrain_med(
                     source_cycles,
                     epochs=args.source_epochs,
                     batch_size=args.batch_size,
@@ -661,13 +867,15 @@ def main() -> None:
                     seed=seed,
                     checkpoint=None if args.no_save_checkpoints else med_checkpoint,
                     early_stopping_patience=args.early_stopping_patience,
+                    record_epoch_seconds=True,
                 )
             med_pretrain_seconds = timer.seconds
             med_pretrain_epochs = len(med_pretrain_history)
             print(f"    done in {med_pretrain_seconds:.1f}s ({med_pretrain_epochs} epochs)")
             # Diagnostic-only: exports pretrain_med's own returned
-            # per-epoch scalar loss history -- never retrains, never a
-            # second call to pretrain_med.
+            # per-epoch scalar loss history (and real per-epoch
+            # runtime_seconds, from record_epoch_seconds=True above) --
+            # never retrains, never a second call to pretrain_med.
             seed_root.mkdir(parents=True, exist_ok=True)
             pd.DataFrame(
                 _flatten_scalar_history(
@@ -676,6 +884,7 @@ def main() -> None:
                     method="med_source_pretrain",
                     seed=seed,
                     learning_rate=args.lr,
+                    epoch_seconds=med_pretrain_epoch_seconds,
                 )
             ).to_csv(seed_root / "med_source_pretrain_training_history.csv", index=False)
         _save_timing(
@@ -694,7 +903,7 @@ def main() -> None:
             else:
                 print(f"=== seed {seed}: DANN+MMD source pretraining, max {args.source_epochs} epochs ===")
                 with _Timer(device) as timer:
-                    dann_source, dann_pretrain_history = train_dann_source(
+                    dann_source, dann_pretrain_history, dann_pretrain_epoch_seconds = train_dann_source(
                         source_cycles,
                         epochs=args.source_epochs,
                         batch_size=args.batch_size,
@@ -703,6 +912,7 @@ def main() -> None:
                         seed=seed,
                         checkpoint=None if args.no_save_checkpoints else dann_checkpoint,
                         early_stopping_patience=args.early_stopping_patience,
+                        record_epoch_seconds=True,
                     )
                 dann_pretrain_seconds = timer.seconds
                 dann_pretrain_epochs = len(dann_pretrain_history)
@@ -715,6 +925,7 @@ def main() -> None:
                         method="dann_mmd_source_pretrain",
                         seed=seed,
                         learning_rate=args.lr,
+                        epoch_seconds=dann_pretrain_epoch_seconds,
                     )
                 ).to_csv(seed_root / "dann_mmd_source_pretrain_training_history.csv", index=False)
             _save_timing(
@@ -733,9 +944,22 @@ def main() -> None:
             if expected != {actual}:
                 raise ValueError(f"{cell}: CMU input hash does not match manifest")
             records = load_cmu_dynamic_soc_for_vidal([path], target_hz=1.0).records
-            train_ids, test_ids = _budget_mission_ids(manifest, cell)
+            train_ids, test_ids, validation_ids = _budget_mission_ids(manifest, cell)
             test_cycles = _mission_cycles(records, test_ids, feature_min, feature_max)
             train_cycles = _mission_cycles(records, train_ids, feature_min, feature_max)
+            # Diagnostic-only, read-only validation probe input: the
+            # manifest's EXISTING "validation"-split missions for this
+            # cell (never used for training/pseudo-labeling/early-
+            # stopping/checkpoint selection -- see med_adapt's/
+            # adapt_dann_mmd's validation_cycles= docstring). An empty
+            # validation_ids set for this cell is not an error; the probe
+            # is simply skipped (validation_cycles left as None) and
+            # validation_evaluated stays honestly False for every epoch.
+            validation_cycles = (
+                _mission_cycles(records, validation_ids, feature_min, feature_max)
+                if validation_ids
+                else None
+            )
             # Diagnostic-only: per-test-mission metadata (for
             # test_predictions.parquet) and the raw-parquet Ns/V/I/T/
             # capacity join table for this cell, built once per cell and
@@ -753,6 +977,10 @@ def main() -> None:
                     # version. Raises immediately rather than skipping,
                     # overwriting, or deleting anything.
                     _check_resume_cmu_input_sha256(result_path, actual)
+                    _check_resume_result_sidecars(
+                        result_path=result_path, cell_root=cell_root,
+                        seed_root=seed_root, method=method,
+                    )
                     print(f"  {cell}/{method}: resumed from {result_path}")
                     continue
 
@@ -818,6 +1046,9 @@ def main() -> None:
                             learning_rate=args.transfer_lr, device=device, seed=seed,
                             lambdas=(args.med_lambda_soc, args.med_lambda_dis),
                             early_stopping_patience=args.early_stopping_patience,
+                            record_epoch_seconds=True,
+                            validation_cycles=validation_cycles,
+                            validation_interval=args.validation_interval,
                         )
                     with _Timer(device) as eval_timer:
                         metrics = _evaluate(adapted, test_cycles, device, branch="target")
@@ -840,6 +1071,9 @@ def main() -> None:
                             epochs=args.transfer_epochs, batch_size=args.batch_size,
                             learning_rate=args.transfer_lr, lambdas=tuple(args.dann_lambdas),
                             device=device, seed=seed,
+                            record_epoch_seconds=True,
+                            validation_cycles=validation_cycles,
+                            validation_interval=args.validation_interval,
                         )
                     with _Timer(device) as eval_timer:
                         metrics = _evaluate(adapted, test_cycles, device, branch="target")
@@ -926,6 +1160,23 @@ def main() -> None:
     table = _rebuild_cell_metrics(args.output_root)
     _rebuild_test_predictions(args.output_root)
     _rebuild_training_history(args.output_root)
+
+    # Diagnostic-only phase summaries, read back from the just-rebuilt
+    # top-level test_predictions.parquet (never from in-memory rows, never
+    # a second evaluation set) so they always reflect every cell on disk,
+    # including any --resume'd ones. Skipped (never writing empty/
+    # placeholder files) if the merged parquet doesn't exist yet or has no
+    # take_off/cruise/landing rows.
+    predictions_path = args.output_root / "test_predictions.parquet"
+    if predictions_path.is_file():
+        phase_metrics = _compute_phase_metrics(predictions_path)
+        if not phase_metrics.empty:
+            phase_metrics.to_csv(args.output_root / "phase_metrics.csv", index=False)
+            phase_transfer_effects = _compute_phase_transfer_effects(phase_metrics)
+            phase_transfer_effects.to_csv(
+                args.output_root / "phase_transfer_effects.csv", index=False
+            )
+
     metadata = {
         "benchmark": "sftnn_med_transfer_panasonic_25c_to_cmu_core7",
         "note": (
@@ -988,9 +1239,17 @@ def main() -> None:
         "target_soc_labels_used_for_training": False,
         "target_soc_labels_used_for_adaptation": False,
         "target_soc_labels_used_for_checkpoint_selection": False,
-        "target_validation_labels_used_for_diagnostics": False,
+        # Manifest "validation"-split mission SOC labels ARE now read by a
+        # read-only diagnostic probe (see med_adapt's/adapt_dann_mmd's
+        # validation_cycles=/_validation_metrics in shen_2023/train.py),
+        # for MED and DANN+MMD *adaptation* only -- never zero-shot, never
+        # source pretraining, and never fed back into training,
+        # pseudo-labeling, the scheduler, early stopping, checkpoint
+        # selection, or model selection.
+        "target_validation_labels_used_for_diagnostics": True,
         "target_validation_labels_used_for_training": False,
         "target_validation_labels_used_for_checkpoint_selection": False,
+        "validation_interval": args.validation_interval,
         "target_soc_reference_used_for_posthoc_evaluation": True,
         "label_is_ground_truth": False,
         "formal_benchmark_eligible": False,

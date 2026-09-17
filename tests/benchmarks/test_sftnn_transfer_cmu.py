@@ -8,6 +8,7 @@ and recomputing error from test_predictions matching _evaluate's own metric.
 
 from __future__ import annotations
 
+import json
 import sys
 
 import numpy as np
@@ -15,14 +16,28 @@ import pandas as pd
 import pytest
 import torch
 
+from torch.utils.data import TensorDataset
+
 from battery_benchmark.benchmarks.cmu_diagnostics import load_raw_diagnostic_fields
-from battery_benchmark.reproductions.shen_2023.data import ShenCycle
+from battery_benchmark.reproductions.shen_2023.data import PROFILES, ShenCycle, windows
 from battery_benchmark.reproductions.shen_2023.model import MEDNet
+from battery_benchmark.reproductions.shen_2023.train import (
+    adapt_dann_mmd,
+    med_adapt,
+    pretrain_med,
+    predict as shen_predict,
+    train_source,
+)
 from scripts.benchmarks.run_sftnn_transfer_cmu import (
+    PHASE_SUMMARY_PHASES,
     REPO_ROOT,
     WINDOW,
+    _budget_mission_ids,
     _build_prediction_rows,
     _check_resume_cmu_input_sha256,
+    _check_resume_result_sidecars,
+    _compute_phase_metrics,
+    _compute_phase_transfer_effects,
     _evaluate,
     _flatten_dict_history,
     _flatten_scalar_history,
@@ -63,15 +78,27 @@ def test_run_sftnn_transfer_cmu_script_has_no_old_cmu_paths() -> None:
     assert "cmu_evtol_supervised_budget_manifest_v0_1.csv" not in text
 
 
-def test_parse_args_output_root_is_isolated_ns_relabel_v1(monkeypatch) -> None:
-    """Requirement #3: the SFTNN/MED benchmark's default --output-root must
-    be a NEW, isolated directory (never the pre-relabel
-    '.../sftnn_med_transfer') so a --resume against it can never pick up a
-    result produced from the old CMU data version, and the old results
-    directory is never read, written, or touched by this default."""
+def test_parse_args_output_root_is_isolated_ns_relabel_v2(monkeypatch) -> None:
+    """The SFTNN/MED benchmark's default --output-root must be the NEW
+    "_v2" directory (never the pre-relabel '.../sftnn_med_transfer', and
+    never the pre-diagnostics '..._ns_relabel_v1', which predates
+    per-epoch runtime/validation/phase-level diagnostics) so a --resume
+    against it can never pick up a result produced before these
+    diagnostics existed. v1 itself is never read, written, or touched by
+    this default."""
     monkeypatch.setattr(sys, "argv", ["run_sftnn_transfer_cmu.py"])
     args = parse_args()
-    assert args.output_root.name == "sftnn_med_transfer_ns_relabel_v1"
+    assert args.output_root.name == "sftnn_med_transfer_ns_relabel_v2"
+
+
+def test_run_sftnn_transfer_cmu_script_never_reads_or_writes_v1_output_root() -> None:
+    """The literal v1 output-root directory name must not appear anywhere
+    in the running script as a live default/path -- only as the
+    isolation-rationale comment explaining why v2 exists."""
+    script_path = REPO_ROOT / "scripts/benchmarks/run_sftnn_transfer_cmu.py"
+    text = script_path.read_text(encoding="utf-8")
+    assert 'sftnn_med_transfer_ns_relabel_v2"' in text
+    assert 'default=REPO_ROOT / "outputs/benchmarks/panasonic_to_cmu_evtol/sftnn_med_transfer_ns_relabel_v1"' not in text
 
 
 def test_check_resume_cmu_input_sha256_allows_matching_hash(tmp_path) -> None:
@@ -109,17 +136,18 @@ def test_run_sftnn_transfer_cmu_calls_resume_hash_check_before_skipping() -> Non
     assert "_check_resume_cmu_input_sha256(result_path, actual)" in text
 
 
-def test_sftnn_notebook_result_root_is_isolated_ns_relabel_v1() -> None:
-    """Requirement #3: the notebook's RESULT_ROOT assignment must point at
-    the new, isolated 'sftnn_med_transfer_ns_relabel_v1' directory -- an OLD
-    run's cell output elsewhere in this notebook may still print the
-    pre-relabel path (historical evidence, never edited), so this checks the
-    actual RESULT_ROOT source assignment specifically, not just any
-    occurrence of the string."""
+def test_sftnn_notebook_result_root_is_isolated_ns_relabel_v2() -> None:
+    """The notebook's RESULT_ROOT assignment must point at the NEW,
+    isolated 'sftnn_med_transfer_ns_relabel_v2' directory (never v1, which
+    predates per-epoch runtime/validation/phase-level diagnostics) -- an
+    OLD run's cell output elsewhere in this notebook may still print the
+    pre-relabel or v1 path (historical evidence, never edited), so this
+    checks the actual RESULT_ROOT source assignment specifically, not just
+    any occurrence of the string."""
     notebook_path = REPO_ROOT / "notebooks/benchmarks/35_sftnn_med_transfer_panasonic_to_cmu.ipynb"
     text = notebook_path.read_text(encoding="utf-8")
     assert (
-        "'benchmarks/panasonic_to_cmu_evtol/sftnn_med_transfer_ns_relabel_v1'"
+        "'benchmarks/panasonic_to_cmu_evtol/sftnn_med_transfer_ns_relabel_v2'"
     ) in text
     # The exact old (pre-relabel) source literal, terminated by the closing
     # quote, must be gone -- a historical printed OUTPUT elsewhere in the
@@ -298,3 +326,428 @@ def test_flatten_scalar_history_and_dict_history_never_invent_fields():
     )
     assert dann_rows[0]["estimate"] == 0.3
     assert "soc" not in dann_rows[0]  # MED-only field must not leak into DANN+MMD rows
+
+
+def test_flatten_scalar_history_uses_real_epoch_seconds_when_provided():
+    """Requirement #1: pretrain_med/train_source's own real per-epoch
+    epoch_seconds (only produced when the caller passes
+    record_epoch_seconds=True) must be threaded through as-is, never
+    invented, and stays None when the caller doesn't supply it (zero_shot/
+    source-pretraining validation fields also stay None/False either
+    way)."""
+    rows_without = _flatten_scalar_history(
+        [1.0, 0.5], framework="sftnn_med", method="med_source_pretrain", seed=1, learning_rate=1e-3
+    )
+    assert [r["runtime_seconds"] for r in rows_without] == [None, None]
+
+    rows_with = _flatten_scalar_history(
+        [1.0, 0.5],
+        framework="sftnn_med",
+        method="med_source_pretrain",
+        seed=1,
+        learning_rate=1e-3,
+        epoch_seconds=[0.12, 0.34],
+    )
+    assert [r["runtime_seconds"] for r in rows_with] == [0.12, 0.34]
+    assert all(r["validation_mae"] is None and r["validation_evaluated"] is False for r in rows_with)
+
+
+def _make_cycle(profile: str, n_windows: int, seed: int) -> ShenCycle:
+    rng = np.random.default_rng(seed)
+    n = n_windows * WINDOW
+    features = rng.normal(size=(n, 3)).astype(np.float32)
+    soc = np.clip(rng.uniform(0.1, 0.9, size=n).astype(np.float32), 0.0, 1.0)
+    return ShenCycle(profile=profile, temperature=25, features=features, soc=soc, paths=())
+
+
+def test_pretrain_med_and_train_source_record_epoch_seconds_backward_compatible():
+    """Requirement #1/#8: default calls (no flag) keep the exact original
+    2-tuple return and per-epoch training trace; record_epoch_seconds=True
+    ADDS a third element -- a positive, per-epoch real wall-clock list of
+    the same length as history -- without changing the trace itself."""
+    device = torch.device("cpu")
+    source_cycles = {p: _make_cycle(p, 2, i) for i, p in enumerate(PROFILES)}
+
+    model, history = pretrain_med(
+        source_cycles, epochs=2, batch_size=32, learning_rate=1e-3, device=device, seed=0
+    )
+    assert isinstance(history, list) and isinstance(history[0], float)
+
+    model2, history2, epoch_seconds = pretrain_med(
+        source_cycles, epochs=2, batch_size=32, learning_rate=1e-3, device=device, seed=0,
+        record_epoch_seconds=True,
+    )
+    assert history2 == history
+    assert len(epoch_seconds) == len(history) == 2
+    assert all(s >= 0 for s in epoch_seconds)
+
+    dann_model, dann_history = train_source(
+        source_cycles, epochs=2, batch_size=32, learning_rate=1e-3, device=device, seed=0
+    )
+    dann_model2, dann_history2, dann_epoch_seconds = train_source(
+        source_cycles, epochs=2, batch_size=32, learning_rate=1e-3, device=device, seed=0,
+        record_epoch_seconds=True,
+    )
+    assert dann_history2 == dann_history
+    assert len(dann_epoch_seconds) == len(dann_history) == 2
+    assert all(s >= 0 for s in dann_epoch_seconds)
+
+
+def test_med_adapt_validation_diagnostic_is_bit_identical_no_op():
+    """Requirement #2/#8: toggling the diagnostic-only validation probe
+    (and record_epoch_seconds) on/off for med_adapt must leave the global
+    RNG, the final target_extractor state_dict (parameter-by-parameter),
+    and the test predictions COMPLETELY unchanged -- it is read-only and
+    must never feed back into training, pseudo-labeling, the scheduler,
+    early stopping, checkpoint, or model selection."""
+    device = torch.device("cpu")
+    source_cycles = {p: _make_cycle(p, 2, i) for i, p in enumerate(PROFILES)}
+    med_source, _ = pretrain_med(
+        source_cycles, epochs=1, batch_size=32, learning_rate=1e-3, device=device, seed=0
+    )
+    target_cycles = [_make_cycle("HWFET", 3, 50), _make_cycle("LA92", 3, 51)]
+    validation_cycles = [_make_cycle("NN", 2, 52)]
+    target_x, target_y = windows(target_cycles)
+    target_dataset = TensorDataset(torch.from_numpy(target_x), torch.from_numpy(target_y))
+
+    torch.manual_seed(123)
+    adapted_off, history_off = med_adapt(
+        med_source, target_dataset, epochs=3, batch_size=32, learning_rate=1e-3,
+        device=device, seed=42,
+    )
+    rng_after_off = torch.get_rng_state().clone()
+
+    torch.manual_seed(123)
+    adapted_on, history_on = med_adapt(
+        med_source, target_dataset, epochs=3, batch_size=32, learning_rate=1e-3,
+        device=device, seed=42,
+        record_epoch_seconds=True, validation_cycles=validation_cycles, validation_interval=1,
+    )
+    rng_after_on = torch.get_rng_state().clone()
+
+    assert torch.equal(rng_after_off, rng_after_on), "validation probe perturbed the global RNG"
+    for p_off, p_on in zip(adapted_off.state_dict().values(), adapted_on.state_dict().values()):
+        assert torch.equal(p_off, p_on), "validation probe changed the final state_dict"
+
+    _, est_off = shen_predict(adapted_off, target_cycles, device)
+    _, est_on = shen_predict(adapted_on, target_cycles, device)
+    assert np.array_equal(est_off, est_on), "validation probe changed test predictions"
+
+    for row in history_on:
+        assert row["runtime_seconds"] >= 0
+        assert row["validation_evaluated"] is True
+        assert row["validation_mae"] is not None
+        assert row["validation_rmse"] is not None
+    for row in history_off:
+        assert row["validation_evaluated"] is False
+        assert row["validation_mae"] is None
+        assert "runtime_seconds" not in row
+
+
+def test_adapt_dann_mmd_validation_diagnostic_is_bit_identical_no_op():
+    """Same guarantee as test_med_adapt_validation_diagnostic_is_bit_identical_no_op,
+    for the DANN+MMD baseline's adapt_dann_mmd, plus a validation_interval
+    check (only fires every Nth epoch, never every epoch when N>1)."""
+    device = torch.device("cpu")
+    source_cycles = {p: _make_cycle(p, 2, i) for i, p in enumerate(PROFILES)}
+    target_cycles_by_profile = {p: _make_cycle(p, 2, 100 + i) for i, p in enumerate(PROFILES)}
+    validation_cycles = [_make_cycle("NN", 2, 200)]
+    dann_source, _ = train_source(
+        source_cycles, epochs=1, batch_size=32, learning_rate=1e-3, device=device, seed=0
+    )
+
+    common_kwargs = dict(
+        test_profile="UDDS", scenario="semisupervised", labeled_profile="Cycle_1",
+        epochs=3, batch_size=32, learning_rate=1e-3, lambdas=(1.0, 0.1, 0.1),
+        device=device, seed=7,
+    )
+    adapted_off, history_off, _ = adapt_dann_mmd(
+        dann_source, source_cycles, target_cycles_by_profile, **common_kwargs
+    )
+    adapted_on, history_on, _ = adapt_dann_mmd(
+        dann_source, source_cycles, target_cycles_by_profile, **common_kwargs,
+        record_epoch_seconds=True, validation_cycles=validation_cycles, validation_interval=2,
+    )
+
+    for p_off, p_on in zip(adapted_off.state_dict().values(), adapted_on.state_dict().values()):
+        assert torch.equal(p_off, p_on)
+    _, est_off = shen_predict(adapted_off, list(target_cycles_by_profile.values()), device)
+    _, est_on = shen_predict(adapted_on, list(target_cycles_by_profile.values()), device)
+    assert np.array_equal(est_off, est_on)
+
+    evaluated_flags = [row["validation_evaluated"] for row in history_on]
+    assert evaluated_flags == [False, True, False], evaluated_flags
+
+
+def test_budget_mission_ids_returns_manifest_validation_split(tmp_path):
+    """The manifest's EXISTING 'validation'-split missions must be
+    returned separately from train/test, never merged into either --
+    this is what feeds the diagnostic-only validation probe."""
+    manifest = pd.DataFrame(
+        {
+            "cell_id": ["VAH01"] * 6,
+            "mission_cycle_id": ["m1", "m2", "m3", "m4", "m5", "m6"],
+            "split": ["train", "train", "test", "test", "validation", "validation"],
+        }
+    )
+    train_ids, test_ids, validation_ids = _budget_mission_ids(manifest, "VAH01")
+    assert train_ids == {"m1", "m2"}
+    assert test_ids == {"m3", "m4"}
+    assert validation_ids == {"m5", "m6"}
+    assert train_ids.isdisjoint(validation_ids) and test_ids.isdisjoint(validation_ids)
+
+
+def test_budget_mission_ids_allows_empty_validation_split(tmp_path):
+    """An empty validation split for a cell is not an error -- only an
+    empty TRAIN split is (MED/DANN+MMD adaptation always needs unlabeled
+    train-split data; the validation probe is simply diagnostic-only and
+    optional)."""
+    manifest = pd.DataFrame(
+        {
+            "cell_id": ["VAH01"] * 2,
+            "mission_cycle_id": ["m1", "m2"],
+            "split": ["train", "test"],
+        }
+    )
+    train_ids, test_ids, validation_ids = _budget_mission_ids(manifest, "VAH01")
+    assert train_ids == {"m1"}
+    assert validation_ids == set()
+
+
+def _write_test_predictions_parquet(path, rows):
+    pd.DataFrame(rows).to_parquet(path)
+
+
+def test_compute_phase_metrics_restricted_to_three_phases_and_recomputable(tmp_path):
+    """Requirement #3/#8: phase_metrics.csv must be restricted to
+    take_off/cruise/landing and every value must be EXACTLY recomputable
+    from test_predictions.parquet's own soc_reference/soc_prediction/
+    mission_phase columns -- read back from the FINAL, aggregated parquet,
+    never re-derived from live model state, never a second evaluation
+    set."""
+    rng = np.random.default_rng(0)
+    rows = []
+    for phase in ("take_off", "cruise", "landing", "unmapped", None):
+        for i in range(5):
+            rows.append(
+                {
+                    "cell_id": "VAH01", "condition": "baseline protocol",
+                    "method": "zero_shot", "mission_cycle_id": f"m{i}",
+                    "mission_phase": phase,
+                    "soc_reference": float(rng.uniform(0, 1)),
+                    "soc_prediction": float(rng.uniform(0, 1)),
+                }
+            )
+    path = tmp_path / "test_predictions.parquet"
+    _write_test_predictions_parquet(path, rows)
+
+    phase_metrics = _compute_phase_metrics(path)
+    assert set(phase_metrics["mission_phase"]) == set(PHASE_SUMMARY_PHASES)
+    assert PHASE_SUMMARY_PHASES == ("take_off", "cruise", "landing")
+
+    raw = pd.read_parquet(path)
+    for phase in PHASE_SUMMARY_PHASES:
+        subset = raw.loc[raw["mission_phase"] == phase]
+        expected_mae = float((subset["soc_prediction"] - subset["soc_reference"]).abs().mean() * 100)
+        expected_rmse = float(
+            np.sqrt(((subset["soc_prediction"] - subset["soc_reference"]) ** 2).mean()) * 100
+        )
+        row = phase_metrics.loc[phase_metrics["mission_phase"] == phase].iloc[0]
+        assert row["n_points"] == len(subset)
+        assert np.isclose(row["mae_percent"], expected_mae)
+        assert np.isclose(row["rmse_percent"], expected_rmse)
+
+
+def test_compute_phase_metrics_every_cell_method_covers_all_three_phases(tmp_path):
+    """Requirement #3: verifies every (cell x method) combination has
+    non-zero samples in all three flight phases -- the exact check the
+    delivered final report must confirm for the real run."""
+    rows = []
+    for cell in ("VAH01", "VAH17"):
+        for method in ("zero_shot", "med", "dann_mmd"):
+            for phase in PHASE_SUMMARY_PHASES:
+                for i in range(3):
+                    rows.append(
+                        {
+                            "cell_id": cell, "condition": "baseline protocol",
+                            "method": method, "mission_cycle_id": f"m{i}",
+                            "mission_phase": phase,
+                            "soc_reference": 0.5, "soc_prediction": 0.55,
+                        }
+                    )
+    path = tmp_path / "test_predictions.parquet"
+    _write_test_predictions_parquet(path, rows)
+    phase_metrics = _compute_phase_metrics(path)
+    coverage = phase_metrics.groupby(["cell_id", "method"])["mission_phase"].nunique()
+    assert (coverage == len(PHASE_SUMMARY_PHASES)).all()
+    assert (phase_metrics["n_points"] > 0).all()
+
+
+def test_compute_phase_transfer_effects_delta_and_negative_transfer_flags():
+    """Requirement #3: delta = adapted - zero_shot, delta > 0 means
+    negative transfer; med and dann_mmd are each compared against
+    zero_shot SEPARATELY (reference_method column), never against each
+    other."""
+    phase_metrics = pd.DataFrame(
+        [
+            {"cell_id": "VAH01", "condition": "c", "method": "zero_shot", "mission_phase": "cruise",
+             "n_points": 10, "n_missions": 1, "mae_percent": 5.0, "rmse_percent": 6.0, "mean_signed_error_percent": 0.1},
+            {"cell_id": "VAH01", "condition": "c", "method": "med", "mission_phase": "cruise",
+             "n_points": 10, "n_missions": 1, "mae_percent": 8.0, "rmse_percent": 9.0, "mean_signed_error_percent": 0.2},
+            {"cell_id": "VAH01", "condition": "c", "method": "dann_mmd", "mission_phase": "cruise",
+             "n_points": 10, "n_missions": 1, "mae_percent": 3.0, "rmse_percent": 4.0, "mean_signed_error_percent": 0.05},
+        ]
+    )
+    effects = _compute_phase_transfer_effects(phase_metrics)
+    assert set(effects["reference_method"]) == {"zero_shot"}
+    assert set(effects["method"]) == {"med", "dann_mmd"}
+
+    med_row = effects.loc[effects["method"] == "med"].iloc[0]
+    assert med_row["delta_mae_percent"] == pytest.approx(3.0)
+    assert med_row["negative_transfer_mae"] is True or bool(med_row["negative_transfer_mae"]) is True
+
+    dann_row = effects.loc[effects["method"] == "dann_mmd"].iloc[0]
+    assert dann_row["delta_mae_percent"] == pytest.approx(-2.0)
+    assert bool(dann_row["negative_transfer_mae"]) is False
+
+
+def test_check_resume_result_sidecars_allows_collapsed_pseudo_label_row(tmp_path):
+    """A genuinely collapsed pseudo-label run (0 windows survived
+    confidence filtering) never produced a prediction/training-history
+    sidecar -- that is the correct, honestly-recorded outcome, and must
+    NOT be treated as a missing-artifact error on --resume."""
+    cell_root = tmp_path / "VAH01"
+    seed_root = tmp_path
+    cell_root.mkdir()
+    result_path = cell_root / "med.json"
+    result_path.write_text(json.dumps({"pseudo_label_collapsed": True}), encoding="utf-8")
+    _check_resume_result_sidecars(
+        result_path=result_path, cell_root=cell_root, seed_root=seed_root, method="med",
+    )  # must not raise
+
+
+def test_check_resume_result_sidecars_rejects_missing_predictions(tmp_path):
+    cell_root = tmp_path / "VAH01"
+    seed_root = tmp_path
+    cell_root.mkdir()
+    result_path = cell_root / "zero_shot.json"
+    result_path.write_text(json.dumps({}), encoding="utf-8")
+    with pytest.raises(ValueError, match="prediction sidecar"):
+        _check_resume_result_sidecars(
+            result_path=result_path, cell_root=cell_root, seed_root=seed_root, method="zero_shot",
+        )
+
+
+def test_check_resume_result_sidecars_rejects_missing_adaptation_history(tmp_path):
+    cell_root = tmp_path / "VAH01"
+    seed_root = tmp_path
+    cell_root.mkdir()
+    (cell_root / "med_predictions.parquet").write_text("stub", encoding="utf-8")
+    result_path = cell_root / "med.json"
+    result_path.write_text(json.dumps({}), encoding="utf-8")
+    with pytest.raises(ValueError, match="training-history sidecar"):
+        _check_resume_result_sidecars(
+            result_path=result_path, cell_root=cell_root, seed_root=seed_root, method="med",
+        )
+
+
+def test_check_resume_result_sidecars_rejects_missing_source_pretrain_evidence(tmp_path):
+    cell_root = tmp_path / "VAH01"
+    seed_root = tmp_path
+    cell_root.mkdir()
+    (cell_root / "med_predictions.parquet").write_text("stub", encoding="utf-8")
+    (cell_root / "med_training_history.csv").write_text("stub", encoding="utf-8")
+    result_path = cell_root / "med.json"
+    result_path.write_text(json.dumps({}), encoding="utf-8")
+    with pytest.raises(ValueError, match="source-pretraining"):
+        _check_resume_result_sidecars(
+            result_path=result_path, cell_root=cell_root, seed_root=seed_root, method="med",
+        )
+
+
+def test_check_resume_result_sidecars_accepts_complete_row(tmp_path):
+    cell_root = tmp_path / "VAH01"
+    seed_root = tmp_path
+    cell_root.mkdir()
+    (cell_root / "med_predictions.parquet").write_text("stub", encoding="utf-8")
+    (cell_root / "med_training_history.csv").write_text("stub", encoding="utf-8")
+    (seed_root / "med_source_pretrain_training_history.csv").write_text("stub", encoding="utf-8")
+    result_path = cell_root / "med.json"
+    result_path.write_text(json.dumps({}), encoding="utf-8")
+    _check_resume_result_sidecars(
+        result_path=result_path, cell_root=cell_root, seed_root=seed_root, method="med",
+    )  # must not raise
+
+    # zero_shot needs only the prediction sidecar, never an adaptation
+    # training-history sidecar (it never adapts).
+    (cell_root / "zero_shot_predictions.parquet").write_text("stub", encoding="utf-8")
+    zero_shot_result = cell_root / "zero_shot.json"
+    zero_shot_result.write_text(json.dumps({}), encoding="utf-8")
+    _check_resume_result_sidecars(
+        result_path=zero_shot_result, cell_root=cell_root, seed_root=seed_root, method="zero_shot",
+    )  # must not raise
+
+
+def test_run_sftnn_transfer_cmu_calls_resume_sidecar_check_before_skipping() -> None:
+    """The new sidecar-existence resume check must actually be wired into
+    main()'s per-(cell, method) resume-skip branch, alongside (never
+    instead of) the existing cmu_input_sha256 check."""
+    script_path = REPO_ROOT / "scripts/benchmarks/run_sftnn_transfer_cmu.py"
+    text = script_path.read_text(encoding="utf-8")
+    assert "_check_resume_cmu_input_sha256(result_path, actual)" in text
+    assert "_check_resume_result_sidecars(" in text
+
+
+def test_parse_args_validation_interval_default_and_wired_into_calls(monkeypatch) -> None:
+    """Requirement #2: --validation-interval must exist (default 1) and
+    actually be threaded into both med_adapt's and adapt_dann_mmd's call
+    sites, never left unused."""
+    monkeypatch.setattr(sys, "argv", ["run_sftnn_transfer_cmu.py"])
+    args = parse_args()
+    assert args.validation_interval == 1
+    script_path = REPO_ROOT / "scripts/benchmarks/run_sftnn_transfer_cmu.py"
+    text = script_path.read_text(encoding="utf-8")
+    assert text.count("validation_interval=args.validation_interval") == 2
+    assert text.count("validation_cycles=validation_cycles") == 2
+    assert text.count("record_epoch_seconds=True") >= 4
+
+
+def test_sftnn_notebook_displays_new_diagnostic_sections() -> None:
+    """Requirement #5: the notebook must actually READ BACK and DISPLAY the
+    new diagnostics (not just save them from the script side) -- checks
+    for the specific file reads and section markers, not just any mention
+    of the words."""
+    notebook_path = REPO_ROOT / "notebooks/benchmarks/35_sftnn_med_transfer_panasonic_to_cmu.ipynb"
+    text = notebook_path.read_text(encoding="utf-8")
+    # Cell-level negative-transfer table (never only the 7-cell average).
+    assert "negative_transfer_table" in text
+    assert "negative_transfer_mae" in text and "negative_transfer_rmse" in text
+    # Phase-level metrics/effects, read back from the files the script
+    # writes (never re-derived from live model state in the notebook).
+    assert "phase_metrics.csv" in text
+    assert "phase_transfer_effects.csv" in text
+    assert "reference_method" not in text or "phase_transfer_effects" in text
+    # MED and DANN+MMD training curves shown separately, plus validation
+    # MAE/RMSE curves.
+    assert "for col, method in enumerate(['med', 'dann_mmd'])" in text
+    assert "validation_mae" in text
+    assert "validation_evaluated" in text
+    # Source pretraining is once-per-seed, explicitly clarified and never
+    # summed per-cell.
+    assert "once per seed" in text
+    assert "med_source_pretrain" in text and "dann_mmd_source_pretrain" in text
+    assert "runtime_seconds" in text
+
+
+def test_run_metadata_truthfully_records_validation_diagnostics_flag() -> None:
+    """target_validation_labels_used_for_diagnostics must now be True
+    (validation SOC labels ARE read by the read-only probe), while
+    target_validation_labels_used_for_training/checkpoint_selection stay
+    False -- the probe never feeds back into training or model
+    selection."""
+    script_path = REPO_ROOT / "scripts/benchmarks/run_sftnn_transfer_cmu.py"
+    text = script_path.read_text(encoding="utf-8")
+    assert '"target_validation_labels_used_for_diagnostics": True' in text
+    assert '"target_validation_labels_used_for_training": False' in text
+    assert '"target_validation_labels_used_for_checkpoint_selection": False' in text
+    assert '"validation_interval": args.validation_interval' in text
