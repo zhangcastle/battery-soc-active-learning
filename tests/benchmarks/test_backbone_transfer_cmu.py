@@ -229,12 +229,21 @@ def test_build_prediction_rows_joins_ns_and_all_three_models_share_schema(tmp_pa
             soc_reference=np.array([0.9, 0.8, 0.7, 0.6]),
             soc_prediction=np.array([0.91, 0.79, 0.72, 0.55]),
             metadata=metadata,
-            missions=[("m1", 4)],
+            # A single window of sequence_length=4 holds exactly 4
+            # timesteps, so this is ONE window ("m1", 1), not 4 windows
+            # (which would mean 4 * 4 = 16 expected timesteps for only 4
+            # rows of data -- semantically invalid, and now caught by
+            # _build_prediction_rows' own length check rather than
+            # silently misaligning rows).
+            missions=[("m1", 1)],
             sequence_length=4,
             raw_diagnostic=raw_diagnostic,
         )
         assert [row["mission_phase"] for row in rows] == ["take_off", "cruise", "landing", "rest_1"]
         assert rows[0]["model"] == model_name
+        assert [row["mission_cycle_id"] for row in rows] == ["m1"] * 4
+        assert [row["window_index"] for row in rows] == [0, 0, 0, 0]
+        assert [row["timestep_index"] for row in rows] == [0, 1, 2, 3]
         # Identical schema keys regardless of model, per Section V.4.
         assert set(rows[0].keys()) == {
             "model", "method", "budget", "seed", "cell_id", "condition", "split",
@@ -244,3 +253,85 @@ def test_build_prediction_rows_joins_ns_and_all_three_models_share_schema(tmp_pa
             "absolute_error", "voltage_v_raw", "current_a_raw", "temperature_c_raw",
             "capacity_ah", "capacity_source", "source_rpt_id", "ns_raw", "mission_phase",
         }
+
+
+def test_build_prediction_rows_rejects_length_mismatch_against_expected_points(tmp_path):
+    """Requirement #4: expected_points = sum(window_count) * sequence_length
+    must equal the length of soc_reference/soc_prediction and all four
+    metadata arrays, or _build_prediction_rows must raise immediately --
+    never silently misalign rows the way the old
+    one-entry-per-window-indexed-by-flat-timestep-position bug did."""
+    path = tmp_path / "raw.parquet"
+    _write_raw_diagnostic_parquet(path, 4, ns_values=[4, 5, 6, 7])
+    raw_diagnostic = load_raw_diagnostic_fields(path)
+
+    metadata = {
+        "mission_sequence_order": np.array([0, 0, 0, 0]),
+        "elapsed_candidate_s": np.arange(4, dtype=np.float64),
+        "original_time_s": np.arange(4, dtype=np.float64),
+        "source_row_right": np.array([0, 1, 2, 3], dtype=np.int64),
+    }
+    with pytest.raises(ValueError, match="expected"):
+        _build_prediction_rows(
+            model_name="cnn_lstm",
+            method="fine_tuned",
+            budget="5pct",
+            seed=0,
+            cell_id="VAH01",
+            condition="baseline protocol",
+            soc_reference=np.array([0.9, 0.8, 0.7, 0.6]),
+            soc_prediction=np.array([0.91, 0.79, 0.72, 0.55]),
+            metadata=metadata,
+            # 4 windows * sequence_length=4 = 16 expected timesteps, but
+            # only 4 rows of data -- must raise, not misalign.
+            missions=[("m1", 4)],
+            sequence_length=4,
+            raw_diagnostic=raw_diagnostic,
+        )
+
+
+def test_build_prediction_rows_multi_mission_mission_id_and_window_index_alignment(tmp_path):
+    """Requirement #6: a realistic multi-mission, multi-window case --
+    m1 has 2 windows, m2 has 1 window, sequence_length=3, so 3 windows * 3
+    = 9 timesteps total. Explicitly asserts mission_cycle_id (m1 repeated
+    6x, m2 repeated 3x), window_index (0,0,0,1,1,1 for m1's two windows,
+    restarting at 0,0,0 for m2's one window -- per-mission, not global),
+    timestep_index (0,1,2 within every window), and that soc/source_row/
+    mission_phase all line up row-for-row with those same indices."""
+    path = tmp_path / "raw.parquet"
+    _write_raw_diagnostic_parquet(path, 9, ns_values=[4, 5, 6, 4, 5, 6, 4, 5, 6])
+    raw_diagnostic = load_raw_diagnostic_fields(path)
+
+    missions = [("m1", 2), ("m2", 1)]
+    sequence_length = 3
+    metadata = {
+        "mission_sequence_order": np.array([0, 0, 0, 1, 1, 1, 0, 0, 0]),
+        "elapsed_candidate_s": np.arange(9, dtype=np.float64),
+        "original_time_s": np.arange(9, dtype=np.float64),
+        "source_row_right": np.arange(9, dtype=np.int64),
+    }
+    soc_reference = np.array([0.9, 0.8, 0.7, 0.6, 0.5, 0.4, 0.3, 0.2, 0.1])
+    soc_prediction = soc_reference.copy()
+
+    rows = _build_prediction_rows(
+        model_name="cnn_lstm",
+        method="fine_tuned",
+        budget="5pct",
+        seed=0,
+        cell_id="VAH01",
+        condition="baseline protocol",
+        soc_reference=soc_reference,
+        soc_prediction=soc_prediction,
+        metadata=metadata,
+        missions=missions,
+        sequence_length=sequence_length,
+        raw_diagnostic=raw_diagnostic,
+    )
+
+    assert len(rows) == 9
+    assert [row["mission_cycle_id"] for row in rows] == ["m1"] * 6 + ["m2"] * 3
+    assert [row["window_index"] for row in rows] == [0, 0, 0, 1, 1, 1, 0, 0, 0]
+    assert [row["timestep_index"] for row in rows] == [0, 1, 2, 0, 1, 2, 0, 1, 2]
+    assert [row["source_row_right"] for row in rows] == list(range(9))
+    assert [row["soc_reference"] for row in rows] == pytest.approx(soc_reference.tolist())
+    assert [row["mission_phase"] for row in rows] == ["take_off", "cruise", "landing"] * 3

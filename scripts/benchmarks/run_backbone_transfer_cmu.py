@@ -518,17 +518,56 @@ def _build_prediction_rows(
     """Assembles one test_predictions.parquet row per raw CMU timestep,
     identical shape/logic across all three backbones. Joins Ns/mission_phase/
     raw V-I-T/capacity provenance by this timestep's own source_row_right --
-    never reverse-derived from x."""
-    n = len(soc_reference)
+    never reverse-derived from x.
+
+    ``missions`` is a list of ``(mission_id, window_count)`` -- window
+    counts, NOT timestep counts. Every per-timestep array (``soc_reference``,
+    ``soc_prediction``, and the four ``metadata`` arrays) must have length
+    ``sum(window_count for _, window_count in missions) * sequence_length``;
+    a mismatch raises immediately rather than silently misaligning rows
+    (this is exactly the bug this function previously had: it built
+    ``mission_ids``/``window_index`` at one-entry-per-WINDOW length but then
+    indexed them with the flat per-TIMESTEP position ``i``).
+
+    ``mission_cycle_id`` and ``window_index`` are built per-window first
+    (one entry per window: the window's mission id, and its 0-based index
+    WITHIN that mission, restarting at 0 for every mission), then each
+    repeated ``sequence_length`` times to reach timestep-level length.
+    ``timestep_index`` is 0..sequence_length-1 within every window."""
+    n_windows_total = sum(window_count for _, window_count in missions)
+    expected_points = n_windows_total * sequence_length
+    for array_name, array in (
+        ("soc_reference", soc_reference),
+        ("soc_prediction", soc_prediction),
+        ("metadata['mission_sequence_order']", metadata["mission_sequence_order"]),
+        ("metadata['elapsed_candidate_s']", metadata["elapsed_candidate_s"]),
+        ("metadata['original_time_s']", metadata["original_time_s"]),
+        ("metadata['source_row_right']", metadata["source_row_right"]),
+    ):
+        if len(array) != expected_points:
+            raise ValueError(
+                f"_build_prediction_rows: {array_name} has length {len(array)}, "
+                f"expected {expected_points} "
+                "(= sum(window_count for missions) * sequence_length)"
+            )
+    n = expected_points
     if not n:
         return []
     joined = join_diagnostic_fields_by_source_row(metadata["source_row_right"], raw_diagnostic)
     clipped_prediction = np.clip(soc_prediction, 0.0, 1.0)
-    mission_ids = np.array(
-        [mission for mission, count in missions for _ in range(count)], dtype=object
+    # Per-window mission id and per-mission-restarting window index, built
+    # ONE ENTRY PER WINDOW first, then each repeated sequence_length times
+    # -- never indexed directly by the flat timestep position i.
+    window_mission_ids = [
+        mission for mission, window_count in missions for _ in range(window_count)
+    ]
+    window_indices_within_mission = (
+        np.concatenate([np.arange(window_count) for _, window_count in missions])
+        if missions
+        else np.array([], dtype=np.int64)
     )
-    n_windows_total = sum(count for _, count in missions)
-    window_indices = np.repeat(np.arange(n_windows_total), sequence_length)
+    mission_ids = np.repeat(np.array(window_mission_ids, dtype=object), sequence_length)
+    window_indices = np.repeat(window_indices_within_mission, sequence_length)
     timestep_indices = np.tile(np.arange(sequence_length), n_windows_total)
     rows = []
     for i in range(n):
