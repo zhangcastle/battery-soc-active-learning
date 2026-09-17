@@ -395,13 +395,88 @@ def _flatten_training_history(
     return rows
 
 
+def _check_resume_cmu_input_sha256(result_path: Path, expected_sha256: str) -> None:
+    """Resume-safety check, run ONLY at the point where --resume is about to
+    skip re-running a cell because ``result_path`` already exists -- never
+    anywhere else, and never changes what a non-resumed run trains,
+    adapts, or evaluates.
+
+    An existing ``results.json`` must have been produced from the SAME CMU
+    data version this invocation just hash-verified (against the manifest)
+    for this cell. If it wasn't -- either because the hash differs, or
+    because the field is entirely absent (an old results.json from before
+    this check existed) -- resuming from it would silently reuse a stale
+    data version's Source-only/DARM results, so this raises immediately
+    rather than skipping, overwriting, or deleting anything.
+    """
+    existing = json.loads(result_path.read_text(encoding="utf-8"))
+    existing_sha256 = existing.get("cmu_input_sha256")
+    if existing_sha256 is None:
+        raise ValueError(
+            f"{result_path}: existing result has no cmu_input_sha256 recorded -- "
+            "cannot verify it was produced from the current CMU data version; "
+            "refusing to --resume from it. Rerun without --resume, or use a "
+            "fresh --output-root."
+        )
+    if existing_sha256 != expected_sha256:
+        raise ValueError(
+            f"{result_path}: existing result's cmu_input_sha256={existing_sha256!r} "
+            f"does not match the current CMU data version's hash "
+            f"{expected_sha256!r} -- refusing to --resume from a different CMU "
+            "data version. Rerun without --resume, or use a fresh --output-root."
+        )
+
+
+def _check_resume_diagnostic_sidecars(cell_output: Path) -> None:
+    """Resume-safety companion to ``_check_resume_cmu_input_sha256``: an
+    existing, hash-verified ``results.json`` is only actually safe to
+    resume from if its diagnostic sidecars -- ``test_predictions.parquet``
+    and ``training_history.csv`` -- are also still present on disk (both
+    are read back by ``_rebuild_test_predictions``/``_rebuild_training_history``
+    at the end of ``main()``). If either is missing, raise immediately
+    rather than silently emitting an incomplete/empty aggregate or
+    fabricating diagnostic rows for the skipped cell.
+    """
+    missing = [
+        name
+        for name in ("test_predictions.parquet", "training_history.csv")
+        if not (cell_output / name).is_file()
+    ]
+    if missing:
+        raise ValueError(
+            f"{cell_output}: --resume requested but this cell's diagnostic "
+            f"sidecar(s) {missing} are missing -- cannot safely resume from "
+            "this old result without regenerating or fabricating diagnostics. "
+            "Rerun without --resume, or use a fresh --output-root."
+        )
+
+
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser()
     parser.add_argument("--panasonic-data-root", type=Path, required=True)
-    parser.add_argument("--cmu-base-root", type=Path, required=True)
-    parser.add_argument("--cmu-condition-root", type=Path, required=True)
+    parser.add_argument(
+        "--cmu-base-root",
+        type=Path,
+        default=REPO_ROOT / "outputs/datasets/cmu_evtol/dynamic_capacity_soc_development_v1_ns_relabel",
+    )
+    parser.add_argument(
+        "--cmu-condition-root",
+        type=Path,
+        default=REPO_ROOT
+        / "outputs/datasets/cmu_evtol/dynamic_capacity_soc_development_v1_extension4_ns_relabel",
+    )
     parser.add_argument("--source-artifact", type=Path, required=True)
-    parser.add_argument("--output-root", type=Path, required=True)
+    parser.add_argument(
+        "--output-root",
+        type=Path,
+        # Isolated from the pre-_ns_relabel results (previously
+        # ".../liu_2025_darm") -- a --resume against this new directory can
+        # never accidentally pick up a result produced from the old CMU
+        # data version, since that directory is never written to or read
+        # from by this default. The old directory itself is left exactly
+        # as it was: never deleted, overwritten, or migrated.
+        default=REPO_ROOT / "outputs/benchmarks/panasonic_to_cmu_evtol/liu_2025_darm_ns_relabel_v1",
+    )
     parser.add_argument(
         "--source-manifest",
         type=Path,
@@ -411,7 +486,7 @@ def parse_args() -> argparse.Namespace:
         "--cmu-manifest",
         type=Path,
         default=REPO_ROOT
-        / "data/manifests/cmu_evtol/cmu_evtol_supervised_budget_manifest_v0_1.csv",
+        / "data/manifests/cmu_evtol/cmu_evtol_supervised_budget_manifest_v0_1_ns_relabel.csv",
     )
     parser.add_argument("--cells", nargs="+", choices=tuple(CELLS), default=list(CELLS))
     parser.add_argument("--epochs", type=int, default=100)
@@ -465,7 +540,15 @@ def _build_run_metadata(args: argparse.Namespace) -> dict:
         "formal_benchmark_eligible": False,
         "git_commit": get_full_commit_hash(REPO_ROOT),
         "git_dirty": is_dirty(REPO_ROOT),
+        # Explicit record of which CMU dataset build and manifest this run
+        # read from, and which Ns -> mission-phase vocabulary its
+        # diagnostic fields use -- diagnostic/provenance-only, does not
+        # affect model, adaptation, training, or evaluation logic.
+        "cmu_base_root": str(args.cmu_base_root),
+        "cmu_condition_root": str(args.cmu_condition_root),
+        "cmu_manifest_path": str(args.cmu_manifest),
         "cmu_manifest_sha256": sha256_file(args.cmu_manifest),
+        "phase_definition": "canonical Ns mapping: 4=take_off, 5=cruise, 6=landing",
     }
 
 
@@ -531,7 +614,33 @@ def main() -> None:
         cell_output = args.output_root / cell_id
         cell_output.mkdir(parents=True, exist_ok=True)
         result_path = cell_output / "results.json"
-        if result_path.is_file():
+
+        # Hoisted out of the "only proceed if not resumed" branch below
+        # (unlike model construction/loading, which stays lazy and only
+        # happens when this cell is actually re-run): computing/verifying
+        # this cell's CMU input hash against the manifest is cheap, and the
+        # resume-safety check below needs a freshly-verified `input_sha256`
+        # regardless of whether this cell ends up being skipped.
+        source_path = _cell_path(cell_id, args.cmu_base_root, args.cmu_condition_root)
+        input_sha256 = sha256_file(source_path)
+        expected_hashes = set(
+            manifest.loc[
+                manifest["cell_id"] == cell_id, "source_artifact_sha256"
+            ].astype(str)
+        )
+        if expected_hashes != {input_sha256}:
+            raise ValueError(f"{cell_id}: CMU input hash does not match manifest")
+
+        if args.resume and result_path.is_file():
+            # Resume safety: only --resume may trigger a skip (previously
+            # this skipped whenever results.json existed, regardless of
+            # --resume -- fixed here). An existing result JSON must also
+            # have been produced from the SAME CMU data version this
+            # invocation just hash-verified above, and its diagnostic
+            # sidecars must still be present, or this raises immediately
+            # rather than silently reusing/overwriting/deleting anything.
+            _check_resume_cmu_input_sha256(result_path, input_sha256)
+            _check_resume_diagnostic_sidecars(cell_output)
             result = json.loads(result_path.read_text(encoding="utf-8"))
             rows.extend(result["metrics"])
             continue
@@ -556,17 +665,9 @@ def main() -> None:
         source_loader = supervised_loader(
             source_x_normalized, source_y, args.batch_size, True
         )
-        source_path = _cell_path(
-            cell_id, args.cmu_base_root, args.cmu_condition_root
-        )
-        input_sha256 = sha256_file(source_path)
-        expected_hashes = set(
-            manifest.loc[
-                manifest["cell_id"] == cell_id, "source_artifact_sha256"
-            ].astype(str)
-        )
-        if expected_hashes != {input_sha256}:
-            raise ValueError(f"{cell_id}: CMU input hash does not match manifest")
+        # source_path/input_sha256 already computed and manifest-verified
+        # above (hoisted so the resume-safety check has them even when this
+        # cell is skipped) -- reused here, not recomputed.
         adaptation_ids, _, test_ids, budget = select_duration_matched_missions(
             manifest, cell_id
         )

@@ -10,6 +10,8 @@ metric.
 
 from __future__ import annotations
 
+import sys
+
 import numpy as np
 import pandas as pd
 import pyarrow.parquet as pq
@@ -20,15 +22,158 @@ from battery_benchmark.reproductions.liu_2025.darm import DARM
 from battery_benchmark.reproductions.liu_2025.windows import build_liu_windows
 from battery_benchmark.reproductions.vidal_2019.sequence_v2 import VidalV2Record
 from scripts.benchmarks.run_liu_cmu_darm import (
+    REPO_ROOT,
     WINDOW_LENGTH,
     _build_prediction_rows,
+    _check_resume_cmu_input_sha256,
+    _check_resume_diagnostic_sidecars,
     _evaluate,
     _flatten_training_history,
     _labelled_windows_with_metadata,
     _mission_id_array,
     _predict_all,
+    parse_args,
 )
 from battery_benchmark.benchmarks.cmu_diagnostics import load_raw_diagnostic_fields
+
+
+_REQUIRED_ARGV = [
+    "run_liu_cmu_darm.py",
+    "--panasonic-data-root",
+    "/tmp/panasonic",
+    "--source-artifact",
+    "/tmp/artifact.pt",
+]
+
+
+def test_parse_args_cmu_defaults_use_ns_relabel_dataset_version(monkeypatch) -> None:
+    """This DARM benchmark's default CMU inputs must point at the relabeled
+    dataset build/manifest, not the pre-relabel version -- data version
+    only, no model/adaptation/training/hyperparameter change involved."""
+    monkeypatch.setattr(sys, "argv", list(_REQUIRED_ARGV))
+    args = parse_args()
+    assert args.cmu_base_root.name == "dynamic_capacity_soc_development_v1_ns_relabel"
+    assert args.cmu_condition_root.name == "dynamic_capacity_soc_development_v1_extension4_ns_relabel"
+    assert args.cmu_manifest.name == "cmu_evtol_supervised_budget_manifest_v0_1_ns_relabel.csv"
+
+
+def test_parse_args_output_root_is_isolated_ns_relabel_v1(monkeypatch) -> None:
+    """Requirement #2: the DARM benchmark's default --output-root must be a
+    NEW, isolated directory (never the pre-relabel '.../liu_2025_darm') so a
+    --resume against it can never pick up a result produced from the old
+    CMU data version, and the old results directory is never read, written,
+    or touched by this default."""
+    monkeypatch.setattr(sys, "argv", list(_REQUIRED_ARGV))
+    args = parse_args()
+    assert args.output_root.name == "liu_2025_darm_ns_relabel_v1"
+
+
+def test_run_liu_cmu_darm_script_has_no_old_cmu_paths() -> None:
+    """Guards against a stale/old CMU path silently surviving somewhere else
+    in the actual running script (not just the argparse defaults checked
+    above)."""
+    script_path = REPO_ROOT / "scripts/benchmarks/run_liu_cmu_darm.py"
+    text = script_path.read_text(encoding="utf-8")
+    assert "dynamic_capacity_soc_development_v1_ns_relabel" in text
+    assert "dynamic_capacity_soc_development_v1_extension4_ns_relabel" in text
+    assert "cmu_evtol_supervised_budget_manifest_v0_1_ns_relabel.csv" in text
+    # The old (pre-relabel) path strings must not appear anywhere as a live
+    # value -- checked as the exact old literal terminated by the quote
+    # character actually used in this file, so it can't accidentally match
+    # a substring of the new, longer "_ns_relabel" name.
+    assert 'dynamic_capacity_soc_development_v1"' not in text
+    assert 'dynamic_capacity_soc_development_v1_extension4"' not in text
+    assert "cmu_evtol_supervised_budget_manifest_v0_1.csv" not in text
+
+
+def test_run_metadata_records_cmu_data_version_and_phase_definition() -> None:
+    """Requirement #5: run_metadata.json must explicitly record which CMU
+    dataset build/manifest this run read, the manifest's hash (so a
+    silently-swapped manifest with the same filename is detectable), and
+    the canonical Ns phase definition -- diagnostic/provenance fields only,
+    verified here by inspecting the source that assembles ``_build_run_metadata``
+    rather than running the full benchmark. All pre-existing source/artifact
+    hash fields must remain untouched."""
+    script_path = REPO_ROOT / "scripts/benchmarks/run_liu_cmu_darm.py"
+    text = script_path.read_text(encoding="utf-8")
+    assert '"cmu_base_root": str(args.cmu_base_root)' in text
+    assert '"cmu_condition_root": str(args.cmu_condition_root)' in text
+    assert '"cmu_manifest_path": str(args.cmu_manifest)' in text
+    assert '"cmu_manifest_sha256": sha256_file(args.cmu_manifest)' in text
+    assert (
+        '"phase_definition": "canonical Ns mapping: 4=take_off, 5=cruise, 6=landing"' in text
+    )
+
+
+def test_run_liu_cmu_darm_only_skips_when_resume_flag_set() -> None:
+    """Requirement #3: the previous bug skipped re-running a cell whenever
+    results.json existed, with NO check of --resume at all. The fixed
+    gate must require both --resume and an existing results.json before
+    even considering a skip."""
+    script_path = REPO_ROOT / "scripts/benchmarks/run_liu_cmu_darm.py"
+    text = script_path.read_text(encoding="utf-8")
+    assert "if args.resume and result_path.is_file():" in text
+
+
+def test_run_liu_cmu_darm_calls_resume_checks_before_skipping() -> None:
+    """Both resume-safety checks must actually be wired into main()'s
+    per-cell resume-skip branch, not just exist as standalone, unused
+    functions."""
+    script_path = REPO_ROOT / "scripts/benchmarks/run_liu_cmu_darm.py"
+    text = script_path.read_text(encoding="utf-8")
+    assert "_check_resume_cmu_input_sha256(result_path, input_sha256)" in text
+    assert "_check_resume_diagnostic_sidecars(cell_output)" in text
+
+
+def test_check_resume_cmu_input_sha256_allows_matching_hash(tmp_path) -> None:
+    """Requirement #3: resuming is allowed when the existing result's
+    cmu_input_sha256 matches the freshly-verified current hash."""
+    result_path = tmp_path / "results.json"
+    result_path.write_text('{"cmu_input_sha256": "abc123"}', encoding="utf-8")
+    _check_resume_cmu_input_sha256(result_path, "abc123")  # must not raise
+
+
+def test_check_resume_cmu_input_sha256_rejects_mismatch(tmp_path) -> None:
+    """Requirement #3: a hash mismatch (result from a different CMU data
+    version) must raise immediately, never silently skip/overwrite/delete."""
+    result_path = tmp_path / "results.json"
+    result_path.write_text('{"cmu_input_sha256": "old_hash"}', encoding="utf-8")
+    with pytest.raises(ValueError, match="cmu_input_sha256"):
+        _check_resume_cmu_input_sha256(result_path, "new_hash")
+
+
+def test_check_resume_cmu_input_sha256_rejects_missing_field(tmp_path) -> None:
+    """Requirement #3: an existing result with NO cmu_input_sha256 recorded
+    at all must also raise -- never treated as safely resumable."""
+    result_path = tmp_path / "results.json"
+    result_path.write_text('{"metrics": []}', encoding="utf-8")
+    with pytest.raises(ValueError, match="no cmu_input_sha256"):
+        _check_resume_cmu_input_sha256(result_path, "new_hash")
+
+
+def test_check_resume_diagnostic_sidecars_allows_when_both_present(tmp_path) -> None:
+    """Requirement #4: resuming is allowed when both diagnostic sidecars
+    exist alongside results.json."""
+    (tmp_path / "test_predictions.parquet").write_bytes(b"")
+    (tmp_path / "training_history.csv").write_text("epoch\n", encoding="utf-8")
+    _check_resume_diagnostic_sidecars(tmp_path)  # must not raise
+
+
+def test_check_resume_diagnostic_sidecars_rejects_missing_predictions(tmp_path) -> None:
+    """Requirement #4: a missing test_predictions.parquet sidecar must raise
+    immediately rather than silently emitting an incomplete aggregate."""
+    (tmp_path / "training_history.csv").write_text("epoch\n", encoding="utf-8")
+    with pytest.raises(ValueError, match="test_predictions.parquet"):
+        _check_resume_diagnostic_sidecars(tmp_path)
+
+
+def test_check_resume_diagnostic_sidecars_rejects_missing_training_history(tmp_path) -> None:
+    """Requirement #4: a missing training_history.csv sidecar must raise
+    immediately rather than silently emitting an incomplete aggregate or
+    fabricating diagnostics."""
+    (tmp_path / "test_predictions.parquet").write_bytes(b"")
+    with pytest.raises(ValueError, match="training_history.csv"):
+        _check_resume_diagnostic_sidecars(tmp_path)
 
 
 def _synthetic_record(mission: str, sequence_order: int, n: int, *, start_row: int) -> VidalV2Record:
