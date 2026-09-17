@@ -10,6 +10,7 @@ metric.
 
 from __future__ import annotations
 
+import random
 import sys
 
 import numpy as np
@@ -27,14 +28,22 @@ from scripts.benchmarks.run_liu_cmu_darm import (
     _build_prediction_rows,
     _check_resume_cmu_input_sha256,
     _check_resume_diagnostic_sidecars,
+    _compute_phase_metrics,
+    _compute_phase_transfer_effects,
     _evaluate,
     _flatten_training_history,
     _labelled_windows_with_metadata,
     _mission_id_array,
     _predict_all,
+    _validation_loader,
     parse_args,
 )
 from battery_benchmark.benchmarks.cmu_diagnostics import load_raw_diagnostic_fields
+from scripts.reproductions.liu_2025.run_reproduction import (
+    adapt,
+    supervised_loader,
+    unlabelled_loader,
+)
 
 
 _REQUIRED_ARGV = [
@@ -422,11 +431,329 @@ def test_flatten_training_history_reports_real_darm_diagnostics_and_no_validatio
     assert row["mmd_loss"] == 0.02
     assert row["grl_strength"] == 0.1
     assert row["target_bn_mode"] == "frozen_stats"
-    # DARM's adapt() is called with diagnostic_loaders={} in
-    # run_liu_cmu_darm.py -- no target labels are used for any per-epoch
-    # validation, so this must be reported truthfully, never forced to
-    # look like Vidal/DTNN's diagnostic-validation convention.
+    # This synthetic epoch_diagnostics entry has no "target_test" key at
+    # all (as adapt() leaves it when diagnostic_loaders is empty, e.g. a
+    # cell with no validation missions) -- _flatten_training_history must
+    # report that honestly rather than fabricating a validation result.
     assert row["validation_evaluated"] is False
     assert row["validation_mae"] is None
     assert row["validation_rmse"] is None
     assert "layer1" in row["target_bn_running_stat_drift_json"]
+
+
+def _tiny_darm_and_loaders(seed: int = 0):
+    """Small, CPU-fast fixture mirroring
+    test_run_reproduction.py::test_adaptation_can_run_without_target_label_diagnostics
+    -- fresh DARM model plus real (if tiny) source/target/validation
+    windows, used to exercise the real ``adapt()`` loop end-to-end without
+    touching disk beyond ``tmp_path``."""
+    random.seed(seed)
+    np.random.seed(seed)
+    torch.manual_seed(seed)
+    model = DARM()
+    model.initialize_target()
+    rng = np.random.default_rng(seed)
+    x = rng.normal(size=(8, WINDOW_LENGTH, 3)).astype(np.float32)
+    y = np.linspace(1.0, 0.0, len(x), dtype=np.float32)
+    source_loader = supervised_loader(x, y, batch_size=4, shuffle=True)
+    target_loader = unlabelled_loader(x, batch_size=4)
+    return model, source_loader, target_loader, x, y
+
+
+def test_adapt_records_positive_runtime_seconds_every_epoch(tmp_path) -> None:
+    """Requirement #1: training_history.csv must be able to report a real,
+    positive per-epoch runtime -- verified here at the source (adapt()'s
+    own returned epoch_diagnostics), which run_liu_cmu_darm.py's
+    _flatten_training_history reads verbatim via training["runtime_seconds"]."""
+    model, source_loader, target_loader, _, _ = _tiny_darm_and_loaders()
+    _, diagnostics = adapt(
+        model, source_loader, target_loader, 3, 1e-4, 1.0, 10.0, 1.0, 0,
+        torch.device("cpu"), tmp_path, False,
+        "frozen_stats", "grl_joint", "constant", 0.1, {},
+    )
+    assert len(diagnostics) == 3
+    for entry in diagnostics:
+        runtime = entry["training"]["runtime_seconds"]
+        assert runtime is not None
+        assert runtime > 0.0
+
+
+def test_adapt_times_exactly_one_start_end_pair_per_epoch(monkeypatch, tmp_path) -> None:
+    """Requirement #1: the per-epoch timer must be a single start/end pair,
+    never multiple timers or a timer that leaks across epochs -- verified
+    by counting real time.perf_counter() calls made inside adapt() itself
+    (2 epochs -> exactly 4 calls: one start + one end each)."""
+    import scripts.reproductions.liu_2025.run_reproduction as run_reproduction
+
+    real_perf_counter = run_reproduction.time.perf_counter
+    calls = []
+
+    def counting_perf_counter():
+        calls.append(None)
+        return real_perf_counter()
+
+    monkeypatch.setattr(run_reproduction.time, "perf_counter", counting_perf_counter)
+    model, source_loader, target_loader, _, _ = _tiny_darm_and_loaders()
+    adapt(
+        model, source_loader, target_loader, 2, 1e-4, 1.0, 10.0, 1.0, 0,
+        torch.device("cpu"), tmp_path, False,
+        "frozen_stats", "grl_joint", "constant", 0.1, {},
+    )
+    assert len(calls) == 4  # 2 epochs * (1 start + 1 end)
+
+
+def test_adapt_epoch_timing_uses_at_most_one_cuda_synchronize_pair() -> None:
+    """Requirement #1: guards against a future edit accidentally adding
+    more than one CUDA synchronize() pair per epoch -- exactly two
+    occurrences (one before the start timestamp, one before the end
+    timestamp) must exist in the whole file."""
+    script_path = REPO_ROOT / "scripts/reproductions/liu_2025/run_reproduction.py"
+    text = script_path.read_text(encoding="utf-8")
+    assert text.count("torch.cuda.synchronize()") == 2
+
+
+def test_timing_code_does_not_change_weights_rng_or_predictions(tmp_path) -> None:
+    """Requirement #1: the timing instrumentation itself (time.perf_counter/
+    torch.cuda.synchronize calls) must be side-effect-free -- running
+    adapt() twice from an identical seed must produce bit-identical final
+    weights and predictions regardless of the timing code now present."""
+    output_a, output_b = tmp_path / "a", tmp_path / "b"
+    output_a.mkdir()
+    output_b.mkdir()
+    model_a, source_a, target_a, x_a, _ = _tiny_darm_and_loaders(seed=7)
+    adapt(
+        model_a, source_a, target_a, 2, 1e-4, 1.0, 10.0, 1.0, 0,
+        torch.device("cpu"), output_a, False,
+        "frozen_stats", "grl_joint", "constant", 0.1, {},
+    )
+    prediction_a = _predict_all(model_a, x_a, batch_size=4, device=torch.device("cpu"))
+
+    model_b, source_b, target_b, x_b, _ = _tiny_darm_and_loaders(seed=7)
+    adapt(
+        model_b, source_b, target_b, 2, 1e-4, 1.0, 10.0, 1.0, 0,
+        torch.device("cpu"), output_b, False,
+        "frozen_stats", "grl_joint", "constant", 0.1, {},
+    )
+    prediction_b = _predict_all(model_b, x_b, batch_size=4, device=torch.device("cpu"))
+
+    assert all(
+        torch.equal(a, b)
+        for a, b in zip(model_a.state_dict().values(), model_b.state_dict().values())
+    )
+    assert np.array_equal(prediction_a, prediction_b)
+
+
+def test_diagnostic_validation_does_not_perturb_final_weights_or_predictions(tmp_path) -> None:
+    """Requirement #2: toggling the read-only validation diagnostic on/off
+    must not change the final state_dict or test predictions -- run adapt()
+    twice from an identical seed, once with an empty diagnostic_loaders and
+    once with a real "validation" loader wired in via _validation_loader,
+    and assert the two runs converge to bit-identical weights/predictions."""
+    output_a, output_b = tmp_path / "a", tmp_path / "b"
+    output_a.mkdir()
+    output_b.mkdir()
+    model_a, source_a, target_a, x_a, _ = _tiny_darm_and_loaders(seed=3)
+    training_a, diagnostics_a = adapt(
+        model_a, source_a, target_a, 2, 1e-4, 1.0, 10.0, 1.0, 0,
+        torch.device("cpu"), output_a, False,
+        "frozen_stats", "grl_joint", "constant", 0.1, {},
+    )
+    prediction_a = _predict_all(model_a, x_a, batch_size=4, device=torch.device("cpu"))
+
+    model_b, source_b, target_b, x_b, y_b = _tiny_darm_and_loaders(seed=3)
+    validation_loader = _validation_loader(x_b, y_b, batch_size=4)
+    training_b, diagnostics_b = adapt(
+        model_b, source_b, target_b, 2, 1e-4, 1.0, 10.0, 1.0, 0,
+        torch.device("cpu"), output_b, False,
+        "frozen_stats", "grl_joint", "constant", 0.1,
+        {"validation": validation_loader},
+    )
+    prediction_b = _predict_all(model_b, x_b, batch_size=4, device=torch.device("cpu"))
+
+    assert all(
+        torch.equal(a, b)
+        for a, b in zip(model_a.state_dict().values(), model_b.state_dict().values())
+    )
+    assert np.array_equal(prediction_a, prediction_b)
+    # The validation probe itself must actually have run and recorded a
+    # real metric -- never participating in training/selection (both runs'
+    # selected_checkpoint/lowest_total_loss_proxy/weights match above).
+    assert "target_test" not in diagnostics_a[0]["training"]
+    validation_metrics = diagnostics_b[0]["training"]["target_test"]["validation"]
+    assert validation_metrics["mae_percent"] >= 0.0
+    assert validation_metrics["rmse_percent"] >= 0.0
+    assert training_a["selected_checkpoint"] == training_b["selected_checkpoint"] == "last"
+
+
+def test_build_prediction_rows_window_index_resets_per_mission(tmp_path) -> None:
+    """Requirement #3: window_index must restart at 0 for every mission,
+    never a single global counter across a multi-mission concatenated
+    array."""
+    path = tmp_path / "raw.parquet"
+    _write_raw_diagnostic_parquet(path, 6, ns_values=[4, 5, 6, 4, 5, 6])
+    raw_diagnostic = load_raw_diagnostic_fields(path)
+    mission_ids = np.array(["m1", "m1", "m1", "m2", "m2", "m2"], dtype=object)
+
+    rows = _build_prediction_rows(
+        framework="liu_2025_darm",
+        method="Source only",
+        seed=0,
+        cell_id="VAH01",
+        condition="baseline protocol",
+        soc_reference=np.linspace(0.9, 0.4, 6),
+        soc_prediction=np.linspace(0.9, 0.4, 6),
+        metadata={
+            "mission_sequence_order": np.array([0, 0, 0, 1, 1, 1]),
+            "elapsed_candidate_s": np.arange(6, dtype=np.float64),
+            "original_time_s": np.arange(6, dtype=np.float64),
+            "source_row_right": np.arange(6, dtype=np.int64),
+        },
+        mission_ids=mission_ids,
+        raw_diagnostic=raw_diagnostic,
+    )
+    assert [row["window_index"] for row in rows] == [0, 1, 2, 0, 1, 2]
+
+
+def test_build_prediction_rows_window_index_resets_for_noncontiguous_missions(tmp_path) -> None:
+    """Requirement #3 (defensive): the per-mission reset must be correct by
+    mission identity, not merely by contiguous-block position, in case a
+    future caller ever interleaves mission rows."""
+    path = tmp_path / "raw.parquet"
+    _write_raw_diagnostic_parquet(path, 4, ns_values=[4, 5, 4, 5])
+    raw_diagnostic = load_raw_diagnostic_fields(path)
+    mission_ids = np.array(["m1", "m2", "m1", "m2"], dtype=object)
+
+    rows = _build_prediction_rows(
+        framework="liu_2025_darm",
+        method="DARM",
+        seed=0,
+        cell_id="VAH01",
+        condition="baseline protocol",
+        soc_reference=np.array([0.9, 0.8, 0.7, 0.6]),
+        soc_prediction=np.array([0.9, 0.8, 0.7, 0.6]),
+        metadata={
+            "mission_sequence_order": np.array([0, 1, 0, 1]),
+            "elapsed_candidate_s": np.arange(4, dtype=np.float64),
+            "original_time_s": np.arange(4, dtype=np.float64),
+            "source_row_right": np.arange(4, dtype=np.int64),
+        },
+        mission_ids=mission_ids,
+        raw_diagnostic=raw_diagnostic,
+    )
+    assert [row["window_index"] for row in rows] == [0, 0, 1, 1]
+
+
+def test_run_liu_cmu_darm_script_no_longer_uses_global_window_index() -> None:
+    """Guards against the old bug (a bare running index `i` used as
+    window_index) silently reappearing."""
+    script_path = REPO_ROOT / "scripts/benchmarks/run_liu_cmu_darm.py"
+    text = script_path.read_text(encoding="utf-8")
+    assert '"window_index": i,' not in text
+    assert '"window_index": int(window_index_within_mission[i]),' in text
+
+
+def _write_test_predictions_parquet(path) -> None:
+    """Two cells/conditions, two methods (Source only / DARM), three
+    mission_phases (take_off/cruise/landing) plus one unmapped phase (None)
+    that must be excluded from every phase summary -- exact reference
+    numbers are computed by hand in the assertions below."""
+    rows = []
+    # cell VAH01, take_off: Source only errors [0.10, 0.20]; DARM errors [0.02, 0.04]
+    rows += [
+        {"cell_id": "VAH01", "condition": "baseline protocol", "method": "Source only",
+         "mission_phase": "take_off", "mission_cycle_id": "m1",
+         "soc_reference": 0.90, "soc_prediction": 1.00},
+        {"cell_id": "VAH01", "condition": "baseline protocol", "method": "Source only",
+         "mission_phase": "take_off", "mission_cycle_id": "m2",
+         "soc_reference": 0.80, "soc_prediction": 1.00},
+        {"cell_id": "VAH01", "condition": "baseline protocol", "method": "DARM",
+         "mission_phase": "take_off", "mission_cycle_id": "m1",
+         "soc_reference": 0.90, "soc_prediction": 0.92},
+        {"cell_id": "VAH01", "condition": "baseline protocol", "method": "DARM",
+         "mission_phase": "take_off", "mission_cycle_id": "m2",
+         "soc_reference": 0.80, "soc_prediction": 0.84},
+        # cell VAH01, cruise: DARM WORSE than Source only (negative transfer)
+        {"cell_id": "VAH01", "condition": "baseline protocol", "method": "Source only",
+         "mission_phase": "cruise", "mission_cycle_id": "m1",
+         "soc_reference": 0.50, "soc_prediction": 0.52},
+        {"cell_id": "VAH01", "condition": "baseline protocol", "method": "DARM",
+         "mission_phase": "cruise", "mission_cycle_id": "m1",
+         "soc_reference": 0.50, "soc_prediction": 0.60},
+        # cell VAH01, landing: excluded via unmapped phase (None) -- should
+        # never appear in either summary.
+        {"cell_id": "VAH01", "condition": "baseline protocol", "method": "Source only",
+         "mission_phase": None, "mission_cycle_id": "m1",
+         "soc_reference": 0.10, "soc_prediction": 0.50},
+    ]
+    pd.DataFrame(rows).to_parquet(path)
+
+
+def test_phase_metrics_exactly_recomputable_from_predictions_parquet(tmp_path) -> None:
+    """Requirement #4/#5: phase_metrics.csv values must be exactly
+    recomputable from test_predictions.parquet's own
+    soc_reference/soc_prediction columns, and only take_off/cruise/landing
+    rows are included (the unmapped/None-phase row must be dropped)."""
+    path = tmp_path / "test_predictions.parquet"
+    _write_test_predictions_parquet(path)
+    phase_metrics = _compute_phase_metrics(path)
+
+    # The unmapped (None mission_phase) row must never appear.
+    assert set(phase_metrics["mission_phase"]) <= {"take_off", "cruise", "landing"}
+
+    take_off_source = phase_metrics.loc[
+        (phase_metrics["method"] == "Source only") & (phase_metrics["mission_phase"] == "take_off")
+    ].iloc[0]
+    assert take_off_source["n_points"] == 2
+    assert take_off_source["n_missions"] == 2
+    expected_mae = np.mean([abs(1.00 - 0.90), abs(1.00 - 0.80)]) * 100
+    expected_rmse = np.sqrt(np.mean([(1.00 - 0.90) ** 2, (1.00 - 0.80) ** 2])) * 100
+    expected_signed = np.mean([1.00 - 0.90, 1.00 - 0.80]) * 100
+    assert take_off_source["mae_percent"] == pytest.approx(expected_mae)
+    assert take_off_source["rmse_percent"] == pytest.approx(expected_rmse)
+    assert take_off_source["mean_signed_error_percent"] == pytest.approx(expected_signed)
+
+    take_off_darm = phase_metrics.loc[
+        (phase_metrics["method"] == "DARM") & (phase_metrics["mission_phase"] == "take_off")
+    ].iloc[0]
+    expected_darm_mae = np.mean([abs(0.92 - 0.90), abs(0.84 - 0.80)]) * 100
+    assert take_off_darm["mae_percent"] == pytest.approx(expected_darm_mae)
+
+
+def test_phase_transfer_effects_delta_and_negative_transfer_flag(tmp_path) -> None:
+    """Requirement #4/#5: delta = DARM - Source only, positive delta ->
+    negative_transfer flag True; take_off (DARM better) must be False,
+    cruise (DARM worse) must be True."""
+    path = tmp_path / "test_predictions.parquet"
+    _write_test_predictions_parquet(path)
+    phase_metrics = _compute_phase_metrics(path)
+    effects = _compute_phase_transfer_effects(phase_metrics)
+
+    take_off = effects.loc[effects["mission_phase"] == "take_off"].iloc[0]
+    assert take_off["delta_mae_percent"] == pytest.approx(
+        take_off["adapted_mae_percent"] - take_off["source_only_mae_percent"]
+    )
+    assert take_off["delta_mae_percent"] < 0  # DARM improved on Source only
+    assert bool(take_off["negative_transfer_mae"]) is False
+
+    cruise = effects.loc[effects["mission_phase"] == "cruise"].iloc[0]
+    assert cruise["delta_mae_percent"] == pytest.approx(
+        cruise["adapted_mae_percent"] - cruise["source_only_mae_percent"]
+    )
+    assert cruise["delta_mae_percent"] > 0  # DARM made this phase worse
+    assert bool(cruise["negative_transfer_mae"]) is True
+    assert bool(cruise["negative_transfer_rmse"]) is True
+
+
+def test_compute_phase_transfer_effects_empty_input_returns_empty_frame_with_columns() -> None:
+    empty = pd.DataFrame(
+        columns=["cell_id", "condition", "method", "mission_phase", "n_points",
+                 "n_missions", "mae_percent", "rmse_percent", "mean_signed_error_percent"]
+    )
+    effects = _compute_phase_transfer_effects(empty)
+    assert effects.empty
+    assert list(effects.columns) == [
+        "cell_id", "condition", "mission_phase",
+        "source_only_mae_percent", "adapted_mae_percent", "delta_mae_percent",
+        "source_only_rmse_percent", "adapted_rmse_percent", "delta_rmse_percent",
+        "negative_transfer_mae", "negative_transfer_rmse",
+    ]

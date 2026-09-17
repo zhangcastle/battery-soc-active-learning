@@ -7,6 +7,7 @@ import argparse
 import json
 import math
 import random
+import time
 from copy import deepcopy
 from itertools import cycle
 from pathlib import Path
@@ -542,6 +543,17 @@ def adapt(
     )
     model.train()
     for epoch in progress:
+        # Diagnostic-only timing: measures this epoch's real wall time
+        # (training batches below, plus the read-only diagnostic_loaders
+        # evaluation and drift computation further down), never touching
+        # model weights, RNG state, or batch order. At most one
+        # synchronize() pair per epoch (skipped entirely on CPU) so CUDA
+        # kernels queued by this epoch are actually finished before both
+        # timestamps are taken -- otherwise a GPU epoch's measured time
+        # would be near-instant/meaningless due to async kernel launches.
+        if device.type == "cuda":
+            torch.cuda.synchronize()
+        epoch_started = time.perf_counter()
         batches = []
         first_batch_gradient_l2: dict[str, float] | None = None
         first_batch_gradient_cosine: dict[str, float] | None = None
@@ -653,6 +665,9 @@ def adapt(
         last_metrics["target_bn_running_stat_drift"] = target_bn_buffer_drift(
             initial_bn, target_bn_buffer_snapshot(model.target_encoder)
         )
+        if device.type == "cuda":
+            torch.cuda.synchronize()
+        last_metrics["runtime_seconds"] = time.perf_counter() - epoch_started
         epoch_loss = last_metrics["total"]
         improved = epoch_loss < lowest_total
         lowest_total, stale = (epoch_loss, 0) if improved else (lowest_total, stale + 1)

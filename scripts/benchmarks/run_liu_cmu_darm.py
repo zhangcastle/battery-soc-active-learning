@@ -260,6 +260,22 @@ def _mission_id_array(missions: list[tuple[str, int]]) -> np.ndarray:
     )
 
 
+def _validation_loader(x: np.ndarray, y: np.ndarray, batch_size: int) -> DataLoader:
+    """Diagnostic-only validation loader for ``adapt()``'s ``diagnostic_loaders``
+    argument: identical construction to ``supervised_loader`` except
+    ``shuffle=False`` (deterministic order -- this is read-only evaluation,
+    never training) and an explicit, LOCAL ``torch.Generator()`` rather
+    than PyTorch's default global generator, so building/iterating this
+    loader can never advance ``torch.default_generator`` and perturb a
+    later training-loader shuffle in the same run."""
+    return DataLoader(
+        TensorDataset(torch.from_numpy(x), torch.from_numpy(y)),
+        batch_size=min(batch_size, len(x)),
+        shuffle=False,
+        generator=torch.Generator(),
+    )
+
+
 def _build_prediction_rows(
     *,
     framework: str,
@@ -283,6 +299,15 @@ def _build_prediction_rows(
         metadata["source_row_right"], raw_diagnostic
     )
     n = len(soc_reference)
+    # window_index must be per-MISSION (0-based, restarting at every mission
+    # boundary), never a single global counter across the whole (possibly
+    # multi-mission) concatenated array -- fixed here via a groupby-cumcount
+    # over mission_ids, which is correct regardless of whether a mission's
+    # rows happen to be contiguous.
+    mission_series = pd.Series(mission_ids)
+    window_index_within_mission = (
+        mission_series.groupby(mission_series, sort=False).cumcount().to_numpy()
+    )
     rows = []
     for i in range(n):
         row = {
@@ -293,7 +318,7 @@ def _build_prediction_rows(
             "condition": condition,
             "split": "test",
             "mission_cycle_id": str(mission_ids[i]),
-            "window_index": i,
+            "window_index": int(window_index_within_mission[i]),
             "timestep_index": WINDOW_LENGTH - 1,
             "mission_sequence_order": int(metadata["mission_sequence_order"][i]),
             "elapsed_candidate_s": float(metadata["elapsed_candidate_s"][i]),
@@ -357,6 +382,17 @@ def _flatten_training_history(
     rows = []
     for entry in epoch_diagnostics:
         training = entry["training"]
+        # Diagnostic-only validation probe (see run_liu_cmu_darm.py's
+        # `_validation_loader`/`diagnostic_loaders` wiring): adapt() already
+        # runs a read-only evaluate() against it every epoch when a
+        # "validation" diagnostic_loaders entry is supplied, storing the
+        # result under training["target_test"]["validation"] -- never used
+        # for training, early stopping, or checkpoint selection (adapt()'s
+        # own selected_checkpoint stays "last" regardless). Honestly
+        # reports validation_evaluated=False when no validation missions
+        # were available for this cell, rather than fabricating a value.
+        validation_metrics = training.get("target_test", {}).get("validation")
+        validation_evaluated = validation_metrics is not None
         rows.append(
             {
                 "framework": framework,
@@ -365,10 +401,16 @@ def _flatten_training_history(
                 "cell_id": cell_id,
                 "epoch": entry["epoch"],
                 "learning_rate": learning_rate,
-                "runtime_seconds": None,
-                "validation_mae": None,
-                "validation_rmse": None,
-                "validation_evaluated": False,
+                # Real per-epoch wall time, timed inside adapt() itself
+                # (see run_reproduction.py) -- never estimated/derived here.
+                "runtime_seconds": training.get("runtime_seconds"),
+                "validation_mae": (
+                    validation_metrics["mae_percent"] if validation_metrics else None
+                ),
+                "validation_rmse": (
+                    validation_metrics["rmse_percent"] if validation_metrics else None
+                ),
+                "validation_evaluated": validation_evaluated,
                 "target_bn_mode": target_bn_mode,
                 "adversarial_update": adversarial_update,
                 "adversarial_schedule": adversarial_schedule,
@@ -532,7 +574,12 @@ def _build_run_metadata(args: argparse.Namespace) -> dict:
         "target_soc_labels_used_for_training": False,
         "target_soc_labels_used_for_adaptation": False,
         "target_soc_labels_used_for_checkpoint_selection": False,
-        "target_validation_labels_used_for_diagnostics": False,
+        # Manifest "validation"-split mission SOC labels ARE now read by a
+        # read-only, no_grad per-epoch probe (adapt()'s diagnostic_loaders)
+        # -- reported truthfully as True. They are never used for training,
+        # early stopping, or checkpoint selection (adapt()'s
+        # selected_checkpoint stays "last" regardless of this probe).
+        "target_validation_labels_used_for_diagnostics": True,
         "target_validation_labels_used_for_training": False,
         "target_validation_labels_used_for_checkpoint_selection": False,
         "target_soc_reference_used_for_posthoc_evaluation": True,
@@ -582,6 +629,84 @@ def _rebuild_training_history(output_root: Path) -> None:
     pd.concat(frames, ignore_index=True).to_csv(
         output_root / "training_history.csv", index=False
     )
+
+
+# The three flight phases this diagnostic's phase_metrics/phase_transfer_
+# effects summaries cover -- matches the canonical Ns mapping recorded in
+# run_metadata.json's "phase_definition" field. Rows whose mission_phase is
+# None (unmapped Ns) or any other phase are excluded from both summaries.
+PHASE_SUMMARY_PHASES = ("take_off", "cruise", "landing")
+
+
+def _compute_phase_metrics(predictions_path: Path) -> pd.DataFrame:
+    """Diagnostic-only summary, built by READING BACK test_predictions.parquet
+    (never re-derived from live model state), grouped by cell_id/condition/
+    method/mission_phase and restricted to PHASE_SUMMARY_PHASES (take_off/
+    cruise/landing). Every value here is directly, exactly recomputable
+    from that same parquet's soc_reference/soc_prediction/mission_phase
+    columns -- which is exactly what the accompanying test does
+    independently."""
+    frame = pd.read_parquet(
+        predictions_path,
+        columns=[
+            "cell_id", "condition", "method", "mission_phase",
+            "mission_cycle_id", "soc_reference", "soc_prediction",
+        ],
+    )
+    frame = frame.loc[frame["mission_phase"].isin(PHASE_SUMMARY_PHASES)].copy()
+    frame["signed_error"] = frame["soc_prediction"] - frame["soc_reference"]
+    frame["absolute_error"] = frame["signed_error"].abs()
+    grouped = frame.groupby(
+        ["cell_id", "condition", "method", "mission_phase"], sort=False, as_index=False
+    )
+    summary = grouped.agg(
+        n_points=("soc_reference", "size"),
+        n_missions=("mission_cycle_id", "nunique"),
+        mae_percent=("absolute_error", lambda s: float(s.mean()) * 100),
+        rmse_percent=("signed_error", lambda s: float(np.sqrt((s**2).mean())) * 100),
+        mean_signed_error_percent=("signed_error", lambda s: float(s.mean()) * 100),
+    )
+    return summary
+
+
+def _compute_phase_transfer_effects(phase_metrics: pd.DataFrame) -> pd.DataFrame:
+    """Diagnostic-only: pairs each (cell_id, condition, mission_phase)'s
+    'DARM' and 'Source only' rows from ``phase_metrics`` (see
+    ``_compute_phase_metrics``) and reports the adapted-minus-source deltas
+    plus a boolean negative-transfer flag for both MAE and RMSE. delta =
+    DARM - Source only, so a POSITIVE delta means adaptation made this
+    (cell, condition, mission_phase) worse than Source only, i.e. negative
+    transfer. A (cell_id, condition, mission_phase) group missing either
+    method (should not happen -- both methods are always evaluated
+    together -- but handled defensively via an inner merge) is simply
+    dropped rather than producing a bogus delta."""
+    columns = [
+        "cell_id", "condition", "mission_phase",
+        "source_only_mae_percent", "adapted_mae_percent", "delta_mae_percent",
+        "source_only_rmse_percent", "adapted_rmse_percent", "delta_rmse_percent",
+        "negative_transfer_mae", "negative_transfer_rmse",
+    ]
+    if phase_metrics.empty:
+        return pd.DataFrame(columns=columns)
+    source = phase_metrics.loc[phase_metrics["method"] == "Source only"]
+    adapted = phase_metrics.loc[phase_metrics["method"] == "DARM"]
+    merged = source.merge(
+        adapted,
+        on=["cell_id", "condition", "mission_phase"],
+        suffixes=("_source", "_adapted"),
+        how="inner",
+    )
+    if merged.empty:
+        return pd.DataFrame(columns=columns)
+    merged["source_only_mae_percent"] = merged["mae_percent_source"]
+    merged["adapted_mae_percent"] = merged["mae_percent_adapted"]
+    merged["delta_mae_percent"] = merged["mae_percent_adapted"] - merged["mae_percent_source"]
+    merged["source_only_rmse_percent"] = merged["rmse_percent_source"]
+    merged["adapted_rmse_percent"] = merged["rmse_percent_adapted"]
+    merged["delta_rmse_percent"] = merged["rmse_percent_adapted"] - merged["rmse_percent_source"]
+    merged["negative_transfer_mae"] = merged["delta_mae_percent"] > 0
+    merged["negative_transfer_rmse"] = merged["delta_rmse_percent"] > 0
+    return merged[columns].reset_index(drop=True)
 
 
 def main() -> None:
@@ -668,7 +793,7 @@ def main() -> None:
         # source_path/input_sha256 already computed and manifest-verified
         # above (hoisted so the resume-safety check has them even when this
         # cell is skipped) -- reused here, not recomputed.
-        adaptation_ids, _, test_ids, budget = select_duration_matched_missions(
+        adaptation_ids, validation_ids, test_ids, budget = select_duration_matched_missions(
             manifest, cell_id
         )
 
@@ -698,6 +823,31 @@ def main() -> None:
         test_records = _records_for_ids(labelled_records, test_ids)
         test_x, test_y, missions = _labelled_windows(test_records)
         test_x = normalizer.transform(test_x).astype(np.float32)
+
+        # Diagnostic-only, read-only validation probe: uses the manifest's
+        # EXISTING "validation"-split missions (never any mission used for
+        # adaptation or test) to build a held-out labelled loader passed
+        # into adapt()'s diagnostic_loaders. adapt() only ever calls
+        # evaluate() (@torch.no_grad(), eval-mode forward pass, no
+        # backward/optimizer step) against it once per epoch -- it never
+        # participates in the adversarial/reconstruction/MMD losses,
+        # early stopping, or checkpoint selection (adapt()'s
+        # selected_checkpoint always stays "last"). Some cells may have no
+        # validation missions at all; diagnostic_loaders is then left
+        # empty and validation_evaluated is honestly False for every epoch
+        # (see _flatten_training_history), never fabricated.
+        if not validation_ids <= labelled_ids:
+            raise ValueError(f"{cell_id}: validation missions missing from CMU input")
+        validation_records = _records_for_ids(labelled_records, validation_ids)
+        diagnostic_loaders: dict[str, DataLoader] = {}
+        if validation_records:
+            validation_x, validation_y, _validation_missions = _labelled_windows(
+                validation_records
+            )
+            validation_x = normalizer.transform(validation_x).astype(np.float32)
+            diagnostic_loaders = {
+                "validation": _validation_loader(validation_x, validation_y, args.batch_size)
+            }
 
         # Diagnostic-only: identical windows/labels via a parallel (never
         # touching build_liu_windows) path that also carries per-window
@@ -756,7 +906,7 @@ def main() -> None:
             "grl_joint",
             "constant",
             0.1,
-            {},
+            diagnostic_loaders,
         )
         adaptation_wall_seconds = time.perf_counter() - adapt_started
         darm = _evaluate(model, test_x, test_y, missions, args.batch_size, device)
@@ -842,6 +992,22 @@ def main() -> None:
     table.to_csv(args.output_root / "condition_metrics.csv", index=False)
     _rebuild_test_predictions(args.output_root)
     _rebuild_training_history(args.output_root)
+
+    # Diagnostic-only phase summaries, read back from the just-rebuilt
+    # top-level test_predictions.parquet (never from in-memory rows) so
+    # they always reflect every cell on disk, including any --resume'd
+    # ones. Skipped (never writing empty/placeholder files) if the merged
+    # parquet doesn't exist yet or has no take_off/cruise/landing rows.
+    predictions_path = args.output_root / "test_predictions.parquet"
+    if predictions_path.is_file():
+        phase_metrics = _compute_phase_metrics(predictions_path)
+        if not phase_metrics.empty:
+            phase_metrics.to_csv(args.output_root / "phase_metrics.csv", index=False)
+            phase_transfer_effects = _compute_phase_transfer_effects(phase_metrics)
+            phase_transfer_effects.to_csv(
+                args.output_root / "phase_transfer_effects.csv", index=False
+            )
+
     run_metadata_path = args.output_root / "run_metadata.json"
     run_metadata = _build_run_metadata(args)
     if run_metadata_path.is_file():
