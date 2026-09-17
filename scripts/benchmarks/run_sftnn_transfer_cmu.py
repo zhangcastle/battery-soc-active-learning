@@ -47,6 +47,8 @@ from pathlib import Path
 
 import numpy as np
 import pandas as pd
+import pyarrow as pa
+import pyarrow.parquet as pq
 import torch
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
@@ -54,6 +56,12 @@ for path in (REPO_ROOT, REPO_ROOT / "src"):
     if str(path) not in sys.path:
         sys.path.insert(0, str(path))
 
+from battery_benchmark.benchmarks.cmu_diagnostics import (
+    CELL_CONDITIONS,
+    DIAGNOSTIC_METADATA_CASTERS,
+    join_diagnostic_fields_by_source_row,
+    load_raw_diagnostic_fields,
+)
 from battery_benchmark.datasets.cmu_evtol.vidal_adapter import load_cmu_dynamic_soc_for_vidal
 from battery_benchmark.evaluation.metrics import compute_metrics
 from battery_benchmark.reproductions.shen_2023.data import (
@@ -82,6 +90,48 @@ BASELINE_CELLS = {"VAH01", "VAH17", "VAH27"}
 FEATURES = ("current", "voltage", "temperature")
 WINDOW = 90  # fixed by the MED/TATN architecture (Conv2d/LSTM shapes in model.py)
 METHOD_CHOICES = ("zero_shot", "med", "dann_mmd")
+
+# `windows()` (shen_2023/data.py) builds non-overlapping WINDOW-length
+# windows and predict()/`_evaluate` ravel BOTH the model's per-timestep
+# output and the per-timestep label across every window -- i.e. this
+# benchmark's real evaluation convention is all_timesteps (like DTNN/
+# backbone), not last_step_per_window (unlike DARM). Recorded truthfully
+# in run metadata rather than assumed.
+EVALUATION_UNIT = "all_timesteps"
+
+# Fixed schema for test_predictions.parquet -- one row per raw CMU
+# timestep (not per window), mirroring run_bian_cmu.py's
+# TEST_PREDICTIONS_SCHEMA. method distinguishes zero_shot/med/dann_mmd so
+# their prediction-level diagnostics are never conflated.
+TEST_PREDICTIONS_SCHEMA = pa.schema(
+    [
+        ("framework", pa.string()),
+        ("method", pa.string()),
+        ("seed", pa.int64()),
+        ("cell_id", pa.string()),
+        ("condition", pa.string()),
+        ("split", pa.string()),
+        ("mission_cycle_id", pa.string()),
+        ("window_index", pa.int64()),
+        ("timestep_index", pa.int64()),
+        ("mission_sequence_order", pa.int64()),
+        ("elapsed_candidate_s", pa.float64()),
+        ("original_time_s", pa.float64()),
+        ("source_row_right", pa.int64()),
+        ("voltage_v_raw", pa.float64()),
+        ("current_a_raw", pa.float64()),
+        ("temperature_c_raw", pa.float64()),
+        ("capacity_ah", pa.float64()),
+        ("capacity_source", pa.string()),
+        ("source_rpt_id", pa.string()),
+        ("ns_raw", pa.int64()),
+        ("mission_phase", pa.string()),
+        ("soc_reference", pa.float64()),
+        ("soc_prediction", pa.float64()),
+        ("signed_error", pa.float64()),
+        ("absolute_error", pa.float64()),
+    ]
+)
 
 
 def _seed(value: int) -> None:
@@ -140,6 +190,253 @@ def _mission_cycles(
     if not cycles:
         raise ValueError("No CMU records matched the requested mission_ids")
     return cycles
+
+
+def _mission_metadata(records, mission_ids: set[str]) -> dict[str, dict[str, np.ndarray]]:
+    """Diagnostic-only companion to ``_mission_cycles``: for each mission in
+    ``mission_ids``, reads mission_sequence_order/elapsed_candidate_s/
+    original_time_s/source_row_right straight from ``record.data`` -- the
+    exact same frame ``_mission_cycles`` reads ``FEATURES``/``soc`` from,
+    in the same per-record iteration order -- so these full-length
+    (untruncated) per-row arrays can later be truncated/reshaped by
+    ``_windows_metadata`` with the IDENTICAL ``usable = len(...) // WINDOW
+    * WINDOW`` logic ``windows()`` itself uses, keeping every value aligned
+    to the exact SOC timestep it describes."""
+    metadata = {}
+    for record in records:
+        mission = str(record.metadata["mission_cycle_id"])
+        if mission not in mission_ids:
+            continue
+        frame = record.data
+        metadata[mission] = {
+            "mission_sequence_order": np.full(
+                len(frame), int(record.metadata["sequence_order"]), dtype=np.int64
+            ),
+            "elapsed_candidate_s": frame["elapsed_candidate_s"].to_numpy(dtype=np.float64),
+            "original_time_s": frame["original_time_s"].to_numpy(dtype=np.float64),
+            "source_row_right": frame["source_row_right"].to_numpy(dtype=np.int64),
+        }
+    return metadata
+
+
+def _windows_metadata(values: np.ndarray, length: int = WINDOW) -> np.ndarray:
+    """Truncates/reshapes a full-length per-row metadata array with the
+    SAME ``usable = len(values) // length * length`` logic ``windows()``
+    (shen_2023/data.py) applies to features/soc for the same cycle."""
+    usable = len(values) // length * length
+    return values[:usable].reshape(-1, length)
+
+
+@torch.no_grad()
+def _predict_all_with_metadata(
+    model,
+    cycles: list[ShenCycle],
+    metadata_by_mission: dict[str, dict[str, np.ndarray]],
+    device: torch.device,
+    branch: str = "target",
+):
+    """Diagnostic-only companion to ``predict``/``_evaluate``: for each
+    cycle, builds x/y via the SAME ``windows([cycle], tensor_layout)`` call
+    ``predict`` uses, runs the model with the IDENTICAL loader construction
+    (batch_size=64, ``shuffle=False``), and also reshapes this mission's
+    metadata with ``_windows_metadata`` -- so predictions, labels, and
+    metadata all ravel into 1:1 aligned flat arrays, in the same per-cycle
+    order ``_evaluate`` iterates. A test recomputes overall_mae_percent/
+    overall_rmse_percent from these predictions/labels and asserts they
+    match ``_evaluate``'s own metrics exactly (after the same [0, 1]
+    clip ``_evaluate`` applies)."""
+    model.eval()
+    predictions, references, mission_ids, window_indices, timestep_indices = [], [], [], [], []
+    metadata_out = {
+        "mission_sequence_order": [],
+        "elapsed_candidate_s": [],
+        "original_time_s": [],
+        "source_row_right": [],
+    }
+    for cycle in cycles:
+        x, y = windows([cycle])
+        if not len(x):
+            continue
+        n_windows = len(x)
+        mission_metadata = metadata_by_mission[cycle.profile]
+        windowed_metadata = {
+            name: _windows_metadata(mission_metadata[name]) for name in metadata_out
+        }
+        cycle_predictions = []
+        for (xb,) in _loader_no_labels(x, 64):
+            output = (
+                model.estimate_source(xb.to(device)) if branch == "source" else model(xb.to(device))
+            )
+            cycle_predictions.append(output.cpu().numpy())
+        cycle_prediction = np.concatenate(cycle_predictions)
+        predictions.append(cycle_prediction.ravel())
+        references.append(y.ravel())
+        mission_ids.extend([cycle.profile] * (n_windows * WINDOW))
+        window_indices.extend(np.repeat(np.arange(n_windows), WINDOW))
+        timestep_indices.extend(np.tile(np.arange(WINDOW), n_windows))
+        for name in metadata_out:
+            metadata_out[name].append(windowed_metadata[name].ravel())
+    if not predictions:
+        empty_float = np.empty((0,), dtype=np.float64)
+        empty_int = np.empty((0,), dtype=np.int64)
+        return (
+            empty_float,
+            empty_float,
+            np.empty((0,), dtype=object),
+            empty_int,
+            empty_int,
+            {
+                "mission_sequence_order": empty_int,
+                "elapsed_candidate_s": empty_float,
+                "original_time_s": empty_float,
+                "source_row_right": empty_int,
+            },
+        )
+    prediction = np.concatenate(predictions).astype(np.float64)
+    reference = np.concatenate(references).astype(np.float64)
+    metadata_flat = {
+        name: np.concatenate(metadata_out[name])
+        for name in metadata_out
+    }
+    metadata_flat["mission_sequence_order"] = metadata_flat["mission_sequence_order"].astype(np.int64)
+    metadata_flat["source_row_right"] = metadata_flat["source_row_right"].astype(np.int64)
+    return (
+        prediction,
+        reference,
+        np.array(mission_ids, dtype=object),
+        np.array(window_indices, dtype=np.int64),
+        np.array(timestep_indices, dtype=np.int64),
+        metadata_flat,
+    )
+
+
+def _loader_no_labels(x: np.ndarray, batch_size: int):
+    """Same TensorDataset/DataLoader construction as ``_loader`` in
+    shen_2023/train.py, minus the label tensor -- used only so
+    ``_predict_all_with_metadata`` can iterate x in the IDENTICAL
+    batch order (``shuffle=False``) as ``predict``'s own loader over
+    ``(x, y)``, without needing a second copy of y."""
+    from torch.utils.data import DataLoader, TensorDataset
+
+    return DataLoader(
+        TensorDataset(torch.from_numpy(x)),
+        batch_size=min(batch_size, len(x)),
+        shuffle=False,
+    )
+
+
+def _build_prediction_rows(
+    *,
+    framework: str,
+    method: str,
+    seed: int,
+    cell_id: str,
+    condition: str,
+    soc_reference: np.ndarray,
+    soc_prediction: np.ndarray,
+    mission_ids: np.ndarray,
+    window_indices: np.ndarray,
+    timestep_indices: np.ndarray,
+    metadata: dict[str, np.ndarray],
+    raw_diagnostic: pd.DataFrame,
+) -> list[dict]:
+    """Assembles one test_predictions.parquet row per raw timestep,
+    joining Ns/mission_phase/raw V-I-T/capacity provenance by this
+    timestep's own source_row_right -- never reverse-derived from x."""
+    if not len(soc_reference):
+        return []
+    joined = join_diagnostic_fields_by_source_row(metadata["source_row_right"], raw_diagnostic)
+    clipped_prediction = np.clip(soc_prediction, 0.0, 1.0)
+    rows = []
+    n = len(soc_reference)
+    for i in range(n):
+        row = {
+            "framework": framework,
+            "method": method,
+            "seed": seed,
+            "cell_id": cell_id,
+            "condition": condition,
+            "split": "test",
+            "mission_cycle_id": str(mission_ids[i]),
+            "window_index": int(window_indices[i]),
+            "timestep_index": int(timestep_indices[i]),
+            "mission_sequence_order": int(metadata["mission_sequence_order"][i]),
+            "elapsed_candidate_s": float(metadata["elapsed_candidate_s"][i]),
+            "original_time_s": float(metadata["original_time_s"][i]),
+            "source_row_right": int(metadata["source_row_right"][i]),
+            "soc_reference": float(soc_reference[i]),
+            "soc_prediction": float(clipped_prediction[i]),
+            "signed_error": float(clipped_prediction[i] - soc_reference[i]),
+            "absolute_error": float(abs(clipped_prediction[i] - soc_reference[i])),
+        }
+        for column in (
+            "voltage_v_raw",
+            "current_a_raw",
+            "temperature_c_raw",
+            "capacity_ah",
+            "capacity_source",
+            "source_rpt_id",
+            "ns_raw",
+            "mission_phase",
+        ):
+            value = joined[column][i]
+            row[column] = None if value is None else DIAGNOSTIC_METADATA_CASTERS[column](value)
+        rows.append(row)
+    return rows
+
+
+def _flatten_scalar_history(history: list[float], *, framework: str, method: str, seed: int, learning_rate: float) -> list[dict]:
+    """For pretrain_med/train_dann_source, whose returned ``history`` is
+    just a per-epoch scalar loss (see shen_2023/train.py) -- exports it
+    as-is, without retraining, and without inventing a per-epoch learning
+    rate the underlying loop doesn't actually track (this constant is the
+    optimizer's configured LR; pretrain_med/train_source have no
+    scheduler here since early_stopping_patience drives a
+    ReduceLROnPlateau only for the *adaptation* loops, not source
+    pretraining -- see the checkpoint's own "learning_rate" field, which
+    stays fixed for these two functions)."""
+    return [
+        {
+            "framework": framework,
+            "method": method,
+            "seed": seed,
+            "epoch": epoch + 1,
+            "learning_rate": learning_rate,
+            "train_loss": value,
+            "runtime_seconds": None,
+            "validation_mae": None,
+            "validation_rmse": None,
+            "validation_evaluated": False,
+        }
+        for epoch, value in enumerate(history)
+    ]
+
+
+def _flatten_dict_history(
+    history: list[dict], *, framework: str, method: str, seed: int, cell_id: str
+) -> list[dict]:
+    """For med_adapt/adapt_dann_mmd, whose returned ``history`` is a list
+    of real per-epoch loss dicts (see shen_2023/train.py: {"soc","dis",
+    "total","learning_rate"} for MED, {"estimate","adversarial","mmd",
+    "total","learning_rate"} for DANN+MMD) -- exports every key genuinely
+    present, never inventing a field the code doesn't compute, and never
+    conflating MED's field names with DANN+MMD's."""
+    rows = []
+    for epoch, entry in enumerate(history):
+        row = {
+            "framework": framework,
+            "method": method,
+            "seed": seed,
+            "cell_id": cell_id,
+            "epoch": epoch + 1,
+            "runtime_seconds": None,
+            "validation_mae": None,
+            "validation_rmse": None,
+            "validation_evaluated": False,
+        }
+        row.update(entry)
+        rows.append(row)
+    return rows
 
 
 def _budget_mission_ids(manifest: pd.DataFrame, cell_id: str) -> tuple[set[str], set[str]]:
@@ -263,6 +560,32 @@ def _rebuild_cell_metrics(output_root: Path) -> pd.DataFrame:
     return table
 
 
+def _rebuild_test_predictions(output_root: Path) -> None:
+    """Aggregate every per-(seed, cell, method) test_predictions parquet
+    sidecar (``seed_*/<cell>/<method>_predictions.parquet``) into the
+    top-level test_predictions.parquet -- never a single truncate-on-open
+    writer for the whole run, same merge-not-overwrite rationale as
+    ``_rebuild_cell_metrics``."""
+    paths = sorted(output_root.glob("seed_*/*/*_predictions.parquet"))
+    if not paths:
+        return
+    pq.write_table(pa.concat_tables([pq.read_table(path) for path in paths]), output_root / "test_predictions.parquet")
+
+
+def _rebuild_training_history(output_root: Path) -> None:
+    """Aggregate every per-(seed[, cell]) training-history sidecar (source
+    pretraining under ``seed_*/*_training_history.csv``, adaptation under
+    ``seed_*/<cell>/<method>_training_history.csv``) into the top-level
+    training_history.csv."""
+    paths = sorted(output_root.glob("seed_*/*_training_history.csv")) + sorted(
+        output_root.glob("seed_*/*/*_training_history.csv")
+    )
+    if not paths:
+        return
+    frames = [pd.read_csv(path) for path in paths]
+    pd.concat(frames, ignore_index=True).to_csv(output_root / "training_history.csv", index=False)
+
+
 def main() -> None:
     run_start = time.perf_counter()
     args = parse_args()
@@ -302,6 +625,19 @@ def main() -> None:
             med_pretrain_seconds = timer.seconds
             med_pretrain_epochs = len(med_pretrain_history)
             print(f"    done in {med_pretrain_seconds:.1f}s ({med_pretrain_epochs} epochs)")
+            # Diagnostic-only: exports pretrain_med's own returned
+            # per-epoch scalar loss history -- never retrains, never a
+            # second call to pretrain_med.
+            seed_root.mkdir(parents=True, exist_ok=True)
+            pd.DataFrame(
+                _flatten_scalar_history(
+                    med_pretrain_history,
+                    framework="sftnn_med",
+                    method="med_source_pretrain",
+                    seed=seed,
+                    learning_rate=args.lr,
+                )
+            ).to_csv(seed_root / "med_source_pretrain_training_history.csv", index=False)
         _save_timing(
             seed_root, "med_source_pretrain",
             seconds=med_pretrain_seconds, epochs=med_pretrain_epochs, device=str(device),
@@ -331,6 +667,16 @@ def main() -> None:
                 dann_pretrain_seconds = timer.seconds
                 dann_pretrain_epochs = len(dann_pretrain_history)
                 print(f"    done in {dann_pretrain_seconds:.1f}s ({dann_pretrain_epochs} epochs)")
+                seed_root.mkdir(parents=True, exist_ok=True)
+                pd.DataFrame(
+                    _flatten_scalar_history(
+                        dann_pretrain_history,
+                        framework="sftnn_med",
+                        method="dann_mmd_source_pretrain",
+                        seed=seed,
+                        learning_rate=args.lr,
+                    )
+                ).to_csv(seed_root / "dann_mmd_source_pretrain_training_history.csv", index=False)
             _save_timing(
                 seed_root, "dann_source_pretrain",
                 seconds=dann_pretrain_seconds, epochs=dann_pretrain_epochs, device=str(device),
@@ -350,6 +696,12 @@ def main() -> None:
             train_ids, test_ids = _budget_mission_ids(manifest, cell)
             test_cycles = _mission_cycles(records, test_ids, feature_min, feature_max)
             train_cycles = _mission_cycles(records, train_ids, feature_min, feature_max)
+            # Diagnostic-only: per-test-mission metadata (for
+            # test_predictions.parquet) and the raw-parquet Ns/V/I/T/
+            # capacity join table for this cell, built once per cell and
+            # reused across every method below.
+            test_metadata = _mission_metadata(records, test_ids)
+            raw_diagnostic = load_raw_diagnostic_fields(path)
 
             for method in args.methods:
                 result_path = cell_root / f"{method}.json"
@@ -359,9 +711,11 @@ def main() -> None:
 
                 extra = {}
                 timing = {"pseudo_label_seconds": None, "adapt_seconds": None}
+                diagnostic_model, diagnostic_branch, history_rows = None, "target", []
                 if method == "zero_shot":
                     with _Timer(device) as eval_timer:
                         metrics = _evaluate(med_source, test_cycles, device, branch="source")
+                    diagnostic_model, diagnostic_branch = med_source, "source"
                 elif method == "med":
                     with _Timer(device) as pseudo_timer:
                         dataset, info = build_pseudo_target_dataset(
@@ -423,6 +777,10 @@ def main() -> None:
                     timing["pseudo_label_seconds"] = pseudo_timer.seconds
                     timing["adapt_seconds"] = adapt_timer.seconds
                     extra = {"pseudo_label_info": info, "epochs_completed": len(history)}
+                    diagnostic_model, diagnostic_branch = adapted, "target"
+                    history_rows = _flatten_dict_history(
+                        history, framework="sftnn_med", method="med", seed=seed, cell_id=cell
+                    )
                     if not args.no_save_checkpoints:
                         cell_root.mkdir(parents=True, exist_ok=True)
                         torch.save(adapted.target_extractor.state_dict(), cell_root / "med.pt")
@@ -440,11 +798,51 @@ def main() -> None:
                         metrics = _evaluate(adapted, test_cycles, device, branch="target")
                     timing["adapt_seconds"] = adapt_timer.seconds
                     extra = {"pseudo_label_info": info, "epochs_completed": len(history)}
+                    diagnostic_model, diagnostic_branch = adapted, "target"
+                    history_rows = _flatten_dict_history(
+                        history, framework="sftnn_med", method="dann_mmd", seed=seed, cell_id=cell
+                    )
                     if not args.no_save_checkpoints:
                         cell_root.mkdir(parents=True, exist_ok=True)
                         torch.save(adapted.target_extractor.state_dict(), cell_root / "dann_mmd.pt")
                 else:
                     raise ValueError(method)
+
+                # Diagnostic-only: predictions/labels/metadata via the
+                # SAME per-cycle windows()/loader construction _evaluate
+                # itself uses, joined with Ns/mission_phase/raw V-I-T/
+                # capacity provenance. Never feeds back into metrics or
+                # model state -- `metrics` above was already computed by
+                # the untouched _evaluate call.
+                prediction, reference, mission_ids_arr, window_idx, timestep_idx, pred_metadata = (
+                    _predict_all_with_metadata(
+                        diagnostic_model, test_cycles, test_metadata, device, branch=diagnostic_branch
+                    )
+                )
+                prediction_rows = _build_prediction_rows(
+                    framework="sftnn_med",
+                    method=method,
+                    seed=seed,
+                    cell_id=cell,
+                    condition=CELL_CONDITIONS.get(cell, cell),
+                    soc_reference=reference,
+                    soc_prediction=prediction,
+                    mission_ids=mission_ids_arr,
+                    window_indices=window_idx,
+                    timestep_indices=timestep_idx,
+                    metadata=pred_metadata,
+                    raw_diagnostic=raw_diagnostic,
+                )
+                cell_root.mkdir(parents=True, exist_ok=True)
+                if prediction_rows:
+                    pq.write_table(
+                        pa.Table.from_pylist(prediction_rows, schema=TEST_PREDICTIONS_SCHEMA),
+                        cell_root / f"{method}_predictions.parquet",
+                    )
+                if history_rows:
+                    pd.DataFrame(history_rows).to_csv(
+                        cell_root / f"{method}_training_history.csv", index=False
+                    )
 
                 row = {
                     "method": method,
@@ -479,6 +877,8 @@ def main() -> None:
                 _rebuild_cell_metrics(args.output_root)
 
     table = _rebuild_cell_metrics(args.output_root)
+    _rebuild_test_predictions(args.output_root)
+    _rebuild_training_history(args.output_root)
     metadata = {
         "benchmark": "sftnn_med_transfer_panasonic_25c_to_cmu_core7",
         "note": (
@@ -510,8 +910,31 @@ def main() -> None:
         "batch_size": args.batch_size,
         "lr": args.lr,
         "transfer_lr": args.transfer_lr,
+        "evaluation_unit": EVALUATION_UNIT,
+        "evaluation_unit_note": (
+            "windows() builds non-overlapping WINDOW-length windows and "
+            "predict()/_evaluate ravel per-timestep output AND per-timestep "
+            "label across every window -- all_timesteps, like DTNN/backbone, "
+            "unlike DARM's last_step_per_window."
+        ),
+        "metric_units": {
+            "soc_reference": "fraction",
+            "soc_prediction": "fraction",
+            "signed_error": "fraction",
+            "absolute_error": "fraction",
+            "overall_mae_percent": "percent",
+            "overall_rmse_percent": "percent",
+            "overall_max_error_percent": "percent",
+            "overall_bias_percent": "percent",
+            "mission_macro_mae_percent": "percent",
+            "mission_macro_rmse_percent": "percent",
+        },
+        "target_soc_labels_used_for_training": False,
         "target_soc_labels_used_for_adaptation": False,
         "target_soc_labels_used_for_checkpoint_selection": False,
+        "target_validation_labels_used_for_diagnostics": False,
+        "target_validation_labels_used_for_training": False,
+        "target_validation_labels_used_for_checkpoint_selection": False,
         "target_soc_reference_used_for_posthoc_evaluation": True,
         "label_is_ground_truth": False,
         "formal_benchmark_eligible": False,

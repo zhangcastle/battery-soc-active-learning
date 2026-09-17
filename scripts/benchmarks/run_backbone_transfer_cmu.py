@@ -39,6 +39,8 @@ from pathlib import Path
 
 import numpy as np
 import pandas as pd
+import pyarrow as pa
+import pyarrow.parquet as pq
 import torch
 from torch import nn
 from torch.utils.data import DataLoader, TensorDataset
@@ -48,6 +50,12 @@ for path in (REPO_ROOT, REPO_ROOT / "src"):
     if str(path) not in sys.path:
         sys.path.insert(0, str(path))
 
+from battery_benchmark.benchmarks.cmu_diagnostics import (
+    CELL_CONDITIONS,
+    DIAGNOSTIC_METADATA_CASTERS,
+    join_diagnostic_fields_by_source_row,
+    load_raw_diagnostic_fields,
+)
 from battery_benchmark.datasets.cmu_evtol.vidal_adapter import load_cmu_dynamic_soc_for_vidal
 from battery_benchmark.evaluation.metrics import compute_metrics
 from battery_benchmark.models.registry import ModelRegistry
@@ -84,6 +92,46 @@ BUDGET_COLUMNS = {
 # training path -- it does not change what gets reported.
 MODEL_CONFIG = {"input_size": len(FEATURES), "output_clip": False}
 
+# `_windows`/`_evaluate` below build non-overlapping fixed-length windows
+# and evaluate every raw timestep in them (no last-step slicing) --
+# all_timesteps, identical convention to DTNN, unlike DARM's
+# last_step_per_window.
+EVALUATION_UNIT = "all_timesteps"
+
+# Fixed schema for test_predictions.parquet -- one row per raw CMU
+# timestep, identical shape across all three backbones (no per-model
+# divergence), mirroring run_bian_cmu.py's TEST_PREDICTIONS_SCHEMA.
+TEST_PREDICTIONS_SCHEMA = pa.schema(
+    [
+        ("model", pa.string()),
+        ("method", pa.string()),
+        ("budget", pa.string()),
+        ("seed", pa.int64()),
+        ("cell_id", pa.string()),
+        ("condition", pa.string()),
+        ("split", pa.string()),
+        ("mission_cycle_id", pa.string()),
+        ("window_index", pa.int64()),
+        ("timestep_index", pa.int64()),
+        ("mission_sequence_order", pa.int64()),
+        ("elapsed_candidate_s", pa.float64()),
+        ("original_time_s", pa.float64()),
+        ("source_row_right", pa.int64()),
+        ("voltage_v_raw", pa.float64()),
+        ("current_a_raw", pa.float64()),
+        ("temperature_c_raw", pa.float64()),
+        ("capacity_ah", pa.float64()),
+        ("capacity_source", pa.string()),
+        ("source_rpt_id", pa.string()),
+        ("ns_raw", pa.int64()),
+        ("mission_phase", pa.string()),
+        ("soc_reference", pa.float64()),
+        ("soc_prediction", pa.float64()),
+        ("signed_error", pa.float64()),
+        ("absolute_error", pa.float64()),
+    ]
+)
+
 
 def _seed(value: int) -> None:
     random.seed(value)
@@ -111,19 +159,59 @@ class _Timer:
         self.seconds = time.perf_counter() - self._start
 
 
-def _windows(parts: list[tuple[np.ndarray, np.ndarray, str]], length: int):
-    """Reshape a list of (features, soc, id) time series into non-overlapping windows."""
+def _windows(
+    parts: list[tuple[np.ndarray, np.ndarray, str]]
+    | list[tuple[np.ndarray, np.ndarray, str, dict]],
+    length: int,
+    *,
+    include_metadata: bool = False,
+):
+    """Reshape a list of (features, soc, id) time series into non-overlapping
+    windows. ``include_metadata=False`` (every pre-existing caller):
+    unchanged output, byte-for-byte identical to before this parameter
+    existed.
+
+    ``include_metadata=True`` (diagnostic test-window construction only):
+    each part is instead a 4-tuple ``(x, y, item_id, metadata)`` where
+    ``metadata`` maps each of mission_sequence_order/elapsed_candidate_s/
+    original_time_s/source_row_right to a 1-D per-row array the same
+    length as x/y for that part. Every metadata array is truncated and
+    reshaped with the EXACT SAME ``usable``/``count`` values computed from
+    x/y -- not a separate slicing pass -- so metadata stays index-for-index
+    aligned with the SOC timestep it describes."""
     xs, ys, ids = [], [], []
-    for x, y, item_id in parts:
+    metadata_lists = (
+        {
+            "mission_sequence_order": [],
+            "elapsed_candidate_s": [],
+            "original_time_s": [],
+            "source_row_right": [],
+        }
+        if include_metadata
+        else None
+    )
+    for part in parts:
+        if include_metadata:
+            x, y, item_id, metadata = part
+        else:
+            x, y, item_id = part
         usable = min(len(x), len(y)) // length * length
         if usable:
             count = usable // length
             xs.append(x[:usable].reshape(count, length, x.shape[-1]))
             ys.append(y[:usable].reshape(count, length))
             ids.append((item_id, count))
+            if include_metadata:
+                for name in metadata_lists:
+                    metadata_lists[name].append(metadata[name][:usable].reshape(count, length))
     if not xs:
         raise ValueError("No complete non-overlapping windows")
-    return np.concatenate(xs).astype(np.float32), np.concatenate(ys).astype(np.float32), ids
+    x_out = np.concatenate(xs).astype(np.float32)
+    y_out = np.concatenate(ys).astype(np.float32)
+    if not include_metadata:
+        return x_out, y_out, ids
+    metadata_out = {name: np.concatenate(values) for name, values in metadata_lists.items()}
+    return x_out, y_out, ids, metadata_out
 
 
 def _source_data(root: Path, length: int):
@@ -154,7 +242,16 @@ def _budget_mission_ids(manifest: pd.DataFrame, cell_id: str, budget: str) -> tu
     return adapt_ids, test_ids
 
 
-def _target_windows(records, mission_ids: set[str], feature_min, feature_max, length: int):
+def _target_windows(
+    records, mission_ids: set[str], feature_min, feature_max, length: int,
+    *, include_metadata: bool = False,
+):
+    """``include_metadata=False`` (every pre-existing caller): unchanged
+    output. ``include_metadata=True`` (diagnostic test-window construction
+    only): also builds mission_sequence_order/elapsed_candidate_s/
+    original_time_s/source_row_right directly from the SAME frame x/y come
+    from, passed straight through to ``_windows`` for the identical
+    truncation/reshape."""
     if not mission_ids:
         raise ValueError("mission_ids is empty")
     scale = np.where(feature_max == feature_min, 1.0, feature_max - feature_min)
@@ -166,29 +263,92 @@ def _target_windows(records, mission_ids: set[str], feature_min, feature_max, le
         frame = record.data
         x = (frame.loc[:, list(FEATURES)].to_numpy(dtype=np.float64) - feature_min) / scale
         y = frame["soc"].to_numpy(dtype=np.float64)
-        parts.append((x, y, mission))
+        if not include_metadata:
+            parts.append((x, y, mission))
+            continue
+        metadata = {
+            "mission_sequence_order": np.full(
+                len(frame), int(record.metadata["sequence_order"]), dtype=np.int64
+            ),
+            "elapsed_candidate_s": frame["elapsed_candidate_s"].to_numpy(dtype=np.float64),
+            "original_time_s": frame["original_time_s"].to_numpy(dtype=np.float64),
+            "source_row_right": frame["source_row_right"].to_numpy(dtype=np.int64),
+        }
+        parts.append((x, y, mission, metadata))
     if not parts:
         raise ValueError("No CMU records matched the requested mission_ids")
-    return _windows(parts, length)
+    return _windows(parts, length, include_metadata=include_metadata)
 
 
-def _loader(x: np.ndarray, y: np.ndarray, batch_size: int, shuffle: bool) -> DataLoader:
+def _loader(
+    x: np.ndarray, y: np.ndarray, batch_size: int, shuffle: bool, *, generator=None
+) -> DataLoader:
+    """``generator`` defaults to ``None`` for every pre-existing (training)
+    call site, unchanged. ``_validation_diagnostic_metrics`` passes its own
+    local ``torch.Generator()`` instead -- PyTorch's DataLoader always
+    draws one value from its generator to seed itself, even with
+    ``shuffle=False``, so constructing/iterating a validation loader with
+    the default generator would silently advance ``torch.default_generator``
+    and perturb later training-loader shuffles. A separate, local generator
+    keeps that draw off the global RNG stream."""
     return DataLoader(
         TensorDataset(torch.from_numpy(x), torch.from_numpy(y)),
         batch_size=min(batch_size, len(x)),
         shuffle=shuffle,
+        generator=generator,
     )
 
 
-def _train(model: nn.Module, x: np.ndarray, y: np.ndarray, epochs: int, batch_size: int,
-           lr: float, device: torch.device, label: str) -> None:
+@torch.no_grad()
+def _validation_diagnostic_metrics(model, x, y, batch_size, device):
+    """Lightweight MAE/RMSE (fraction scale, NOT percent), for the periodic
+    validation_mae/validation_rmse diagnostic in training_history.csv only.
+    Never used for early stopping or checkpoint selection -- ``_train``
+    below always restarts full-parameter fine-tuning from the frozen
+    source checkpoint for every budget regardless of what this returns. A
+    pure eval-mode forward pass under no_grad; the model's training/eval
+    mode is restored to whatever it was before this call, so the caller's
+    training loop is unaffected either way. Uses a local ``torch.Generator``
+    (see ``_loader``'s docstring) so this diagnostic never perturbs the
+    training loader's RNG stream."""
+    was_training = model.training
+    model.eval()
+    validation_generator = torch.Generator()
+    prediction = torch.cat(
+        [
+            model(xb.to(device)).cpu()
+            for xb, _ in _loader(x, y, batch_size, False, generator=validation_generator)
+        ]
+    ).numpy()
+    prediction = np.clip(prediction, 0.0, 1.0)
+    if was_training:
+        model.train()
+    metrics = compute_metrics(y, prediction)
+    return float(metrics["mae"]), float(metrics["rmse"])
+
+
+def _train(
+    model: nn.Module, x: np.ndarray, y: np.ndarray, epochs: int, batch_size: int,
+    lr: float, device: torch.device, label: str, *, validation_data=None,
+) -> list[dict]:
     """Full-parameter supervised MSE training (used for both source pretraining
     and target fine-tuning -- Vidal Case 2 unlocks every trainable parameter
-    for target fine-tuning rather than freezing any layer)."""
+    for target fine-tuning rather than freezing any layer). Unchanged
+    training loop/optimizer/loss/data order from before this docstring --
+    the only addition is capturing each epoch's already-computed mean loss
+    into a returned list (previously discarded except for the periodic
+    print) and, when ``validation_data=(val_x, val_y)`` is supplied,
+    running the diagnostic-only validation pass above after each epoch.
+    ``validation_data`` defaults to ``None`` (source pretraining has no
+    natural held-out split -- Section IV explicitly says not to fabricate
+    one), in which case validation_evaluated is honestly False for every
+    epoch."""
     loader = _loader(x, y, batch_size, True)
     optimizer = torch.optim.Adam(model.parameters(), lr=lr)
     criterion = nn.MSELoss()
+    history: list[dict] = []
     for epoch in range(epochs):
+        epoch_started = time.perf_counter()
         model.train()
         total = 0.0
         for xb, yb in loader:
@@ -198,8 +358,29 @@ def _train(model: nn.Module, x: np.ndarray, y: np.ndarray, epochs: int, batch_si
             loss.backward()
             optimizer.step()
             total += float(loss.detach()) * len(xb)
+        epoch_mse = total / len(x)
+        validation_mae = validation_rmse = None
+        validation_evaluated = False
+        if validation_data is not None:
+            val_x, val_y = validation_data
+            validation_mae, validation_rmse = _validation_diagnostic_metrics(
+                model, val_x, val_y, batch_size, device
+            )
+            validation_evaluated = True
+        history.append(
+            {
+                "epoch": epoch + 1,
+                "train_mse": epoch_mse,
+                "learning_rate": lr,
+                "runtime_seconds": time.perf_counter() - epoch_started,
+                "validation_mae": validation_mae,
+                "validation_rmse": validation_rmse,
+                "validation_evaluated": validation_evaluated,
+            }
+        )
         if epoch == 0 or epoch + 1 == epochs or (epoch + 1) % max(epochs // 5, 1) == 0:
-            print(f"    {label} epoch {epoch + 1}/{epochs}: mse={total / len(x):.6f}")
+            print(f"    {label} epoch {epoch + 1}/{epochs}: mse={epoch_mse:.6f}")
+    return history
 
 
 @torch.no_grad()
@@ -302,6 +483,123 @@ def _load_timing(seed_root: Path, name: str) -> dict:
     return {"seconds": None, "epochs": None, "device": None}
 
 
+@torch.no_grad()
+def _predict_all(model: nn.Module, x: np.ndarray, batch_size: int, device: torch.device) -> np.ndarray:
+    """Diagnostic-only companion to ``_evaluate``: returns the raw
+    per-timestep prediction array using the IDENTICAL loader construction
+    (same TensorDataset, same batch_size, ``shuffle=False``) as
+    ``_evaluate``, so predictions line up 1:1, in the same order, with the
+    metadata arrays from ``_target_windows(..., include_metadata=True)``. A
+    test recomputes overall_mae_percent/overall_rmse_percent from these
+    (clipped) predictions and asserts they match ``_evaluate``'s output."""
+    model.eval()
+    dummy_y = np.zeros((len(x), x.shape[1]), dtype=np.float32)
+    prediction = torch.cat(
+        [model(xb.to(device)).cpu() for xb, _ in _loader(x, dummy_y, batch_size, False)]
+    ).numpy()
+    return prediction.astype(np.float64)
+
+
+def _build_prediction_rows(
+    *,
+    model_name: str,
+    method: str,
+    budget: str,
+    seed: int,
+    cell_id: str,
+    condition: str,
+    soc_reference: np.ndarray,
+    soc_prediction: np.ndarray,
+    metadata: dict[str, np.ndarray],
+    missions: list[tuple[str, int]],
+    sequence_length: int,
+    raw_diagnostic: pd.DataFrame,
+) -> list[dict]:
+    """Assembles one test_predictions.parquet row per raw CMU timestep,
+    identical shape/logic across all three backbones. Joins Ns/mission_phase/
+    raw V-I-T/capacity provenance by this timestep's own source_row_right --
+    never reverse-derived from x."""
+    n = len(soc_reference)
+    if not n:
+        return []
+    joined = join_diagnostic_fields_by_source_row(metadata["source_row_right"], raw_diagnostic)
+    clipped_prediction = np.clip(soc_prediction, 0.0, 1.0)
+    mission_ids = np.array(
+        [mission for mission, count in missions for _ in range(count)], dtype=object
+    )
+    n_windows_total = sum(count for _, count in missions)
+    window_indices = np.repeat(np.arange(n_windows_total), sequence_length)
+    timestep_indices = np.tile(np.arange(sequence_length), n_windows_total)
+    rows = []
+    for i in range(n):
+        row = {
+            "model": model_name,
+            "method": method,
+            "budget": budget,
+            "seed": seed,
+            "cell_id": cell_id,
+            "condition": condition,
+            "split": "test",
+            "mission_cycle_id": str(mission_ids[i]),
+            "window_index": int(window_indices[i]),
+            "timestep_index": int(timestep_indices[i]),
+            "mission_sequence_order": int(metadata["mission_sequence_order"][i]),
+            "elapsed_candidate_s": float(metadata["elapsed_candidate_s"][i]),
+            "original_time_s": float(metadata["original_time_s"][i]),
+            "source_row_right": int(metadata["source_row_right"][i]),
+            "soc_reference": float(soc_reference[i]),
+            "soc_prediction": float(clipped_prediction[i]),
+            "signed_error": float(clipped_prediction[i] - soc_reference[i]),
+            "absolute_error": float(abs(clipped_prediction[i] - soc_reference[i])),
+        }
+        for column in (
+            "voltage_v_raw",
+            "current_a_raw",
+            "temperature_c_raw",
+            "capacity_ah",
+            "capacity_source",
+            "source_rpt_id",
+            "ns_raw",
+            "mission_phase",
+        ):
+            value = joined[column][i]
+            row[column] = None if value is None else DIAGNOSTIC_METADATA_CASTERS[column](value)
+        rows.append(row)
+    return rows
+
+
+def _rebuild_test_predictions(output_root: Path) -> None:
+    """Aggregate every per-(model, seed, cell, budget) test_predictions
+    parquet sidecar into the top-level test_predictions.parquet -- never a
+    single truncate-on-open writer for the whole (multi-process, per-model)
+    run, same merge-not-overwrite rationale as ``_rebuild_cell_metrics``."""
+    paths = sorted(output_root.glob("*/seed_*/*/*_predictions.parquet"))
+    if not paths:
+        return
+    pq.write_table(
+        pa.concat_tables([pq.read_table(path) for path in paths]),
+        output_root / "test_predictions.parquet",
+    )
+
+
+def _rebuild_training_history(output_root: Path) -> None:
+    """Aggregate every per-(model, seed) source training-history sidecar and
+    every per-(model, seed, cell, budget) target training-history sidecar
+    into the top-level training_history.csv."""
+    paths = sorted(output_root.glob("*/seed_*/source_training_history.csv")) + sorted(
+        output_root.glob("*/seed_*/*/*_training_history.csv")
+    )
+    if not paths:
+        return
+    frames = [pd.read_csv(path) for path in paths]
+    pd.concat(frames, ignore_index=True).to_csv(output_root / "training_history.csv", index=False)
+
+
+def _validation_mission_ids(manifest: pd.DataFrame, cell_id: str) -> set[str]:
+    rows = manifest.loc[manifest["cell_id"] == cell_id]
+    return set(rows.loc[rows["split"] == "validation", "mission_cycle_id"].astype(str))
+
+
 def _rebuild_cell_metrics(output_root: Path) -> pd.DataFrame:
     """Aggregate every per-(model, seed, cell, budget) result JSON under output_root.
 
@@ -354,9 +652,17 @@ def main() -> None:
                 _seed(seed)
                 print(f"=== {model_name} / seed {seed}: pretraining on {len(source_x)} source windows ===")
                 with _Timer(device) as timer:
-                    _train(model, source_x, source_y, args.source_epochs, args.batch_size, args.lr, device, "source")
+                    source_history = _train(
+                        model, source_x, source_y, args.source_epochs, args.batch_size, args.lr, device, "source"
+                    )
                 source_pretrain_seconds = timer.seconds
                 print(f"    done in {source_pretrain_seconds:.1f}s")
+                # Diagnostic-only: exports _train's own returned per-epoch
+                # loss history (previously discarded) -- never retrains.
+                seed_root.mkdir(parents=True, exist_ok=True)
+                pd.DataFrame(
+                    [{"model": model_name, "seed": seed, **entry} for entry in source_history]
+                ).to_csv(seed_root / "source_training_history.csv", index=False)
                 if not args.no_save_checkpoints:
                     seed_root.mkdir(parents=True, exist_ok=True)
                     torch.save(model.state_dict(), source_checkpoint)
@@ -373,6 +679,7 @@ def main() -> None:
                 records = None
                 actual = None
                 cell_data_load_seconds = None
+                raw_diagnostic = None
 
                 for budget in args.budgets:
                     result_path = cell_root / f"{budget}.json"
@@ -392,6 +699,7 @@ def main() -> None:
                                 raise ValueError(f"{cell}: CMU input hash does not match manifest")
                             records = load_cmu_dynamic_soc_for_vidal([path], target_hz=1.0).records
                         cell_data_load_seconds = data_timer.seconds
+                        raw_diagnostic = load_raw_diagnostic_fields(path)
                     cell_root.mkdir(parents=True, exist_ok=True)
                     # Stored at seed_root (not cell_root) with the cell name in
                     # the filename: cell_root already holds <budget>.json result
@@ -406,27 +714,85 @@ def main() -> None:
                     cell_data_load_timing = _load_timing(seed_root, f"{cell}_data_load")
 
                     adapt_ids, test_ids = _budget_mission_ids(manifest, cell, budget)
-                    test_x, test_y, test_missions = _target_windows(
-                        records, test_ids, feature_min, feature_max, args.sequence_length
+                    test_x, test_y, test_missions, test_metadata = _target_windows(
+                        records, test_ids, feature_min, feature_max, args.sequence_length,
+                        include_metadata=True,
                     )
                     eval_model = ModelRegistry.build(model_name, MODEL_CONFIG).to(device)
                     eval_model.load_state_dict(source_state)
                     adapt_missions = 0
                     adapt_seconds = None
+                    target_history: list[dict] = []
                     if budget != "zero_shot":
                         adapt_x, adapt_y, adapt_mission_ids = _target_windows(
                             records, adapt_ids, feature_min, feature_max, args.sequence_length
                         )
                         adapt_missions = len(adapt_mission_ids)
+                        # Diagnostic-only: the CMU supervised-budget manifest
+                        # already defines a "validation" split, disjoint from
+                        # train/test, unused anywhere else in this script.
+                        # When this cell has validation-split missions, they
+                        # are used ONLY for a periodic read-only MAE/RMSE
+                        # probe inside _train (see
+                        # _validation_diagnostic_metrics) -- never for
+                        # checkpoint selection or early stopping, which this
+                        # script does not do at all (every budget always
+                        # fine-tunes for the full args.transfer_epochs from
+                        # the frozen source checkpoint).
+                        validation_ids = _validation_mission_ids(manifest, cell)
+                        validation_data = None
+                        if validation_ids:
+                            try:
+                                val_x, val_y, _ = _target_windows(
+                                    records, validation_ids, feature_min, feature_max,
+                                    args.sequence_length,
+                                )
+                                validation_data = (val_x, val_y)
+                            except ValueError:
+                                validation_data = None  # no complete validation windows for this cell
                         _seed(seed)
                         with _Timer(device) as adapt_timer:
-                            _train(
+                            target_history = _train(
                                 eval_model, adapt_x, adapt_y, args.transfer_epochs,
                                 args.batch_size, args.transfer_lr, device, budget,
+                                validation_data=validation_data,
                             )
                         adapt_seconds = adapt_timer.seconds
+                        pd.DataFrame(
+                            [
+                                {"model": model_name, "seed": seed, "cell_id": cell, "budget": budget, **entry}
+                                for entry in target_history
+                            ]
+                        ).to_csv(cell_root / f"{budget}_training_history.csv", index=False)
                     with _Timer(device) as eval_timer:
                         metrics = _evaluate(eval_model, test_x, test_y, test_missions, args.batch_size, device)
+
+                    # Diagnostic-only: predictions via the SAME loader
+                    # construction _evaluate uses, joined with
+                    # Ns/mission_phase/raw V-I-T/capacity provenance. Never
+                    # feeds back into metrics or model state -- `metrics`
+                    # above was already computed by the untouched _evaluate
+                    # call.
+                    raw_prediction = _predict_all(eval_model, test_x, args.batch_size, device)
+                    prediction_rows = _build_prediction_rows(
+                        model_name=model_name,
+                        method="zero_shot" if budget == "zero_shot" else "fine_tuned",
+                        budget=budget,
+                        seed=seed,
+                        cell_id=cell,
+                        condition=CELL_CONDITIONS.get(cell, cell),
+                        soc_reference=test_y.ravel().astype(np.float64),
+                        soc_prediction=raw_prediction.ravel(),
+                        metadata={name: values.ravel() for name, values in test_metadata.items()},
+                        missions=test_missions,
+                        sequence_length=args.sequence_length,
+                        raw_diagnostic=raw_diagnostic,
+                    )
+                    if prediction_rows:
+                        pq.write_table(
+                            pa.Table.from_pylist(prediction_rows, schema=TEST_PREDICTIONS_SCHEMA),
+                            cell_root / f"{budget}_predictions.parquet",
+                        )
                     row_seconds = sum(
                         s for s in (cell_data_load_seconds, adapt_seconds, eval_timer.seconds) if s is not None
                     )
@@ -461,6 +827,8 @@ def main() -> None:
                     _rebuild_cell_metrics(args.output_root)
 
     table = _rebuild_cell_metrics(args.output_root)
+    _rebuild_test_predictions(args.output_root)
+    _rebuild_training_history(args.output_root)
     metadata = {
         "benchmark": "backbone_transfer_panasonic_25c_to_cmu_core7",
         "note": (
@@ -489,8 +857,39 @@ def main() -> None:
         "batch_size": args.batch_size,
         "lr": args.lr,
         "transfer_lr": args.transfer_lr,
+        "evaluation_unit": EVALUATION_UNIT,
+        "evaluation_unit_note": (
+            "_windows()/_evaluate build non-overlapping fixed-length windows "
+            "and score every raw timestep in them -- all_timesteps, "
+            "identical convention to DTNN, unlike DARM's last_step_per_window."
+        ),
+        "metric_units": {
+            "soc_reference": "fraction",
+            "soc_prediction": "fraction",
+            "signed_error": "fraction",
+            "absolute_error": "fraction",
+            "overall_mae_percent": "percent",
+            "overall_rmse_percent": "percent",
+            "overall_max_error_percent": "percent",
+            "overall_bias_percent": "percent",
+            "mission_macro_mae_percent": "percent",
+            "mission_macro_rmse_percent": "percent",
+        },
+        "validation_protocol": (
+            "Diagnostic-only: when the CMU manifest's 'validation' split has "
+            "complete windows for a cell, _train() probes validation_mae/"
+            "validation_rmse (fraction) after every fine-tuning epoch via a "
+            "read-only, no_grad forward pass. Never used for early stopping "
+            "or checkpoint selection -- every budget always fine-tunes for "
+            "the full --transfer-epochs from the frozen source checkpoint, "
+            "unchanged by this diagnostic."
+        ),
+        "target_soc_labels_used_for_training": True,
         "target_soc_labels_used_for_adaptation": True,
         "target_soc_labels_used_for_checkpoint_selection": False,
+        "target_validation_labels_used_for_diagnostics": True,
+        "target_validation_labels_used_for_training": False,
+        "target_validation_labels_used_for_checkpoint_selection": False,
         "target_soc_reference_used_for_posthoc_evaluation": True,
         "label_is_ground_truth": False,
         "formal_benchmark_eligible": False,
