@@ -1590,3 +1590,335 @@ def test_multi_chunk_write_preserves_diagnostic_fields_and_nulls(tmp_path) -> No
         drop=True
     )
     pd.testing.assert_frame_equal(frame_sorted, expected_sorted, check_dtype=False)
+
+
+# ---------------------------------------------------------------------------
+# Full-mission diagnostic (RQ3/RQ4) -- entirely additive, diagnostic-only.
+# These tests exist to prove the addition cannot touch the primary
+# benchmark: _target_parts/_target_data/_adapt/_evaluate themselves are
+# never edited by it (see the module source), so the tests below focus on
+# (a) the new full-mission data construction reusing the same
+# truncation/reshape as the primary split, (b) the diagnostic evaluate
+# helper's RNG isolation, (c) that inserting the diagnostic between two
+# cells cannot change the second cell's trained weights or predictions,
+# and (d) the phase summaries are exactly recomputable from the parquet.
+# ---------------------------------------------------------------------------
+
+
+def test_target_parts_full_mission_keeps_entire_mission_no_truncation_no_split() -> None:
+    """Requirement #2: no initial_soc truncation, no adapt/test split --
+    every raw timestep of a selected mission is kept, and a mission not in
+    mission_ids is skipped entirely (matching _target_parts' own
+    filtering)."""
+    soc = np.linspace(0.95, 0.05, 10)
+    record = _fake_target_record(mission="M1", sequence_order=2, soc=soc)
+    other = _fake_target_record(mission="OTHER", sequence_order=9, soc=soc)
+
+    parts = module._target_parts_full_mission([record, other], {"M1"})
+
+    assert len(parts) == 1
+    x, y, mission, metadata = parts[0]
+    assert mission == "M1"
+    frame = record.data
+    assert np.array_equal(y, frame["soc"].to_numpy())
+    assert np.array_equal(x, frame.loc[:, module.FEATURES].to_numpy())
+    assert np.array_equal(metadata["elapsed_candidate_s"], frame["elapsed_candidate_s"].to_numpy())
+    assert np.array_equal(metadata["original_time_s"], frame["original_time_s"].to_numpy())
+    assert np.array_equal(metadata["source_row_right"], frame["source_row_right"].to_numpy())
+    assert np.all(metadata["mission_sequence_order"] == 2)
+    assert len(x) == len(soc)  # nothing truncated -- the WHOLE mission
+
+
+def test_target_data_full_mission_reuses_same_windows_truncation_as_primary_split() -> None:
+    """Requirement #2: normalization, window length, and the trailing-
+    truncation rule all come from the completely unmodified
+    _windows()/_target_data() -- verified here the same way the primary
+    split's own metadata-alignment tests already do (see
+    test_target_data_metadata_survives_truncation_with_correct_dropped_tail),
+    just fed from _target_parts_full_mission instead of _target_parts."""
+    soc = np.linspace(0.9, 0.1, 13)  # 13 timesteps, length=3 -> usable=12, 1 dropped
+    record = _fake_target_record(mission="M2", sequence_order=4, soc=soc)
+    length = 3
+
+    parts = module._target_parts_full_mission([record], {"M2"})
+    x, y, missions, metadata = module._target_data(
+        parts, length,
+        feature_min=np.array([0.0, 0.0]), feature_max=np.array([20.0, 120.0]),
+        include_metadata=True,
+    )
+
+    assert missions == [("M2", 4)]
+    assert x.shape == (4, 3, 2)
+    assert y.shape == (4, 3)
+    frame = record.data
+    kept = slice(0, 12)
+    assert np.array_equal(y.reshape(-1), frame["soc"].to_numpy()[kept].astype(np.float32))
+    assert np.array_equal(
+        metadata["source_row_right"].reshape(-1), frame["source_row_right"].to_numpy()[kept]
+    )
+
+
+def test_full_mission_diagnostic_join_has_nonzero_samples_for_all_three_phases(tmp_path) -> None:
+    """Requirement #8: full-mission output must have non-zero take_off/
+    cruise/landing samples -- built end-to-end from a synthetic mission
+    covering Ns 4/5/6/7 (cycled), through _target_parts_full_mission ->
+    _target_data -> _join_diagnostic_fields_by_source_row, exactly the
+    pipeline main()'s full-mission diagnostic block uses."""
+    n = 24
+    source_row_right = np.arange(n, dtype=np.int64) + 1000
+    soc = np.linspace(0.95, 0.05, n)
+    record = _fake_target_record(
+        mission="M1", sequence_order=0, soc=soc, source_row_right=source_row_right,
+    )
+    ns_values = [4, 5, 6, 7] * (n // 4)
+
+    raw_path = tmp_path / "raw.parquet"
+    pd.DataFrame(
+        {
+            "source_row": source_row_right,
+            "development_phase_role": [""] * n,
+            "voltage_v": [3.6] * n,
+            "current_a": [-1.0] * n,
+            "Temperature__C": [24.0] * n,
+            "capacity_ah": [2.5] * n,
+            "capacity_source": ["rpt"] * n,
+            "source_rpt_id": ["R1"] * n,
+            "Ns": ns_values,
+        }
+    ).to_parquet(raw_path, index=False)
+    raw_diagnostic = module._load_raw_diagnostic_fields(raw_path)
+
+    parts = module._target_parts_full_mission([record], {"M1"})
+    x, y, missions, metadata = module._target_data(
+        parts, 4, feature_min=np.array([0.0, 0.0]), feature_max=np.array([20.0, 120.0]),
+        include_metadata=True,
+    )
+    metadata = {
+        **metadata,
+        **module._join_diagnostic_fields_by_source_row(
+            metadata["source_row_right"], raw_diagnostic
+        ),
+    }
+
+    phases, counts = np.unique(metadata["mission_phase"], return_counts=True)
+    phase_counts = dict(zip(phases, counts))
+    for phase in module.FULL_MISSION_SUMMARY_PHASES:
+        assert phase_counts.get(phase, 0) > 0
+
+
+def test_run_full_mission_diagnostic_evaluate_does_not_perturb_global_rng() -> None:
+    """Requirement #8: the diagnostic inference call must not change
+    torch's global RNG state -- checked directly around the helper main()
+    actually calls for the full-mission diagnostic."""
+    torch.manual_seed(0)
+    model = module.DTNN(2, 8, 4, 8)
+    x = np.random.default_rng(1).normal(size=(3, 4, 2)).astype(np.float32)
+    y = np.random.default_rng(2).uniform(0, 1, size=(3, 4)).astype(np.float32)
+    missions = [("m1", 3)]
+
+    rng_state_before = torch.get_rng_state()
+    overall, predictions = module._run_full_mission_diagnostic_evaluate(
+        model, x, y, missions, 2, torch.device("cpu"), None,
+    )
+    rng_state_after = torch.get_rng_state()
+
+    assert torch.equal(rng_state_before, rng_state_after)
+    assert isinstance(overall, dict) and predictions
+
+
+def _run_two_cell_sequence(*, with_full_mission_diagnostic: bool):
+    """Simulates main()'s per-repeat, per-cell sequence for exactly two
+    cells sharing one global RNG stream (as main() itself does): a fresh
+    model per cell, loaded from the same frozen source_state, adapted, and
+    evaluated -- optionally with the full-mission diagnostic block's two
+    extra evaluate calls inserted after cell1 finishes, exactly where
+    main() runs them (after the primary evaluate/adapt for that cell,
+    before moving to the next cell)."""
+    import copy as _copy
+
+    torch.manual_seed(123)
+    widths = (8, 4, 8)
+    source_x, source_y, target_x, target_y = _synthetic_adapt_inputs(seed=1)
+    source_model = module.DTNN(2, *widths)
+    source_state = _copy.deepcopy(source_model.state_dict())
+    args = _adapt_args(transfer_epochs=2, transfer_batch_size=2, batch_size=2)
+    device = torch.device("cpu")
+    missions = [("m1", len(target_x))]
+
+    results = {}
+    for cell in ("cell1", "cell2"):
+        model = module.DTNN(2, *widths)
+        model.load_state_dict(source_state)
+        module._adapt(model, source_x, source_y, target_x, target_y, args, device)
+        overall, predictions = module._evaluate(
+            model, target_x, target_y, missions, args.batch_size, device,
+            return_predictions=True,
+        )
+        results[cell] = (
+            {name: value.clone() for name, value in model.state_dict().items()},
+            overall,
+            [p["soc_prediction"] for p in predictions],
+        )
+        if cell == "cell1" and with_full_mission_diagnostic:
+            # Mirrors main()'s own full-mission diagnostic block exactly:
+            # the fresh model's construction (weight init draws from the
+            # RNG too) is inside the SAME _preserve_torch_rng_state guard
+            # as the evaluate calls -- not just each evaluate call
+            # individually.
+            with module._preserve_torch_rng_state():
+                diagnostic_source_model = module.DTNN(2, *widths)
+                diagnostic_source_model.load_state_dict(source_state)
+                module._run_full_mission_diagnostic_evaluate(
+                    diagnostic_source_model, target_x, target_y, missions,
+                    args.batch_size, device, None,
+                )
+                module._run_full_mission_diagnostic_evaluate(
+                    model, target_x, target_y, missions, args.batch_size, device, None,
+                )
+    return results
+
+
+def test_full_mission_diagnostic_toggle_does_not_change_next_cell_state_dict_or_predictions() -> (
+    None
+):
+    """Requirement #8's core safety property: turning the full-mission
+    diagnostic on/off must not change the SECOND cell's final state_dict
+    or primary predictions -- the diagnostic's two extra evaluate() calls
+    happen strictly after cell1's own primary evaluate/adapt, and must
+    leave torch's global RNG exactly as it would have been without them
+    (see _run_full_mission_diagnostic_evaluate), so cell2 (which shares
+    the same global RNG stream) trains and evaluates identically either
+    way."""
+    without_diagnostic = _run_two_cell_sequence(with_full_mission_diagnostic=False)
+    with_diagnostic = _run_two_cell_sequence(with_full_mission_diagnostic=True)
+
+    for cell in ("cell1", "cell2"):
+        base_state, base_overall, base_predictions = without_diagnostic[cell]
+        diag_state, diag_overall, diag_predictions = with_diagnostic[cell]
+        for name in base_state:
+            assert torch.equal(base_state[name], diag_state[name])
+        assert base_overall == diag_overall
+        assert base_predictions == pytest.approx(diag_predictions)
+
+
+def test_phase_metrics_full_mission_diagnostic_is_recomputable_from_parquet(tmp_path) -> None:
+    """Requirement #5/#8: phase_metrics_full_mission_diagnostic.csv's
+    per-(repeat, seed, cell_id, method, mission_phase) n_points/n_missions/
+    mae_percent/rmse_percent/mean_signed_error_percent must be exactly
+    recomputable from test_predictions_full_mission_diagnostic.parquet's
+    own soc_reference/soc_prediction/mission_phase -- checked here against
+    an INDEPENDENTLY, manually computed expectation, and confirms
+    non-flight phases (e.g. cc_charge) are excluded from the summary."""
+    path = tmp_path / "full_mission.parquet"
+    take_off_rows = [
+        {"repeat": 1, "seed": 10, "cell_id": "VAH01", "method": "Source only",
+         "mission_phase": "take_off", "mission_cycle_id": "m1",
+         "soc_reference": 0.90, "soc_prediction": 0.86},
+        {"repeat": 1, "seed": 10, "cell_id": "VAH01", "method": "Source only",
+         "mission_phase": "take_off", "mission_cycle_id": "m1",
+         "soc_reference": 0.80, "soc_prediction": 0.79},
+        {"repeat": 1, "seed": 10, "cell_id": "VAH01", "method": "Source only",
+         "mission_phase": "take_off", "mission_cycle_id": "m2",
+         "soc_reference": 0.50, "soc_prediction": 0.60},
+    ]
+    other_rows = [
+        {"repeat": 1, "seed": 10, "cell_id": "VAH01", "method": "Source only",
+         "mission_phase": "cruise", "mission_cycle_id": "m1",
+         "soc_reference": 0.40, "soc_prediction": 0.42},
+        {"repeat": 1, "seed": 10, "cell_id": "VAH01", "method": "Source only",
+         "mission_phase": "cc_charge", "mission_cycle_id": "m1",
+         "soc_reference": 0.10, "soc_prediction": 0.90},
+        {"repeat": 1, "seed": 10, "cell_id": "VAH01", "method": "Bian MDA",
+         "mission_phase": "take_off", "mission_cycle_id": "m1",
+         "soc_reference": 0.90, "soc_prediction": 0.91},
+    ]
+    pd.DataFrame(take_off_rows + other_rows).to_parquet(path, index=False)
+
+    summary = module._compute_phase_metrics_full_mission_diagnostic(path)
+
+    # Non-flight phase (cc_charge) must not appear at all.
+    assert set(summary["mission_phase"]) == {"take_off", "cruise"}
+
+    take_off_source = summary.loc[
+        (summary["method"] == "Source only") & (summary["mission_phase"] == "take_off")
+    ].iloc[0]
+    manual = pd.DataFrame(take_off_rows)
+    manual_signed = manual["soc_prediction"] - manual["soc_reference"]
+    assert take_off_source["n_points"] == 3
+    assert take_off_source["n_missions"] == 2
+    assert take_off_source["mae_percent"] == pytest.approx(manual_signed.abs().mean() * 100)
+    assert take_off_source["rmse_percent"] == pytest.approx(
+        float(np.sqrt((manual_signed**2).mean()) * 100)
+    )
+    assert take_off_source["mean_signed_error_percent"] == pytest.approx(
+        manual_signed.mean() * 100
+    )
+
+
+def test_phase_transfer_effects_full_mission_diagnostic_matches_manual_deltas() -> None:
+    """Requirement #6: delta_mae_percent/delta_rmse_percent =
+    adapted - source, plus a boolean negative-transfer flag for each,
+    computed per (repeat, seed, cell_id, mission_phase)."""
+    phase_metrics = pd.DataFrame(
+        [
+            {"repeat": 1, "seed": 10, "cell_id": "VAH01", "method": "Source only",
+             "mission_phase": "take_off", "n_points": 3, "n_missions": 2,
+             "mae_percent": 5.0, "rmse_percent": 6.0, "mean_signed_error_percent": -1.0},
+            {"repeat": 1, "seed": 10, "cell_id": "VAH01", "method": "Bian MDA",
+             "mission_phase": "take_off", "n_points": 3, "n_missions": 2,
+             "mae_percent": 7.0, "rmse_percent": 5.5, "mean_signed_error_percent": 0.5},
+        ]
+    )
+
+    effects = module._compute_phase_transfer_effects_full_mission_diagnostic(phase_metrics)
+
+    assert len(effects) == 1
+    row = effects.iloc[0]
+    assert row["delta_mae_percent"] == pytest.approx(2.0)
+    assert row["delta_rmse_percent"] == pytest.approx(-0.5)
+    assert bool(row["negative_transfer_mae"]) is True
+    assert bool(row["negative_transfer_rmse"]) is False
+
+
+def test_build_run_metadata_records_primary_scope_and_full_mission_diagnostic_role() -> None:
+    """Requirement #7: run.json must state that the primary evaluation
+    scope is unchanged, and that the full-mission diagnostic never
+    participates in training/early stopping/checkpoint selection and never
+    replaces the primary benchmark metrics -- pure metadata, degrading to
+    enabled=False for a bare SimpleNamespace args without the attribute
+    (matching this file's other _build_run_metadata fixtures)."""
+    args = SimpleNamespace(validation_interval=5)
+
+    metadata = module._build_run_metadata(args, runs=[])
+
+    assert metadata["primary_evaluation_scope"] == "initial_soc_70_then_test_70_percent"
+    diagnostic = metadata["full_mission_diagnostic"]
+    assert diagnostic["enabled"] is False
+    assert diagnostic["used_for_training"] is False
+    assert diagnostic["used_for_early_stopping"] is False
+    assert diagnostic["used_for_checkpoint_selection"] is False
+    assert diagnostic["replaces_primary_benchmark_metrics"] is False
+    json.dumps(metadata)
+
+    args_enabled = SimpleNamespace(validation_interval=5, full_mission_diagnostic=True)
+    metadata_enabled = module._build_run_metadata(args_enabled, runs=[])
+    assert metadata_enabled["full_mission_diagnostic"]["enabled"] is True
+
+
+def test_write_prediction_chunk_accepts_full_mission_diagnostic_schema(tmp_path) -> None:
+    """The generalized _write_prediction_chunk(schema=...) must round-trip
+    the extra evaluation_scope column for FULL_MISSION_DIAGNOSTIC_SCHEMA,
+    while every existing (schema-less) call site is completely
+    unaffected."""
+    path = tmp_path / "full_mission.parquet"
+    writer = pq.ParquetWriter(path, module.FULL_MISSION_DIAGNOSTIC_SCHEMA)
+    base_row = _sample_prediction_chunk(
+        repeat=1, seed=10, cell_id="VAH01", method="Source only", n_records=2
+    )[0]
+    row = {**base_row, "evaluation_scope": "full_mission_diagnostic"}
+    module._write_prediction_chunk(writer, [row], schema=module.FULL_MISSION_DIAGNOSTIC_SCHEMA)
+    writer.close()
+
+    frame = pq.read_table(path).to_pandas()
+    assert frame.loc[0, "evaluation_scope"] == "full_mission_diagnostic"
+    assert list(frame.columns) == [field.name for field in module.FULL_MISSION_DIAGNOSTIC_SCHEMA]

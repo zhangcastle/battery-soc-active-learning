@@ -12,6 +12,7 @@ import math
 import random
 import sys
 import time
+from contextlib import contextmanager
 from itertools import cycle
 from pathlib import Path
 
@@ -97,6 +98,23 @@ TEST_PREDICTIONS_SCHEMA = pa.schema(
         ("mission_phase", pa.string()),
     ]
 )
+
+# Diagnostic-only companion schema for
+# test_predictions_full_mission_diagnostic.parquet (see
+# _target_parts_full_mission / the full-mission diagnostic block in main()):
+# identical to TEST_PREDICTIONS_SCHEMA, with one extra column so a reader
+# can never confuse a full-mission-diagnostic row with a primary
+# test_predictions.parquet row even if the two files were ever concatenated.
+FULL_MISSION_DIAGNOSTIC_SCHEMA = pa.schema(
+    list(TEST_PREDICTIONS_SCHEMA) + [("evaluation_scope", pa.string())]
+)
+
+# The three flight phases this diagnostic's phase_metrics/phase_transfer_
+# effects summaries are restricted to -- rest/charge phases (cc_charge/
+# cv_charge/rest_1/rest_2) and unmapped Ns values are deliberately excluded
+# from these two summary files (they are still present, unsummarized, in
+# test_predictions_full_mission_diagnostic.parquet itself).
+FULL_MISSION_SUMMARY_PHASES = MISSION_FLIGHT_PHASE_ROLES
 
 # Ns -> mission-phase label for this DTNN benchmark's diagnostic
 # mission_phase column. This is the SAME canonical, protocol-level mapping
@@ -269,16 +287,20 @@ def _join_diagnostic_fields_by_source_row(source_row_right, raw_diagnostic):
     return result
 
 
-def _write_prediction_chunk(writer: pq.ParquetWriter, rows: list[dict]) -> None:
+def _write_prediction_chunk(
+    writer: pq.ParquetWriter, rows: list[dict], schema: pa.Schema = TEST_PREDICTIONS_SCHEMA
+) -> None:
     """Writes one repeat x cell x method chunk of prediction records to an
-    already-open ParquetWriter, using TEST_PREDICTIONS_SCHEMA so every
-    chunk (from this call or any other) has identical column order/types.
-    A no-op on an empty chunk (pa.Table.from_pylist tolerates it, but there
-    is nothing to write and nothing to gain from writing a zero-row
-    record batch)."""
+    already-open ParquetWriter, using ``schema`` (TEST_PREDICTIONS_SCHEMA by
+    default -- every pre-existing call site is unaffected) so every chunk
+    written to the same file has identical column order/types. Also reused,
+    with ``schema=FULL_MISSION_DIAGNOSTIC_SCHEMA``, for the diagnostic-only
+    test_predictions_full_mission_diagnostic.parquet writer. A no-op on an
+    empty chunk (pa.Table.from_pylist tolerates it, but there is nothing to
+    write and nothing to gain from writing a zero-row record batch)."""
     if not rows:
         return
-    writer.write_table(pa.Table.from_pylist(rows, schema=TEST_PREDICTIONS_SCHEMA))
+    writer.write_table(pa.Table.from_pylist(rows, schema=schema))
 
 
 def _seed(value: int) -> None:
@@ -449,6 +471,41 @@ def _target_data(parts, length, feature_min, feature_max, *, include_metadata=Fa
     else:
         parts = [((x - feature_min) / scale, y, mission) for x, y, mission in parts]
     return _windows(parts, length, include_metadata=include_metadata)
+
+
+def _target_parts_full_mission(records, mission_ids):
+    """Diagnostic-only, full-mission companion to ``_target_parts`` -- used
+    ONLY to build the RQ3/RQ4 full-mission diagnostic test set, never fed
+    into adaptation/training or checkpoint selection, and does not call or
+    modify ``_target_parts`` in any way.
+
+    For each record whose mission is in ``mission_ids`` (the SAME test
+    mission ids already selected by ``select_duration_matched_missions``
+    for the primary test split), uses the mission's ENTIRE timeline --
+    first row to last row -- with no ``initial_soc`` truncation and no
+    adapt/test 30/70 split. Metadata (the four METADATA_COLUMNS arrays) is
+    built directly from the same frame as x/y and is NOT sliced at all
+    beyond taking every row, so it stays index-for-index aligned with x/y
+    exactly the way ``_target_parts``' metadata does for its own (smaller)
+    slice -- both are "the same array, sliced the same way as x/y", the
+    slice here is simply the identity slice."""
+    parts = []
+    for record in records:
+        mission = str(record.metadata["mission_cycle_id"])
+        if mission not in mission_ids:
+            continue
+        frame = record.data
+        y = frame["soc"].to_numpy(dtype=np.float64)
+        raw = frame.loc[:, FEATURES].to_numpy(dtype=np.float64)
+        sequence_order = int(record.metadata["sequence_order"])
+        metadata = {
+            "mission_sequence_order": np.full(len(frame), sequence_order, dtype=np.int64),
+            "elapsed_candidate_s": frame["elapsed_candidate_s"].to_numpy(dtype=np.float64),
+            "original_time_s": frame["original_time_s"].to_numpy(dtype=np.float64),
+            "source_row_right": frame["source_row_right"].to_numpy(dtype=np.int64),
+        }
+        parts.append((raw, y, mission, metadata))
+    return parts
 
 
 def _loader(x, y, batch_size, shuffle, *, generator=None):
@@ -799,6 +856,117 @@ def _evaluate(
     return overall, records
 
 
+@contextmanager
+def _preserve_torch_rng_state():
+    """Snapshots torch's global CPU (and CUDA, if applicable) RNG state on
+    entry and restores it on exit, regardless of what ran in between --
+    including ANY RNG draw, not just a DataLoader's, so this must wrap the
+    ENTIRE full-mission diagnostic block (constructing a fresh model --
+    weight initialization draws from the global RNG too -- as well as
+    every diagnostic evaluate() call), not just the evaluate() calls
+    individually. See ``_run_full_mission_diagnostic_evaluate`` and the
+    full-mission diagnostic block in main() for why this matters: without
+    it, adding this diagnostic would silently change every subsequent
+    cell's ``_adapt()`` shuffling order (and therefore its trained
+    weights) -- exactly the kind of side effect requirement #1 (no change
+    to existing training) forbids."""
+    cpu_rng_state = torch.get_rng_state()
+    cuda_rng_state = torch.cuda.get_rng_state_all() if torch.cuda.is_available() else None
+    try:
+        yield
+    finally:
+        torch.set_rng_state(cpu_rng_state)
+        if cuda_rng_state is not None:
+            torch.cuda.set_rng_state_all(cuda_rng_state)
+
+
+def _run_full_mission_diagnostic_evaluate(model, x, y, missions, batch_size, device, metadata):
+    """Diagnostic-only wrapper around the completely-unmodified ``_evaluate``
+    (never edited by this addition -- see its own docstring): calls it
+    exactly as any other ``return_predictions=True`` caller would, inside
+    ``_preserve_torch_rng_state`` so this one call alone cannot perturb
+    torch's global RNG stream (``_evaluate``'s internal
+    ``_loader(x, y, batch_size, False)`` call passes ``generator=None``,
+    which -- see ``_loader``'s own docstring -- draws from and advances
+    ``torch.default_generator`` on construction, even with
+    ``shuffle=False``). Callers that also construct a fresh model for this
+    diagnostic (model construction draws from the RNG too, for weight
+    initialization) must wrap that construction in
+    ``_preserve_torch_rng_state`` as well -- this function only guards its
+    own body, not code around its call site."""
+    with _preserve_torch_rng_state():
+        return _evaluate(
+            model, x, y, missions, batch_size, device,
+            return_predictions=True, metadata=metadata,
+        )
+
+
+def _compute_phase_metrics_full_mission_diagnostic(predictions_path: Path) -> pd.DataFrame:
+    """Diagnostic-only summary, built by READING BACK
+    test_predictions_full_mission_diagnostic.parquet (never re-derived from
+    live model state), grouped by repeat/seed/cell_id/method/mission_phase
+    and restricted to FULL_MISSION_SUMMARY_PHASES (take_off/cruise/
+    landing). Every value here is directly, exactly recomputable from that
+    same parquet's soc_reference/soc_prediction/mission_phase columns --
+    which is exactly what the accompanying test does independently."""
+    frame = pd.read_parquet(
+        predictions_path,
+        columns=[
+            "repeat", "seed", "cell_id", "method", "mission_phase",
+            "mission_cycle_id", "soc_reference", "soc_prediction",
+        ],
+    )
+    frame = frame.loc[frame["mission_phase"].isin(FULL_MISSION_SUMMARY_PHASES)].copy()
+    frame["signed_error"] = frame["soc_prediction"] - frame["soc_reference"]
+    frame["absolute_error"] = frame["signed_error"].abs()
+    grouped = frame.groupby(
+        ["repeat", "seed", "cell_id", "method", "mission_phase"], sort=False, as_index=False
+    )
+    summary = grouped.agg(
+        n_points=("soc_reference", "size"),
+        n_missions=("mission_cycle_id", "nunique"),
+        mae_percent=("absolute_error", lambda s: float(s.mean()) * 100),
+        rmse_percent=("signed_error", lambda s: float(np.sqrt((s**2).mean())) * 100),
+        mean_signed_error_percent=("signed_error", lambda s: float(s.mean()) * 100),
+    )
+    return summary
+
+
+def _compute_phase_transfer_effects_full_mission_diagnostic(
+    phase_metrics: pd.DataFrame,
+) -> pd.DataFrame:
+    """Diagnostic-only: pairs each (repeat, seed, cell_id, mission_phase)'s
+    'Bian MDA' and 'Source only' rows from ``phase_metrics`` (see
+    ``_compute_phase_metrics_full_mission_diagnostic``) and reports the
+    adapted-minus-source deltas plus a boolean negative-transfer flag for
+    both MAE and RMSE. A (repeat, seed, cell_id, mission_phase) group
+    missing either method (should not happen -- both methods are always
+    evaluated together -- but handled defensively via an inner merge) is
+    simply dropped rather than producing a bogus delta."""
+    columns = [
+        "repeat", "seed", "cell_id", "mission_phase",
+        "delta_mae_percent", "delta_rmse_percent",
+        "negative_transfer_mae", "negative_transfer_rmse",
+    ]
+    if phase_metrics.empty:
+        return pd.DataFrame(columns=columns)
+    source = phase_metrics.loc[phase_metrics["method"] == "Source only"]
+    adapted = phase_metrics.loc[phase_metrics["method"] == "Bian MDA"]
+    merged = source.merge(
+        adapted,
+        on=["repeat", "seed", "cell_id", "mission_phase"],
+        suffixes=("_source", "_adapted"),
+        how="inner",
+    )
+    if merged.empty:
+        return pd.DataFrame(columns=columns)
+    merged["delta_mae_percent"] = merged["mae_percent_adapted"] - merged["mae_percent_source"]
+    merged["delta_rmse_percent"] = merged["rmse_percent_adapted"] - merged["rmse_percent_source"]
+    merged["negative_transfer_mae"] = merged["delta_mae_percent"] > 0
+    merged["negative_transfer_rmse"] = merged["delta_rmse_percent"] > 0
+    return merged[columns].reset_index(drop=True)
+
+
 def _cell_path(cell, base_root, condition_root):
     root = base_root if cell in BASELINE_CELLS else condition_root
     return root / f"{cell}_dynamic_soc.parquet"
@@ -905,6 +1073,38 @@ def _build_run_metadata(args, runs):
         },
         "label_is_ground_truth": False,
         "formal_benchmark_eligible": False,
+        # Diagnostic-only, metadata-only: documents the full-mission
+        # diagnostic added alongside the (unchanged) primary benchmark --
+        # see the full-mission diagnostic block in main(),
+        # _target_parts_full_mission, _run_full_mission_diagnostic_evaluate,
+        # _compute_phase_metrics_full_mission_diagnostic, and
+        # _compute_phase_transfer_effects_full_mission_diagnostic.
+        # primary_evaluation_scope names the UNCHANGED primary protocol
+        # (initial_soc truncation, then the 30/70 adapt/test split) that
+        # metrics.csv/summary.csv/test_predictions.parquet/the flags above
+        # all still describe -- this diagnostic never replaces or feeds
+        # back into any of it.
+        "primary_evaluation_scope": "initial_soc_70_then_test_70_percent",
+        "full_mission_diagnostic": {
+            "enabled": getattr(args, "full_mission_diagnostic", False),
+            "purpose": "RQ3/RQ4 full-mission phase and negative-transfer analysis only",
+            "used_for_training": False,
+            "used_for_adaptation": False,
+            "used_for_early_stopping": False,
+            "used_for_checkpoint_selection": False,
+            "replaces_primary_benchmark_metrics": False,
+            "test_missions": "identical to the primary test split's mission ids",
+            "truncation": "none -- full mission, first row to last row",
+            "adapt_test_split_applied": False,
+            "normalization": "identical source-global min-max as the primary split",
+            "sequence_length": "identical to the primary split",
+            "evaluation_unit": "all_timesteps (same convention as the primary split)",
+            "outputs": [
+                "test_predictions_full_mission_diagnostic.parquet",
+                "phase_metrics_full_mission_diagnostic.csv",
+                "phase_transfer_effects_full_mission_diagnostic.csv",
+            ],
+        },
         # Git/data provenance -- get_full_commit_hash/is_dirty never raise
         # (they return "unknown"/False when git is unavailable or the
         # checkout isn't a git repo, e.g. a CI/sandbox snapshot), and
@@ -972,6 +1172,16 @@ def parse_args():
     parser.add_argument("--seed", type=int, default=1)
     parser.add_argument("--device", default="auto")
     parser.add_argument("--lightweight", action="store_true")
+    parser.add_argument(
+        "--no-full-mission-diagnostic",
+        dest="full_mission_diagnostic",
+        action="store_false",
+        default=True,
+        help="disable the diagnostic-only full-mission evaluation (RQ3/RQ4 "
+        "phase and negative-transfer analysis) -- on by default. Never "
+        "affects training, adaptation, the primary evaluation split, "
+        "primary metrics, or test_predictions.parquet either way.",
+    )
     return parser.parse_args()
 
 
@@ -1007,6 +1217,25 @@ def main():
     test_predictions_final_path = args.output_root / "test_predictions.parquet"
     test_predictions_writer = pq.ParquetWriter(test_predictions_tmp_path, TEST_PREDICTIONS_SCHEMA)
     test_predictions_completed = False
+
+    # Diagnostic-only, same incremental-write-then-atomic-replace pattern as
+    # test_predictions_writer above, gated by args.full_mission_diagnostic
+    # (on by default -- see parse_args). Never read by anything primary:
+    # main()'s existing rows/runs/metrics.csv/summary.csv/
+    # test_predictions.parquet logic above and below is completely
+    # unaffected by whether this is enabled.
+    full_mission_tmp_path = (
+        args.output_root / "test_predictions_full_mission_diagnostic.parquet.incomplete"
+    )
+    full_mission_final_path = (
+        args.output_root / "test_predictions_full_mission_diagnostic.parquet"
+    )
+    full_mission_writer = (
+        pq.ParquetWriter(full_mission_tmp_path, FULL_MISSION_DIAGNOSTIC_SCHEMA)
+        if args.full_mission_diagnostic
+        else None
+    )
+    full_mission_completed = False
     try:
         for repeat in range(args.repeats):
             seed = args.seed + repeat
@@ -1157,6 +1386,87 @@ def main():
                         for record in predictions
                     ]
                     _write_prediction_chunk(test_predictions_writer, chunk_rows)
+
+                if args.full_mission_diagnostic:
+                    # Diagnostic-only, RQ3/RQ4 full-mission evaluation --
+                    # same test mission ids as the primary split above, no
+                    # initial_soc truncation, no adapt/test split (see
+                    # _target_parts_full_mission), same normalization/
+                    # window-length/all_timesteps evaluation as the primary
+                    # split (reuses the completely unchanged _target_data/
+                    # _evaluate, unmodified). Never touches adapt_x/adapt_y
+                    # or model training in any way -- only read-only,
+                    # no_grad inference (via
+                    # _run_full_mission_diagnostic_evaluate, which also
+                    # guarantees zero net effect on torch's global RNG
+                    # state) on the already-frozen source_state and the
+                    # already-fully-adapted `model`.
+                    full_mission_parts = _target_parts_full_mission(records, test_ids)
+                    (
+                        full_mission_x,
+                        full_mission_y,
+                        full_mission_missions,
+                        full_mission_metadata,
+                    ) = _target_data(
+                        full_mission_parts, args.sequence_length,
+                        source_feature_min, source_feature_max, include_metadata=True,
+                    )
+                    full_mission_metadata = {
+                        **full_mission_metadata,
+                        **_join_diagnostic_fields_by_source_row(
+                            full_mission_metadata["source_row_right"], raw_diagnostic
+                        ),
+                    }
+                    # Everything inside this block that could draw from
+                    # torch's global RNG -- including constructing the
+                    # fresh "Source only" model below (weight
+                    # initialization draws from the RNG too, even though
+                    # load_state_dict immediately overwrites those weights)
+                    # -- is wrapped in _preserve_torch_rng_state so this
+                    # whole diagnostic addition has zero net effect on the
+                    # RNG stream subsequent cells' _adapt() shuffling
+                    # depends on. _run_full_mission_diagnostic_evaluate
+                    # only guards its own body, not the model construction
+                    # around it, hence the outer guard here too.
+                    with _preserve_torch_rng_state():
+                        # A fresh model holding the SAME frozen source_state
+                        # used for the primary source_only evaluation above
+                        # -- `model` itself has already been mutated in
+                        # place by _adapt(), so a separate object is needed
+                        # to get an unadapted "Source only" full-mission
+                        # pass.
+                        full_mission_source_model = DTNN(2, *widths).to(device)
+                        full_mission_source_model.load_state_dict(source_state)
+                        _, full_mission_source_predictions = _run_full_mission_diagnostic_evaluate(
+                            full_mission_source_model, full_mission_x, full_mission_y,
+                            full_mission_missions, args.batch_size, device, full_mission_metadata,
+                        )
+                        _, full_mission_adapted_predictions = _run_full_mission_diagnostic_evaluate(
+                            model, full_mission_x, full_mission_y, full_mission_missions,
+                            args.batch_size, device, full_mission_metadata,
+                        )
+                    for method, predictions in (
+                        ("Source only", full_mission_source_predictions),
+                        ("Bian MDA", full_mission_adapted_predictions),
+                    ):
+                        chunk_rows = [
+                            {
+                                "framework": "bian_2021",
+                                "method": method,
+                                "repeat": repeat + 1,
+                                "seed": seed,
+                                "cell_id": cell,
+                                "condition": condition,
+                                "split": "full_mission",
+                                "evaluation_scope": "full_mission_diagnostic",
+                                **record,
+                            }
+                            for record in predictions
+                        ]
+                        _write_prediction_chunk(
+                            full_mission_writer, chunk_rows, schema=FULL_MISSION_DIAGNOSTIC_SCHEMA
+                        )
+
                 runs.append(
                     {
                         "repeat": repeat + 1,
@@ -1185,6 +1495,7 @@ def main():
                     f"MDA={adapted['overall_rmse_percent']:.3f}%"
                 )
         test_predictions_completed = True
+        full_mission_completed = True
     finally:
         # Always close the writer, even on failure, so the temp file has a
         # valid parquet footer and can be opened for inspection. Only a
@@ -1197,6 +1508,15 @@ def main():
         test_predictions_writer.close()
         if test_predictions_completed:
             test_predictions_tmp_path.replace(test_predictions_final_path)
+        # Same atomic-replace-on-success-only pattern as
+        # test_predictions_writer above, for the diagnostic-only
+        # full-mission parquet -- a no-op when
+        # args.full_mission_diagnostic is False (full_mission_writer is
+        # None in that case).
+        if full_mission_writer is not None:
+            full_mission_writer.close()
+            if full_mission_completed:
+                full_mission_tmp_path.replace(full_mission_final_path)
 
     table = pd.DataFrame(rows)
     table.to_csv(args.output_root / "metrics.csv", index=False)
@@ -1225,6 +1545,28 @@ def main():
         .reset_index()
     )
     summary.to_csv(args.output_root / "summary.csv", index=False)
+
+    # Diagnostic-only: RQ3/RQ4 phase-level summaries, built by reading back
+    # test_predictions_full_mission_diagnostic.parquet (never re-derived
+    # from live model state -- see both functions' own docstrings). A
+    # no-op when the diagnostic was disabled or produced zero rows (e.g.
+    # every test mission's raw parquet happened to have no take_off/
+    # cruise/landing rows), rather than writing an empty/missing pair of
+    # CSVs silently -- neither file is written in that case.
+    if full_mission_writer is not None and full_mission_final_path.is_file():
+        phase_metrics = _compute_phase_metrics_full_mission_diagnostic(full_mission_final_path)
+        if not phase_metrics.empty:
+            phase_metrics.to_csv(
+                args.output_root / "phase_metrics_full_mission_diagnostic.csv", index=False
+            )
+            phase_transfer_effects = _compute_phase_transfer_effects_full_mission_diagnostic(
+                phase_metrics
+            )
+            phase_transfer_effects.to_csv(
+                args.output_root / "phase_transfer_effects_full_mission_diagnostic.csv",
+                index=False,
+            )
+
     metadata = _build_run_metadata(args, runs)
     (args.output_root / "run.json").write_text(json.dumps(metadata, indent=2), encoding="utf-8")
     print(summary.to_string(index=False))
