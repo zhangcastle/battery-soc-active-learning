@@ -20,6 +20,7 @@ from battery_benchmark.benchmarks.cmu_diagnostics import load_raw_diagnostic_fie
 from scripts.benchmarks.run_backbone_transfer_cmu import (
     REPO_ROOT,
     _build_prediction_rows,
+    _check_resume_cmu_input_sha256,
     _evaluate,
     _loader,
     _predict_all,
@@ -58,6 +59,71 @@ def test_run_backbone_transfer_cmu_script_has_no_old_cmu_paths() -> None:
     assert 'dynamic_capacity_soc_development_v1"' not in text
     assert 'dynamic_capacity_soc_development_v1_extension4"' not in text
     assert "cmu_evtol_supervised_budget_manifest_v0_1.csv" not in text
+
+
+def test_parse_args_output_root_is_isolated_ns_relabel_v1(monkeypatch) -> None:
+    """Requirement #3: the backbone benchmark's default --output-root must
+    be a NEW, isolated directory (never the pre-relabel
+    '.../backbone_transfer') so a --resume against it can never pick up a
+    result produced from the old CMU data version, and the old results
+    directory is never read, written, or touched by this default."""
+    monkeypatch.setattr(sys, "argv", ["run_backbone_transfer_cmu.py"])
+    args = parse_args()
+    assert args.output_root.name == "backbone_transfer_ns_relabel_v1"
+
+
+def test_check_resume_cmu_input_sha256_allows_matching_hash(tmp_path) -> None:
+    """Requirement #4: resuming is allowed when the existing result's
+    cmu_input_sha256 matches the freshly-verified current hash."""
+    result_path = tmp_path / "5pct.json"
+    result_path.write_text('{"cmu_input_sha256": "abc123"}', encoding="utf-8")
+    _check_resume_cmu_input_sha256(result_path, "abc123")  # must not raise
+
+
+def test_check_resume_cmu_input_sha256_rejects_mismatch(tmp_path) -> None:
+    """Requirement #4: a hash mismatch (result from a different CMU data
+    version) must raise immediately, never silently skip/overwrite/delete."""
+    result_path = tmp_path / "5pct.json"
+    result_path.write_text('{"cmu_input_sha256": "old_hash"}', encoding="utf-8")
+    with pytest.raises(ValueError, match="cmu_input_sha256"):
+        _check_resume_cmu_input_sha256(result_path, "new_hash")
+
+
+def test_check_resume_cmu_input_sha256_rejects_missing_field(tmp_path) -> None:
+    """Requirement #4: an existing result with NO cmu_input_sha256 recorded
+    at all must also raise -- never treated as safely resumable."""
+    result_path = tmp_path / "5pct.json"
+    result_path.write_text('{"overall_mae_percent": 5.0}', encoding="utf-8")
+    with pytest.raises(ValueError, match="no cmu_input_sha256"):
+        _check_resume_cmu_input_sha256(result_path, "new_hash")
+
+
+def test_run_backbone_transfer_cmu_calls_resume_hash_check_before_skipping() -> None:
+    """The resume-safety check must actually be wired into main()'s
+    per-(cell, budget) resume-skip branch, not just exist as a standalone,
+    unused function."""
+    script_path = REPO_ROOT / "scripts/benchmarks/run_backbone_transfer_cmu.py"
+    text = script_path.read_text(encoding="utf-8")
+    assert "_check_resume_cmu_input_sha256(result_path, actual)" in text
+
+
+def test_backbone_notebook_result_root_is_isolated_ns_relabel_v1() -> None:
+    """Requirement #3: the notebook's RESULT_ROOT assignment must point at
+    the new, isolated 'backbone_transfer_ns_relabel_v1' directory -- an
+    OLD run's cell output elsewhere in this notebook may still print the
+    pre-relabel path (historical evidence, never edited), so this checks
+    the actual RESULT_ROOT source assignment specifically, not just any
+    occurrence of the string."""
+    notebook_path = REPO_ROOT / "notebooks/benchmarks/34_backbone_transfer_panasonic_to_cmu.ipynb"
+    text = notebook_path.read_text(encoding="utf-8")
+    assert (
+        "RESULT_ROOT = Path(PATHS['output_root']) / "
+        "'benchmarks/panasonic_to_cmu_evtol/backbone_transfer_ns_relabel_v1'"
+    ) in text
+    # The exact old (pre-relabel) source literal, terminated by the closing
+    # quote, must be gone -- a historical printed OUTPUT elsewhere in the
+    # notebook has no such trailing quote, so it can't false-positive here.
+    assert "'benchmarks/panasonic_to_cmu_evtol/backbone_transfer'" not in text
 
 
 def test_backbone_notebook_uses_ns_relabel_cmu_paths() -> None:

@@ -160,6 +160,38 @@ class _Timer:
         self.seconds = time.perf_counter() - self._start
 
 
+def _check_resume_cmu_input_sha256(result_path: Path, expected_sha256: str) -> None:
+    """Resume-safety check, run ONLY at the point where --resume is about to
+    skip re-running a (cell, method) because ``result_path`` already exists
+    -- never anywhere else, and never changes what a non-resumed run
+    trains/predicts/evaluates.
+
+    ``expected_sha256`` is this invocation's freshly-computed, already
+    manifest-verified CMU input hash for this cell. The existing result
+    JSON's own ``cmu_input_sha256`` must equal it exactly -- a missing
+    field (an old result predating hash tracking) or a mismatch (a result
+    produced from a different CMU data version, e.g. before the
+    _ns_relabel migration) means this on-disk result cannot be trusted to
+    represent the CURRENT data version, and must never be silently
+    resumed, overwritten, or deleted. Raises immediately instead."""
+    existing = json.loads(result_path.read_text(encoding="utf-8"))
+    existing_sha256 = existing.get("cmu_input_sha256")
+    if existing_sha256 is None:
+        raise ValueError(
+            f"{result_path}: existing result has no cmu_input_sha256 recorded -- "
+            "cannot verify it was produced from the current CMU data version; "
+            "refusing to --resume from it. Rerun without --resume, or use a "
+            "fresh --output-root."
+        )
+    if existing_sha256 != expected_sha256:
+        raise ValueError(
+            f"{result_path}: existing result's cmu_input_sha256={existing_sha256!r} "
+            f"does not match the current CMU data version's hash "
+            f"{expected_sha256!r} -- refusing to --resume from a different CMU "
+            "data version. Rerun without --resume, or use a fresh --output-root."
+        )
+
+
 def _cell_path(cell: str, base_root: Path, condition_root: Path) -> Path:
     root = base_root if cell in BASELINE_CELLS else condition_root
     return root / f"{cell}_dynamic_soc.parquet"
@@ -481,19 +513,27 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument(
         "--cmu-base-root", type=Path,
-        default=REPO_ROOT / "outputs/datasets/cmu_evtol/dynamic_capacity_soc_development_v1",
+        default=REPO_ROOT / "outputs/datasets/cmu_evtol/dynamic_capacity_soc_development_v1_ns_relabel",
     )
     parser.add_argument(
         "--cmu-condition-root", type=Path,
-        default=REPO_ROOT / "outputs/datasets/cmu_evtol/dynamic_capacity_soc_development_v1_extension4",
+        default=REPO_ROOT
+        / "outputs/datasets/cmu_evtol/dynamic_capacity_soc_development_v1_extension4_ns_relabel",
     )
     parser.add_argument(
         "--cmu-manifest", type=Path,
-        default=REPO_ROOT / "data/manifests/cmu_evtol/cmu_evtol_supervised_budget_manifest_v0_1.csv",
+        default=REPO_ROOT
+        / "data/manifests/cmu_evtol/cmu_evtol_supervised_budget_manifest_v0_1_ns_relabel.csv",
     )
     parser.add_argument(
         "--output-root", type=Path,
-        default=REPO_ROOT / "outputs/benchmarks/panasonic_to_cmu_evtol/sftnn_med_transfer",
+        # Isolated from the pre-_ns_relabel results (previously
+        # ".../sftnn_med_transfer") -- a --resume against this new
+        # directory can never accidentally pick up a result produced from
+        # the old CMU data version, since that directory is never written
+        # to or read from by this default. The old directory itself is
+        # left exactly as it was: never deleted, overwritten, or migrated.
+        default=REPO_ROOT / "outputs/benchmarks/panasonic_to_cmu_evtol/sftnn_med_transfer_ns_relabel_v1",
     )
     parser.add_argument("--cells", nargs="+", choices=CELLS, default=list(CELLS))
     parser.add_argument("--methods", nargs="+", choices=METHOD_CHOICES, default=["zero_shot", "med"])
@@ -706,6 +746,13 @@ def main() -> None:
             for method in args.methods:
                 result_path = cell_root / f"{method}.json"
                 if args.resume and result_path.is_file():
+                    # Resume safety: an existing result JSON must have been
+                    # produced from the SAME CMU data version this
+                    # invocation just hash-verified above (`actual`) --
+                    # never silently resumed from a stale/mismatched data
+                    # version. Raises immediately rather than skipping,
+                    # overwriting, or deleting anything.
+                    _check_resume_cmu_input_sha256(result_path, actual)
                     print(f"  {cell}/{method}: resumed from {result_path}")
                     continue
 
@@ -893,6 +940,15 @@ def main() -> None:
         ),
         "methods": list(args.methods),
         "cells": list(args.cells),
+        # Explicit record of which CMU dataset build and manifest this run
+        # read from, and which Ns -> mission-phase vocabulary its
+        # diagnostic fields use -- diagnostic/provenance-only, does not
+        # affect model, pseudo-labeling, training, or evaluation logic.
+        "cmu_base_root": str(args.cmu_base_root),
+        "cmu_condition_root": str(args.cmu_condition_root),
+        "cmu_manifest_path": str(args.cmu_manifest),
+        "cmu_manifest_sha256": sha256_file(args.cmu_manifest),
+        "phase_definition": "canonical Ns mapping: 4=take_off, 5=cruise, 6=landing",
         "seeds": list(args.seeds),
         "feature_order": list(FEATURES),
         "window": WINDOW,

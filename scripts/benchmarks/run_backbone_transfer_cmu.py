@@ -436,7 +436,13 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument(
         "--output-root", type=Path,
-        default=REPO_ROOT / "outputs/benchmarks/panasonic_to_cmu_evtol/backbone_transfer",
+        # Isolated from the pre-_ns_relabel results (previously
+        # ".../backbone_transfer") -- a --resume against this new directory
+        # can never accidentally pick up a result produced from the old CMU
+        # data version, since that directory is never written to or read
+        # from by this default. The old directory itself is left exactly as
+        # it was: never deleted, overwritten, or migrated.
+        default=REPO_ROOT / "outputs/benchmarks/panasonic_to_cmu_evtol/backbone_transfer_ns_relabel_v1",
     )
     parser.add_argument("--models", nargs="+", choices=MODEL_NAMES, default=list(MODEL_NAMES))
     parser.add_argument("--cells", nargs="+", choices=CELLS, default=list(CELLS))
@@ -460,6 +466,39 @@ def parse_args() -> argparse.Namespace:
         "result JSON rows are always written",
     )
     return parser.parse_args()
+
+
+def _check_resume_cmu_input_sha256(result_path: Path, expected_sha256: str) -> None:
+    """Resume-safety check, run ONLY at the point where --resume is about to
+    skip re-running a (cell, budget) because ``result_path`` already exists
+    -- never anywhere else, and never changes what a non-resumed run
+    trains/predicts/evaluates.
+
+    ``expected_sha256`` is this invocation's freshly-computed, already
+    manifest-verified CMU input hash for this cell (see the hash check just
+    above this function's call site). The existing result JSON's own
+    ``cmu_input_sha256`` must equal it exactly -- a missing field (an old
+    result predating hash tracking) or a mismatch (a result produced from a
+    different CMU data version, e.g. before the _ns_relabel migration) means
+    this on-disk result cannot be trusted to represent the CURRENT data
+    version, and must never be silently resumed, overwritten, or deleted.
+    Raises immediately instead."""
+    existing = json.loads(result_path.read_text(encoding="utf-8"))
+    existing_sha256 = existing.get("cmu_input_sha256")
+    if existing_sha256 is None:
+        raise ValueError(
+            f"{result_path}: existing result has no cmu_input_sha256 recorded -- "
+            "cannot verify it was produced from the current CMU data version; "
+            "refusing to --resume from it. Rerun without --resume, or use a "
+            "fresh --output-root."
+        )
+    if existing_sha256 != expected_sha256:
+        raise ValueError(
+            f"{result_path}: existing result's cmu_input_sha256={existing_sha256!r} "
+            f"does not match the current CMU data version's hash "
+            f"{expected_sha256!r} -- refusing to --resume from a different CMU "
+            "data version. Rerun without --resume, or use a fresh --output-root."
+        )
 
 
 def _save_timing(seed_root: Path, name: str, *, seconds: float | None, epochs: int | None, device: str) -> None:
@@ -716,28 +755,41 @@ def main() -> None:
 
             for cell in args.cells:
                 cell_root = seed_root / cell
-                path = None
+                # Hoisted out of the "only load if something isn't resumed"
+                # branch below (unlike `records`/`raw_diagnostic`, which stay
+                # lazy -- loading the full raw parquet into records is the
+                # expensive step --resume is meant to let a cell skip
+                # entirely): computing/verifying this cell's CMU input hash
+                # is cheap, and the resume-safety check just below needs a
+                # freshly-verified `actual` even when EVERY budget for this
+                # cell is already resumed and `records` is never touched.
+                path = _cell_path(cell, args.cmu_base_root, args.cmu_condition_root)
+                expected = set(
+                    manifest.loc[manifest["cell_id"] == cell, "source_artifact_sha256"].astype(str)
+                )
+                actual = sha256_file(path)
+                if expected != {actual}:
+                    raise ValueError(f"{cell}: CMU input hash does not match manifest")
                 records = None
-                actual = None
                 cell_data_load_seconds = None
                 raw_diagnostic = None
 
                 for budget in args.budgets:
                     result_path = cell_root / f"{budget}.json"
                     if args.resume and result_path.is_file():
+                        # Resume safety: an existing result JSON must have
+                        # been produced from the SAME CMU data version this
+                        # invocation just hash-verified above -- never
+                        # silently resumed from a stale/mismatched data
+                        # version. Raises immediately rather than skipping,
+                        # overwriting, or deleting anything.
+                        _check_resume_cmu_input_sha256(result_path, actual)
                         rows.append(json.loads(result_path.read_text(encoding="utf-8")))
                         print(f"  {cell}/{budget}: resumed from {result_path}")
                         continue
 
                     if records is None:
                         with _Timer(device) as data_timer:
-                            path = _cell_path(cell, args.cmu_base_root, args.cmu_condition_root)
-                            expected = set(
-                                manifest.loc[manifest["cell_id"] == cell, "source_artifact_sha256"].astype(str)
-                            )
-                            actual = sha256_file(path)
-                            if expected != {actual}:
-                                raise ValueError(f"{cell}: CMU input hash does not match manifest")
                             records = load_cmu_dynamic_soc_for_vidal([path], target_hz=1.0).records
                         cell_data_load_seconds = data_timer.seconds
                         raw_diagnostic = load_raw_diagnostic_fields(path)
