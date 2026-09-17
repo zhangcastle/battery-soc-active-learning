@@ -159,6 +159,30 @@ class _Timer:
         self.seconds = time.perf_counter() - self._start
 
 
+class _EpochTimer:
+    """Same CUDA-sync-on-enter/exit stopwatch as ``_Timer``, but used
+    per-epoch INSIDE ``_train``'s loop, where it matters that each timed
+    segment (training-only, and separately the validation diagnostic) gets
+    its own single synchronize() pair rather than sharing one straddling
+    both. Using two of these per epoch (one per segment) is still "one
+    sync pair per timed segment", never an extra redundant sync within
+    either segment."""
+
+    def __init__(self, device: torch.device) -> None:
+        self.device = device
+
+    def __enter__(self) -> "_EpochTimer":
+        if self.device.type == "cuda":
+            torch.cuda.synchronize()
+        self._start = time.perf_counter()
+        return self
+
+    def __exit__(self, *exc) -> None:
+        if self.device.type == "cuda":
+            torch.cuda.synchronize()
+        self.seconds = time.perf_counter() - self._start
+
+
 def _windows(
     parts: list[tuple[np.ndarray, np.ndarray, str]]
     | list[tuple[np.ndarray, np.ndarray, str, dict]],
@@ -342,39 +366,53 @@ def _train(
     ``validation_data`` defaults to ``None`` (source pretraining has no
     natural held-out split -- Section IV explicitly says not to fabricate
     one), in which case validation_evaluated is honestly False for every
-    epoch."""
+    epoch, and ``validation_runtime_seconds`` stays None (never 0.0 --
+    "not measured" and "measured as zero" must stay distinguishable).
+
+    ``runtime_seconds`` covers ONLY the training batch loop -- it is timed
+    with its own ``_EpochTimer`` (CUDA-synced on both ends) that starts
+    right before ``model.train()``/the batch loop and stops right after
+    the last ``optimizer.step()``, before the validation diagnostic (if
+    any) even begins. The validation diagnostic gets its OWN, separate
+    ``_EpochTimer`` and is recorded as ``validation_runtime_seconds`` --
+    the two never overlap and are never summed into one field, so
+    ``runtime_seconds`` alone is always a faithful training-only
+    wall-clock measurement, on both CPU and CUDA."""
     loader = _loader(x, y, batch_size, True)
     optimizer = torch.optim.Adam(model.parameters(), lr=lr)
     criterion = nn.MSELoss()
     history: list[dict] = []
     for epoch in range(epochs):
-        epoch_started = time.perf_counter()
-        model.train()
-        total = 0.0
-        for xb, yb in loader:
-            xb, yb = xb.to(device), yb.to(device)
-            optimizer.zero_grad(set_to_none=True)
-            loss = criterion(model(xb), yb)
-            loss.backward()
-            optimizer.step()
-            total += float(loss.detach()) * len(xb)
+        with _EpochTimer(device) as train_timer:
+            model.train()
+            total = 0.0
+            for xb, yb in loader:
+                xb, yb = xb.to(device), yb.to(device)
+                optimizer.zero_grad(set_to_none=True)
+                loss = criterion(model(xb), yb)
+                loss.backward()
+                optimizer.step()
+                total += float(loss.detach()) * len(xb)
         epoch_mse = total / len(x)
-        validation_mae = validation_rmse = None
+        validation_mae = validation_rmse = validation_runtime_seconds = None
         validation_evaluated = False
         if validation_data is not None:
             val_x, val_y = validation_data
-            validation_mae, validation_rmse = _validation_diagnostic_metrics(
-                model, val_x, val_y, batch_size, device
-            )
+            with _EpochTimer(device) as validation_timer:
+                validation_mae, validation_rmse = _validation_diagnostic_metrics(
+                    model, val_x, val_y, batch_size, device
+                )
+            validation_runtime_seconds = validation_timer.seconds
             validation_evaluated = True
         history.append(
             {
                 "epoch": epoch + 1,
                 "train_mse": epoch_mse,
                 "learning_rate": lr,
-                "runtime_seconds": time.perf_counter() - epoch_started,
+                "runtime_seconds": train_timer.seconds,
                 "validation_mae": validation_mae,
                 "validation_rmse": validation_rmse,
+                "validation_runtime_seconds": validation_runtime_seconds,
                 "validation_evaluated": validation_evaluated,
             }
         )
@@ -436,13 +474,16 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument(
         "--output-root", type=Path,
-        # Isolated from the pre-_ns_relabel results (previously
-        # ".../backbone_transfer") -- a --resume against this new directory
-        # can never accidentally pick up a result produced from the old CMU
-        # data version, since that directory is never written to or read
-        # from by this default. The old directory itself is left exactly as
-        # it was: never deleted, overwritten, or migrated.
-        default=REPO_ROOT / "outputs/benchmarks/panasonic_to_cmu_evtol/backbone_transfer_ns_relabel_v1",
+        # Isolated from BOTH the pre-_ns_relabel results (previously
+        # ".../backbone_transfer") AND from "_ns_relabel_v1" (which
+        # predates the training-only/validation-only runtime split,
+        # phase-level/cell-level transfer-effect summaries, and the
+        # stronger resume-sidecar checks below) -- a --resume against this
+        # new "_v2" directory can never accidentally pick up a result
+        # produced before these diagnostics existed, since v1 is never
+        # written to or read from by this default. v1 itself is left
+        # exactly as it was: never deleted, overwritten, or migrated.
+        default=REPO_ROOT / "outputs/benchmarks/panasonic_to_cmu_evtol/backbone_transfer_ns_relabel_v2",
     )
     parser.add_argument("--models", nargs="+", choices=MODEL_NAMES, default=list(MODEL_NAMES))
     parser.add_argument("--cells", nargs="+", choices=CELLS, default=list(CELLS))
@@ -498,6 +539,50 @@ def _check_resume_cmu_input_sha256(result_path: Path, expected_sha256: str) -> N
             f"does not match the current CMU data version's hash "
             f"{expected_sha256!r} -- refusing to --resume from a different CMU "
             "data version. Rerun without --resume, or use a fresh --output-root."
+        )
+
+
+def _check_resume_result_sidecars(
+    *, result_path: Path, cell_root: Path, seed_root: Path, budget: str
+) -> None:
+    """Resume-safety check, run at the SAME point as
+    ``_check_resume_cmu_input_sha256`` and in ADDITION to it: verifies the
+    sidecar files a complete result actually depends on are still present
+    on disk, never trusting a result JSON alone. A prior run could have
+    been interrupted after writing ``<budget>.json`` but before its
+    prediction/training-history sidecar finished, or (with
+    ``--no-save-checkpoints``) its source checkpoint may legitimately be
+    absent while its source training-history sidecar still exists (or vice
+    versa) -- in every such case, silently resuming would leave the
+    aggregated cell_metrics.csv/test_predictions.parquet/
+    training_history.csv looking complete while actually missing fields.
+    Raises ValueError immediately instead of skipping, overwriting, or
+    deleting anything."""
+    predictions_path = cell_root / f"{budget}_predictions.parquet"
+    if not predictions_path.is_file():
+        raise ValueError(
+            f"{result_path}: --resume would skip this row, but its "
+            f"prediction sidecar {predictions_path} is missing. Rerun "
+            "without --resume, or use a fresh --output-root."
+        )
+    if budget != "zero_shot":
+        history_path = cell_root / f"{budget}_training_history.csv"
+        if not history_path.is_file():
+            raise ValueError(
+                f"{result_path}: --resume would skip this row, but its "
+                f"fine-tuning training-history sidecar {history_path} is "
+                "missing. Rerun without --resume, or use a fresh "
+                "--output-root."
+            )
+    source_history = seed_root / "source_training_history.csv"
+    source_checkpoint = seed_root / "source.pt"
+    if not source_history.is_file() and not source_checkpoint.is_file():
+        raise ValueError(
+            f"{result_path}: --resume would skip this row, but neither "
+            f"the source-pretraining history {source_history} nor "
+            f"checkpoint {source_checkpoint} is present -- source "
+            "pretraining cannot be verified. Rerun without --resume, or "
+            "use a fresh --output-root."
         )
 
 
@@ -701,6 +786,165 @@ def _rebuild_cell_metrics(output_root: Path) -> pd.DataFrame:
     return table
 
 
+# Canonical Ns -> mission-phase vocabulary this benchmark's phase-level
+# summaries cover -- matches the canonical Ns mapping recorded in
+# run_metadata.json's "phase_definition" field. Rows whose mission_phase
+# is None (unmapped Ns) or any other phase are excluded from both phase-
+# level summaries below.
+PHASE_SUMMARY_PHASES = ("take_off", "cruise", "landing")
+
+
+def _compute_phase_metrics(predictions_path: Path) -> pd.DataFrame:
+    """Diagnostic-only summary, built by READING BACK the final, top-level
+    (post-merge) test_predictions.parquet -- never re-derived from live
+    model state, never a second evaluation set -- grouped by model/
+    cell_id/condition/budget/mission_phase and restricted to
+    PHASE_SUMMARY_PHASES (take_off/cruise/landing), covering all three
+    backbones and every budget together. Every value here is directly,
+    exactly recomputable from that same parquet's soc_reference/
+    soc_prediction/mission_phase columns."""
+    frame = pd.read_parquet(
+        predictions_path,
+        columns=[
+            "model", "cell_id", "condition", "budget", "mission_phase",
+            "mission_cycle_id", "soc_reference", "soc_prediction",
+        ],
+    )
+    frame = frame.loc[frame["mission_phase"].isin(PHASE_SUMMARY_PHASES)].copy()
+    frame["signed_error"] = frame["soc_prediction"] - frame["soc_reference"]
+    frame["absolute_error"] = frame["signed_error"].abs()
+    grouped = frame.groupby(
+        ["model", "cell_id", "condition", "budget", "mission_phase"], sort=False, as_index=False
+    )
+    summary = grouped.agg(
+        n_points=("soc_reference", "size"),
+        n_missions=("mission_cycle_id", "nunique"),
+        mae_percent=("absolute_error", lambda s: float(s.mean()) * 100),
+        rmse_percent=("signed_error", lambda s: float(np.sqrt((s**2).mean())) * 100),
+        mean_signed_error_percent=("signed_error", lambda s: float(s.mean()) * 100),
+    )
+    return summary
+
+
+def _compute_phase_transfer_effects(phase_metrics: pd.DataFrame) -> pd.DataFrame:
+    """Diagnostic-only: pairs each (model, cell_id, condition,
+    mission_phase)'s ``zero_shot`` row from ``phase_metrics`` (see
+    ``_compute_phase_metrics``) against every OTHER budget's row -- one
+    merge per non-zero_shot budget -- and reports the adapted-minus-
+    zero_shot deltas plus a boolean negative-transfer flag for both MAE
+    and RMSE. ``reference_budget`` is always "zero_shot". delta = adapted
+    - zero_shot, so a POSITIVE delta means this budget's fine-tuning made
+    this (model, cell, condition, mission_phase) worse than zero-shot,
+    i.e. negative transfer. A group missing either budget is dropped
+    (inner merge) rather than producing a bogus delta."""
+    columns = [
+        "model", "cell_id", "condition", "budget", "reference_budget", "mission_phase",
+        "zero_shot_mae_percent", "adapted_mae_percent", "delta_mae_percent",
+        "zero_shot_rmse_percent", "adapted_rmse_percent", "delta_rmse_percent",
+        "negative_transfer_mae", "negative_transfer_rmse",
+    ]
+    if phase_metrics.empty:
+        return pd.DataFrame(columns=columns)
+    zero_shot = phase_metrics.loc[phase_metrics["budget"] == "zero_shot"]
+    frames = []
+    for budget in phase_metrics["budget"].unique():
+        if budget == "zero_shot":
+            continue
+        adapted = phase_metrics.loc[phase_metrics["budget"] == budget]
+        if zero_shot.empty or adapted.empty:
+            continue
+        merged = zero_shot.merge(
+            adapted,
+            on=["model", "cell_id", "condition", "mission_phase"],
+            suffixes=("_zero_shot", "_adapted"),
+            how="inner",
+        )
+        if merged.empty:
+            continue
+        merged["budget"] = budget
+        merged["reference_budget"] = "zero_shot"
+        merged["zero_shot_mae_percent"] = merged["mae_percent_zero_shot"]
+        merged["adapted_mae_percent"] = merged["mae_percent_adapted"]
+        merged["delta_mae_percent"] = (
+            merged["mae_percent_adapted"] - merged["mae_percent_zero_shot"]
+        )
+        merged["zero_shot_rmse_percent"] = merged["rmse_percent_zero_shot"]
+        merged["adapted_rmse_percent"] = merged["rmse_percent_adapted"]
+        merged["delta_rmse_percent"] = (
+            merged["rmse_percent_adapted"] - merged["rmse_percent_zero_shot"]
+        )
+        merged["negative_transfer_mae"] = merged["delta_mae_percent"] > 0
+        merged["negative_transfer_rmse"] = merged["delta_rmse_percent"] > 0
+        frames.append(merged[columns])
+    if not frames:
+        return pd.DataFrame(columns=columns)
+    return pd.concat(frames, ignore_index=True)
+
+
+def _compute_cell_transfer_effects(cell_metrics: pd.DataFrame) -> pd.DataFrame:
+    """Diagnostic-only, OVERALL-level (never phase-restricted) counterpart
+    to ``_compute_phase_transfer_effects``: pairs each (model, cell_id)'s
+    ``zero_shot`` row from ``cell_metrics.csv``'s own
+    ``overall_mae_percent``/``overall_rmse_percent`` against every other
+    budget's row for that same (model, cell_id), and reports the
+    adapted-minus-zero_shot deltas plus a negative-transfer flag. This is
+    what requirement #4's "cell-level negative-transfer summary" (never
+    just a model-wide average) reads directly. delta = adapted -
+    zero_shot; delta > 0 means negative transfer for that (model, cell,
+    budget)."""
+    columns = [
+        "model", "cell_id", "condition", "budget", "reference_budget", "seed",
+        "zero_shot_mae_percent", "adapted_mae_percent", "delta_mae_percent",
+        "zero_shot_rmse_percent", "adapted_rmse_percent", "delta_rmse_percent",
+        "negative_transfer_mae", "negative_transfer_rmse",
+    ]
+    if cell_metrics.empty or "budget" not in cell_metrics.columns:
+        return pd.DataFrame(columns=columns)
+    cell_metrics = cell_metrics.copy()
+    if "condition" not in cell_metrics.columns:
+        cell_metrics["condition"] = cell_metrics["cell_id"].map(
+            lambda cell: CELL_CONDITIONS.get(cell, cell)
+        )
+    zero_shot = cell_metrics.loc[cell_metrics["budget"] == "zero_shot"]
+    frames = []
+    for budget in cell_metrics["budget"].unique():
+        if budget == "zero_shot":
+            continue
+        adapted = cell_metrics.loc[cell_metrics["budget"] == budget]
+        if zero_shot.empty or adapted.empty:
+            continue
+        # Join on (model, cell_id, seed) -- never just (model, cell_id) --
+        # so a multi-seed run never pairs one seed's zero_shot row against
+        # a DIFFERENT seed's adapted row.
+        merged = zero_shot.merge(
+            adapted,
+            on=["model", "cell_id", "seed"],
+            suffixes=("_zero_shot", "_adapted"),
+            how="inner",
+        )
+        if merged.empty:
+            continue
+        merged["budget"] = budget
+        merged["reference_budget"] = "zero_shot"
+        merged["condition"] = merged["condition_zero_shot"]
+        merged["zero_shot_mae_percent"] = merged["overall_mae_percent_zero_shot"]
+        merged["adapted_mae_percent"] = merged["overall_mae_percent_adapted"]
+        merged["delta_mae_percent"] = (
+            merged["overall_mae_percent_adapted"] - merged["overall_mae_percent_zero_shot"]
+        )
+        merged["zero_shot_rmse_percent"] = merged["overall_rmse_percent_zero_shot"]
+        merged["adapted_rmse_percent"] = merged["overall_rmse_percent_adapted"]
+        merged["delta_rmse_percent"] = (
+            merged["overall_rmse_percent_adapted"] - merged["overall_rmse_percent_zero_shot"]
+        )
+        merged["negative_transfer_mae"] = merged["delta_mae_percent"] > 0
+        merged["negative_transfer_rmse"] = merged["delta_rmse_percent"] > 0
+        frames.append(merged[columns])
+    if not frames:
+        return pd.DataFrame(columns=columns)
+    return pd.concat(frames, ignore_index=True)
+
+
 def main() -> None:
     run_start = time.perf_counter()
     args = parse_args()
@@ -784,6 +1028,10 @@ def main() -> None:
                         # version. Raises immediately rather than skipping,
                         # overwriting, or deleting anything.
                         _check_resume_cmu_input_sha256(result_path, actual)
+                        _check_resume_result_sidecars(
+                            result_path=result_path, cell_root=cell_root,
+                            seed_root=seed_root, budget=budget,
+                        )
                         rows.append(json.loads(result_path.read_text(encoding="utf-8")))
                         print(f"  {cell}/{budget}: resumed from {result_path}")
                         continue
@@ -922,6 +1170,31 @@ def main() -> None:
     table = _rebuild_cell_metrics(args.output_root)
     _rebuild_test_predictions(args.output_root)
     _rebuild_training_history(args.output_root)
+
+    # Diagnostic-only phase-level and cell-level transfer-effect summaries,
+    # read back from the just-rebuilt top-level test_predictions.parquet/
+    # cell_metrics.csv (never from in-memory rows, never a second
+    # evaluation set) so they always reflect every model/cell/budget on
+    # disk, including any --resume'd ones. Skipped (never writing empty/
+    # placeholder files) if the underlying data doesn't exist yet or has
+    # no take_off/cruise/landing rows (phase-level) / no non-zero_shot
+    # budget yet (cell-level).
+    predictions_path = args.output_root / "test_predictions.parquet"
+    if predictions_path.is_file():
+        phase_metrics = _compute_phase_metrics(predictions_path)
+        if not phase_metrics.empty:
+            phase_metrics.to_csv(args.output_root / "phase_metrics.csv", index=False)
+            phase_transfer_effects = _compute_phase_transfer_effects(phase_metrics)
+            phase_transfer_effects.to_csv(
+                args.output_root / "phase_transfer_effects.csv", index=False
+            )
+    if not table.empty:
+        cell_transfer_effects = _compute_cell_transfer_effects(table)
+        if not cell_transfer_effects.empty:
+            cell_transfer_effects.to_csv(
+                args.output_root / "cell_transfer_effects.csv", index=False
+            )
+
     metadata = {
         "benchmark": "backbone_transfer_panasonic_25c_to_cmu_core7",
         "note": (
@@ -984,7 +1257,11 @@ def main() -> None:
             "read-only, no_grad forward pass. Never used for early stopping "
             "or checkpoint selection -- every budget always fine-tunes for "
             "the full --transfer-epochs from the frozen source checkpoint, "
-            "unchanged by this diagnostic."
+            "unchanged by this diagnostic. training_history.csv's "
+            "runtime_seconds covers ONLY the training batch loop; the "
+            "validation probe's own wall-clock is recorded separately as "
+            "validation_runtime_seconds (None when validation wasn't run) "
+            "-- the two are never summed together."
         ),
         "target_soc_labels_used_for_training": True,
         "target_soc_labels_used_for_adaptation": True,

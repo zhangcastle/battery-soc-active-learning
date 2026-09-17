@@ -8,6 +8,7 @@ recomputing error from test_predictions matching _evaluate's own metric.
 
 from __future__ import annotations
 
+import json
 import sys
 
 import numpy as np
@@ -18,9 +19,14 @@ from torch import nn
 
 from battery_benchmark.benchmarks.cmu_diagnostics import load_raw_diagnostic_fields
 from scripts.benchmarks.run_backbone_transfer_cmu import (
+    PHASE_SUMMARY_PHASES,
     REPO_ROOT,
     _build_prediction_rows,
     _check_resume_cmu_input_sha256,
+    _check_resume_result_sidecars,
+    _compute_cell_transfer_effects,
+    _compute_phase_metrics,
+    _compute_phase_transfer_effects,
     _evaluate,
     _loader,
     _predict_all,
@@ -61,15 +67,27 @@ def test_run_backbone_transfer_cmu_script_has_no_old_cmu_paths() -> None:
     assert "cmu_evtol_supervised_budget_manifest_v0_1.csv" not in text
 
 
-def test_parse_args_output_root_is_isolated_ns_relabel_v1(monkeypatch) -> None:
-    """Requirement #3: the backbone benchmark's default --output-root must
-    be a NEW, isolated directory (never the pre-relabel
-    '.../backbone_transfer') so a --resume against it can never pick up a
-    result produced from the old CMU data version, and the old results
-    directory is never read, written, or touched by this default."""
+def test_parse_args_output_root_is_isolated_ns_relabel_v2(monkeypatch) -> None:
+    """The backbone benchmark's default --output-root must be the NEW
+    "_v2" directory (never the pre-relabel '.../backbone_transfer', and
+    never the pre-diagnostics '..._ns_relabel_v1', which predates the
+    training-only/validation-only runtime split and the phase-level/
+    cell-level transfer-effect summaries) so a --resume against it can
+    never pick up a result produced before these diagnostics existed. v1
+    itself is never read, written, or touched by this default."""
     monkeypatch.setattr(sys, "argv", ["run_backbone_transfer_cmu.py"])
     args = parse_args()
-    assert args.output_root.name == "backbone_transfer_ns_relabel_v1"
+    assert args.output_root.name == "backbone_transfer_ns_relabel_v2"
+
+
+def test_run_backbone_transfer_cmu_script_never_reads_or_writes_v1_output_root() -> None:
+    """The literal v1 output-root directory name must not appear anywhere
+    in the running script as a live default/path -- only as the
+    isolation-rationale comment explaining why v2 exists."""
+    script_path = REPO_ROOT / "scripts/benchmarks/run_backbone_transfer_cmu.py"
+    text = script_path.read_text(encoding="utf-8")
+    assert 'backbone_transfer_ns_relabel_v2"' in text
+    assert 'default=REPO_ROOT / "outputs/benchmarks/panasonic_to_cmu_evtol/backbone_transfer_ns_relabel_v1"' not in text
 
 
 def test_check_resume_cmu_input_sha256_allows_matching_hash(tmp_path) -> None:
@@ -107,23 +125,39 @@ def test_run_backbone_transfer_cmu_calls_resume_hash_check_before_skipping() -> 
     assert "_check_resume_cmu_input_sha256(result_path, actual)" in text
 
 
-def test_backbone_notebook_result_root_is_isolated_ns_relabel_v1() -> None:
-    """Requirement #3: the notebook's RESULT_ROOT assignment must point at
-    the new, isolated 'backbone_transfer_ns_relabel_v1' directory -- an
-    OLD run's cell output elsewhere in this notebook may still print the
-    pre-relabel path (historical evidence, never edited), so this checks
-    the actual RESULT_ROOT source assignment specifically, not just any
-    occurrence of the string."""
+def test_backbone_notebook_result_root_is_isolated_ns_relabel_v2() -> None:
+    """The notebook's RESULT_ROOT assignment must point at the NEW,
+    isolated 'backbone_transfer_ns_relabel_v2' directory (never v1, which
+    predates the training-only/validation-only runtime split and the
+    phase-level/cell-level transfer-effect summaries). Requirement #3 also
+    asks for all old outputs/execution_count to be cleared, so there is no
+    longer any historical printed OUTPUT elsewhere in this notebook that
+    could still show the pre-relabel or v1 path -- this checks the actual
+    RESULT_ROOT source assignment."""
     notebook_path = REPO_ROOT / "notebooks/benchmarks/34_backbone_transfer_panasonic_to_cmu.ipynb"
     text = notebook_path.read_text(encoding="utf-8")
     assert (
         "RESULT_ROOT = Path(PATHS['output_root']) / "
-        "'benchmarks/panasonic_to_cmu_evtol/backbone_transfer_ns_relabel_v1'"
+        "'benchmarks/panasonic_to_cmu_evtol/backbone_transfer_ns_relabel_v2'"
     ) in text
-    # The exact old (pre-relabel) source literal, terminated by the closing
-    # quote, must be gone -- a historical printed OUTPUT elsewhere in the
-    # notebook has no such trailing quote, so it can't false-positive here.
     assert "'benchmarks/panasonic_to_cmu_evtol/backbone_transfer'" not in text
+    assert "'benchmarks/panasonic_to_cmu_evtol/backbone_transfer_ns_relabel_v1'" not in text
+
+
+def test_backbone_notebook_has_no_stale_outputs_or_execution_counts() -> None:
+    """Requirement #3: every old output/execution_count must be cleared --
+    this notebook is being substantially restructured (new diagnostics
+    cells, new RESULT_ROOT), so stale outputs from a run against the old
+    output root would be actively misleading if left in place."""
+    import json as _json
+
+    notebook_path = REPO_ROOT / "notebooks/benchmarks/34_backbone_transfer_panasonic_to_cmu.ipynb"
+    notebook = _json.loads(notebook_path.read_text(encoding="utf-8"))
+    for cell in notebook["cells"]:
+        if cell["cell_type"] != "code":
+            continue
+        assert cell.get("execution_count") is None
+        assert cell.get("outputs") == []
 
 
 def test_backbone_notebook_uses_ns_relabel_cmu_paths() -> None:
@@ -468,3 +502,251 @@ def test_build_prediction_rows_multi_mission_mission_id_and_window_index_alignme
     assert [row["source_row_right"] for row in rows] == list(range(9))
     assert [row["soc_reference"] for row in rows] == pytest.approx(soc_reference.tolist())
     assert [row["mission_phase"] for row in rows] == ["take_off", "cruise", "landing"] * 3
+
+
+def test_train_runtime_seconds_excludes_validation_and_is_recorded_separately():
+    """Requirement #1: runtime_seconds must cover ONLY the training batch
+    loop; the validation diagnostic's own wall-clock must be recorded
+    separately as validation_runtime_seconds (positive when validation
+    ran, None when it didn't) -- the two must never be summed together,
+    and a slower validation probe must never inflate runtime_seconds."""
+    torch.manual_seed(0)
+    model = _LinearProbe(3)
+    x = np.random.default_rng(10).normal(size=(4, 10, 3)).astype(np.float32)
+    y = np.random.default_rng(11).uniform(0, 1, size=(4, 10)).astype(np.float32)
+    val_x = np.random.default_rng(12).normal(size=(2, 10, 3)).astype(np.float32)
+    val_y = np.random.default_rng(13).uniform(0, 1, size=(2, 10)).astype(np.float32)
+
+    history_no_val = _train(
+        model, x, y, epochs=2, batch_size=4, lr=1e-3, device=torch.device("cpu"), label="test",
+    )
+    for row in history_no_val:
+        assert row["runtime_seconds"] >= 0
+        assert row["validation_runtime_seconds"] is None
+        assert row["validation_evaluated"] is False
+
+    torch.manual_seed(0)
+    model2 = _LinearProbe(3)
+    history_with_val = _train(
+        model2, x, y, epochs=2, batch_size=4, lr=1e-3, device=torch.device("cpu"),
+        label="test", validation_data=(val_x, val_y),
+    )
+    for row in history_with_val:
+        assert row["runtime_seconds"] >= 0
+        assert row["validation_runtime_seconds"] >= 0
+        assert row["validation_evaluated"] is True
+
+
+def test_check_resume_result_sidecars_rejects_missing_predictions(tmp_path):
+    cell_root = tmp_path / "VAH01"
+    seed_root = tmp_path
+    cell_root.mkdir()
+    result_path = cell_root / "zero_shot.json"
+    result_path.write_text(json.dumps({}), encoding="utf-8")
+    with pytest.raises(ValueError, match="prediction sidecar"):
+        _check_resume_result_sidecars(
+            result_path=result_path, cell_root=cell_root, seed_root=seed_root, budget="zero_shot",
+        )
+
+
+def test_check_resume_result_sidecars_rejects_missing_fine_tuning_history(tmp_path):
+    cell_root = tmp_path / "VAH01"
+    seed_root = tmp_path
+    cell_root.mkdir()
+    (cell_root / "5pct_predictions.parquet").write_text("stub", encoding="utf-8")
+    result_path = cell_root / "5pct.json"
+    result_path.write_text(json.dumps({}), encoding="utf-8")
+    with pytest.raises(ValueError, match="training-history sidecar"):
+        _check_resume_result_sidecars(
+            result_path=result_path, cell_root=cell_root, seed_root=seed_root, budget="5pct",
+        )
+
+
+def test_check_resume_result_sidecars_rejects_missing_source_pretrain_evidence(tmp_path):
+    cell_root = tmp_path / "VAH01"
+    seed_root = tmp_path
+    cell_root.mkdir()
+    (cell_root / "5pct_predictions.parquet").write_text("stub", encoding="utf-8")
+    (cell_root / "5pct_training_history.csv").write_text("stub", encoding="utf-8")
+    result_path = cell_root / "5pct.json"
+    result_path.write_text(json.dumps({}), encoding="utf-8")
+    with pytest.raises(ValueError, match="source-pretraining"):
+        _check_resume_result_sidecars(
+            result_path=result_path, cell_root=cell_root, seed_root=seed_root, budget="5pct",
+        )
+
+
+def test_check_resume_result_sidecars_accepts_complete_rows(tmp_path):
+    cell_root = tmp_path / "VAH01"
+    seed_root = tmp_path
+    cell_root.mkdir()
+    (seed_root / "source_training_history.csv").write_text("stub", encoding="utf-8")
+
+    (cell_root / "zero_shot_predictions.parquet").write_text("stub", encoding="utf-8")
+    zero_shot_result = cell_root / "zero_shot.json"
+    zero_shot_result.write_text(json.dumps({}), encoding="utf-8")
+    _check_resume_result_sidecars(
+        result_path=zero_shot_result, cell_root=cell_root, seed_root=seed_root, budget="zero_shot",
+    )  # zero_shot needs no training-history sidecar (never fine-tunes)
+
+    (cell_root / "5pct_predictions.parquet").write_text("stub", encoding="utf-8")
+    (cell_root / "5pct_training_history.csv").write_text("stub", encoding="utf-8")
+    result_path = cell_root / "5pct.json"
+    result_path.write_text(json.dumps({}), encoding="utf-8")
+    _check_resume_result_sidecars(
+        result_path=result_path, cell_root=cell_root, seed_root=seed_root, budget="5pct",
+    )  # must not raise
+
+
+def test_run_backbone_transfer_cmu_calls_resume_sidecar_check_before_skipping() -> None:
+    """The new sidecar-existence resume check must actually be wired into
+    main()'s per-(cell, budget) resume-skip branch, alongside (never
+    instead of) the existing cmu_input_sha256 check."""
+    script_path = REPO_ROOT / "scripts/benchmarks/run_backbone_transfer_cmu.py"
+    text = script_path.read_text(encoding="utf-8")
+    assert "_check_resume_cmu_input_sha256(result_path, actual)" in text
+    assert "_check_resume_result_sidecars(" in text
+
+
+def _write_test_predictions_parquet(path, rows):
+    pd.DataFrame(rows).to_parquet(path)
+
+
+def test_compute_phase_metrics_restricted_to_three_phases_and_recomputable(tmp_path):
+    """Requirement #2: phase_metrics.csv must be restricted to
+    take_off/cruise/landing, cover all three backbones and every budget
+    together, and every value must be EXACTLY recomputable from
+    test_predictions.parquet's own soc_reference/soc_prediction/
+    mission_phase columns."""
+    rng = np.random.default_rng(0)
+    rows = []
+    for phase in ("take_off", "cruise", "landing", "unmapped", None):
+        for i in range(5):
+            rows.append(
+                {
+                    "model": "cnn_lstm", "cell_id": "VAH01", "condition": "baseline protocol",
+                    "budget": "zero_shot", "mission_cycle_id": f"m{i}", "mission_phase": phase,
+                    "soc_reference": float(rng.uniform(0, 1)),
+                    "soc_prediction": float(rng.uniform(0, 1)),
+                }
+            )
+    path = tmp_path / "test_predictions.parquet"
+    _write_test_predictions_parquet(path, rows)
+
+    phase_metrics = _compute_phase_metrics(path)
+    assert set(phase_metrics["mission_phase"]) == set(PHASE_SUMMARY_PHASES)
+    assert PHASE_SUMMARY_PHASES == ("take_off", "cruise", "landing")
+
+    raw = pd.read_parquet(path)
+    for phase in PHASE_SUMMARY_PHASES:
+        subset = raw.loc[raw["mission_phase"] == phase]
+        expected_mae = float((subset["soc_prediction"] - subset["soc_reference"]).abs().mean() * 100)
+        expected_rmse = float(
+            np.sqrt(((subset["soc_prediction"] - subset["soc_reference"]) ** 2).mean()) * 100
+        )
+        row = phase_metrics.loc[phase_metrics["mission_phase"] == phase].iloc[0]
+        assert row["n_points"] == len(subset)
+        assert np.isclose(row["mae_percent"], expected_mae)
+        assert np.isclose(row["rmse_percent"], expected_rmse)
+
+
+def test_compute_phase_transfer_effects_delta_and_negative_transfer_flags():
+    """Requirement #2: delta = adapted - zero_shot, delta > 0 means
+    negative transfer; every non-zero_shot budget is compared against
+    zero_shot SEPARATELY (reference_budget column)."""
+    phase_metrics = pd.DataFrame(
+        [
+            {"model": "cnn_lstm", "cell_id": "VAH01", "condition": "c", "budget": "zero_shot", "mission_phase": "cruise",
+             "n_points": 10, "n_missions": 1, "mae_percent": 5.0, "rmse_percent": 6.0, "mean_signed_error_percent": 0.1},
+            {"model": "cnn_lstm", "cell_id": "VAH01", "condition": "c", "budget": "5pct", "mission_phase": "cruise",
+             "n_points": 10, "n_missions": 1, "mae_percent": 8.0, "rmse_percent": 9.0, "mean_signed_error_percent": 0.2},
+            {"model": "cnn_lstm", "cell_id": "VAH01", "condition": "c", "budget": "full", "mission_phase": "cruise",
+             "n_points": 10, "n_missions": 1, "mae_percent": 3.0, "rmse_percent": 4.0, "mean_signed_error_percent": 0.05},
+        ]
+    )
+    effects = _compute_phase_transfer_effects(phase_metrics)
+    assert set(effects["reference_budget"]) == {"zero_shot"}
+    assert set(effects["budget"]) == {"5pct", "full"}
+
+    pct5_row = effects.loc[effects["budget"] == "5pct"].iloc[0]
+    assert pct5_row["delta_mae_percent"] == pytest.approx(3.0)
+    assert bool(pct5_row["negative_transfer_mae"]) is True
+
+    full_row = effects.loc[effects["budget"] == "full"].iloc[0]
+    assert full_row["delta_mae_percent"] == pytest.approx(-2.0)
+    assert bool(full_row["negative_transfer_mae"]) is False
+
+
+def test_compute_cell_transfer_effects_is_overall_never_phase_restricted():
+    """Requirement #2: cell_transfer_effects.csv is the OVERALL-level
+    (never phase-restricted) delta per cell/budget vs zero_shot, computed
+    from cell_metrics.csv's own overall_mae_percent/overall_rmse_percent
+    -- distinct from the phase-level summaries above."""
+    cell_metrics = pd.DataFrame(
+        [
+            {"model": "tcn", "cell_id": "VAH01", "budget": "zero_shot", "seed": 42,
+             "overall_mae_percent": 10.0, "overall_rmse_percent": 12.0},
+            {"model": "tcn", "cell_id": "VAH01", "budget": "1pct", "seed": 42,
+             "overall_mae_percent": 15.0, "overall_rmse_percent": 18.0},
+            {"model": "tcn", "cell_id": "VAH17", "budget": "zero_shot", "seed": 42,
+             "overall_mae_percent": 9.0, "overall_rmse_percent": 11.0},
+            {"model": "tcn", "cell_id": "VAH17", "budget": "1pct", "seed": 42,
+             "overall_mae_percent": 7.0, "overall_rmse_percent": 8.0},
+        ]
+    )
+    effects = _compute_cell_transfer_effects(cell_metrics)
+    assert len(effects) == 2
+    vah01 = effects.loc[effects["cell_id"] == "VAH01"].iloc[0]
+    assert vah01["delta_mae_percent"] == pytest.approx(5.0)
+    assert bool(vah01["negative_transfer_mae"]) is True
+    vah17 = effects.loc[effects["cell_id"] == "VAH17"].iloc[0]
+    assert vah17["delta_mae_percent"] == pytest.approx(-2.0)
+    assert bool(vah17["negative_transfer_mae"]) is False
+
+
+def test_compute_cell_transfer_effects_never_mixes_seeds():
+    """Multi-seed cell_metrics.csv must join on (model, cell_id, seed) --
+    never pairing one seed's zero_shot row against a different seed's
+    adapted row."""
+    cell_metrics = pd.DataFrame(
+        [
+            {"model": "tcn", "cell_id": "VAH01", "budget": "zero_shot", "seed": 42,
+             "overall_mae_percent": 10.0, "overall_rmse_percent": 12.0},
+            {"model": "tcn", "cell_id": "VAH01", "budget": "zero_shot", "seed": 43,
+             "overall_mae_percent": 20.0, "overall_rmse_percent": 22.0},
+            {"model": "tcn", "cell_id": "VAH01", "budget": "1pct", "seed": 42,
+             "overall_mae_percent": 11.0, "overall_rmse_percent": 13.0},
+            {"model": "tcn", "cell_id": "VAH01", "budget": "1pct", "seed": 43,
+             "overall_mae_percent": 21.0, "overall_rmse_percent": 23.0},
+        ]
+    )
+    effects = _compute_cell_transfer_effects(cell_metrics)
+    assert len(effects) == 2
+    for seed, expected_delta in ((42, 1.0), (43, 1.0)):
+        row = effects.loc[effects["seed"] == seed].iloc[0]
+        assert row["delta_mae_percent"] == pytest.approx(expected_delta)
+
+
+def test_run_metadata_records_validation_runtime_split() -> None:
+    """Requirement #1: run_metadata.json's validation_protocol text must
+    explicitly say runtime_seconds excludes validation and that
+    validation_runtime_seconds is recorded separately."""
+    script_path = REPO_ROOT / "scripts/benchmarks/run_backbone_transfer_cmu.py"
+    text = script_path.read_text(encoding="utf-8")
+    assert "validation_runtime_seconds" in text
+    assert '"runtime_seconds": train_timer.seconds' in text
+
+
+def test_backbone_notebook_displays_new_diagnostic_sections() -> None:
+    """Requirement #3: the notebook must actually READ BACK and DISPLAY
+    cell/budget negative transfer, three-phase error and phase negative
+    transfer, train/validation curves, and train vs validation time."""
+    notebook_path = REPO_ROOT / "notebooks/benchmarks/34_backbone_transfer_panasonic_to_cmu.ipynb"
+    text = notebook_path.read_text(encoding="utf-8")
+    assert "cell_transfer_effects.csv" in text
+    assert "phase_metrics.csv" in text
+    assert "phase_transfer_effects.csv" in text
+    assert "negative_transfer_mae" in text and "negative_transfer_rmse" in text
+    assert "validation_mae" in text
+    assert "validation_runtime_seconds" in text
+    assert "runtime_seconds" in text
