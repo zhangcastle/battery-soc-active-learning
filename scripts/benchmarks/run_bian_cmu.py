@@ -28,6 +28,10 @@ for path in (REPO_ROOT, REPO_ROOT / "src"):
     if str(path) not in sys.path:
         sys.path.insert(0, str(path))
 
+from battery_benchmark.datasets.cmu_evtol.ns_phase_labeling_v1 import (
+    MISSION_FLIGHT_PHASE_ROLES,
+    NS_MISSION_PHASE_MAP,
+)
 from battery_benchmark.datasets.cmu_evtol.vidal_adapter import load_cmu_dynamic_soc_for_vidal
 from battery_benchmark.evaluation.metrics import compute_metrics
 from battery_benchmark.reproductions.bian_2021 import DTNN, adaptive_multiscale_mmd
@@ -84,7 +88,7 @@ TEST_PREDICTIONS_SCHEMA = pa.schema(
         ("absolute_error", pa.float64()),
         # Appended, not reordered into the block above, so every existing
         # column keeps its position -- see _load_raw_diagnostic_fields /
-        # BIAN_NS_MISSION_PHASE_MAP. ns_raw is the untouched tester-native
+        # NS_MISSION_PHASE_MAP. ns_raw is the untouched tester-native
         # Ns value; mission_phase is a derived, purely diagnostic label
         # computed from it (never the reverse -- ns_raw is never dropped
         # in favor of the label). Both nullable, same as the other
@@ -94,27 +98,22 @@ TEST_PREDICTIONS_SCHEMA = pa.schema(
     ]
 )
 
-# Ns -> mission-phase label used ONLY for this DTNN benchmark's diagnostic
-# mission_phase column. Deliberately a DIFFERENT mapping (different label
-# spellings, and an explicit "other_segment" for Ns=2) from
-# battery_benchmark.datasets.cmu_evtol.ns_phase_labeling_v1.NS_MISSION_PHASE_MAP
-# (which uses take_off/rest_1/rest_2 and leaves Ns 2/8 unmapped) -- that
-# module's mapping is a separate, independently-scoped full-raw-timeline
-# diagnostic for the dataset-build step, not to be silently unified with
-# this one. Any Ns value not present as a key here (including 8) maps to
-# None via .map(), never raises, never invents a label.
-BIAN_NS_MISSION_PHASE_MAP: dict[int, str] = {
-    0: "cc_charge",
-    1: "cv_charge",
-    2: "other_segment",
-    3: "pre_mission_rest",
-    4: "takeoff",
-    5: "cruise",
-    6: "landing",
-    7: "post_flight_rest",
-}
+# Ns -> mission-phase label for this DTNN benchmark's diagnostic
+# mission_phase column. This is the SAME canonical, protocol-level mapping
+# (imported above, not copied) that
+# battery_benchmark.datasets.cmu_evtol.ns_phase_labeling_v1 uses for its own
+# full-raw-timeline diagnostic: take_off/cruise/landing for Ns 4/5/6,
+# cc_charge/cv_charge/rest_2/rest_1 for Ns 0/1/3/7, and a real None for any
+# unmapped Ns (including 2 and 8) -- never a fabricated label. DTNN
+# previously defined its own, differently-spelled local copy of this map
+# (BIAN_NS_MISSION_PHASE_MAP: takeoff/other_segment/pre_mission_rest/
+# post_flight_rest); that local copy is retired in favor of directly reusing
+# the canonical module-level dict so "mission_phase" means exactly the same
+# thing everywhere it appears across the CMU eVTOL diagnostics.
 # Flight-phase SOC analysis (notebook/reporting) should focus on these three.
-BIAN_FLIGHT_MISSION_PHASES: tuple[str, ...] = ("takeoff", "cruise", "landing")
+# NS_MISSION_PHASE_MAP/MISSION_FLIGHT_PHASE_ROLES are used directly
+# (imported above), not aliased to a DTNN-local name, so a `grep` for the
+# canonical names finds every consumer, including this one.
 
 # Raw CMU parquet column name -> test_predictions.parquet output field name,
 # for the diagnostic fields joined onto each test timestep by
@@ -130,7 +129,7 @@ RAW_DIAGNOSTIC_SOURCE_COLUMNS = {
     "capacity_ah": "capacity_ah",
     "capacity_source": "capacity_source",
     "source_rpt_id": "source_rpt_id",
-    # Raw tester-native Ns, untouched -- see BIAN_NS_MISSION_PHASE_MAP and
+    # Raw tester-native Ns, untouched -- see NS_MISSION_PHASE_MAP and
     # _load_raw_diagnostic_fields (mission_phase is derived FROM this
     # column, after the rename below, not read from the raw parquet).
     "Ns": "ns_raw",
@@ -158,6 +157,51 @@ _DIAGNOSTIC_METADATA_CASTERS = {
 }
 
 
+def _check_ns_mission_phase_consistency(frame: pd.DataFrame, path: Path) -> None:
+    """Pre-run consistency check (diagnostic-only, read-only -- raises
+    before any test_predictions.parquet row is written for this cell,
+    never after): for every row whose raw ``ns_raw`` is 4/5/6, the derived
+    ``mission_phase`` must equal take_off/cruise/landing respectively (this
+    is tautologically true given a correct NS_MISSION_PHASE_MAP, but is
+    checked explicitly so a corrupted/edited map fails loudly rather than
+    silently mislabeling every downstream row). Separately, and more
+    substantively, wherever the INDEPENDENTLY-derived
+    ``development_phase_role`` (built by
+    ``development_pipeline_v0.enumerate_diagnostic_candidates`` from its own
+    source-row-range candidate detection, not from ``Ns`` directly) is one
+    of take_off/cruise/landing, it must agree with ``mission_phase`` for
+    that same row. A mismatch means the Ns-based labeling and the
+    candidate-detection-based labeling disagree about what a row is, which
+    would silently corrupt every phase-conditioned analysis downstream --
+    this raises immediately instead."""
+    expected_by_ns = {4: "take_off", 5: "cruise", 6: "landing"}
+    for ns_value, expected_phase in expected_by_ns.items():
+        mask = frame["ns_raw"] == ns_value
+        if not mask.any():
+            continue
+        bad = frame.loc[mask & (frame["mission_phase"] != expected_phase)]
+        if not bad.empty:
+            raise ValueError(
+                f"{path}: {len(bad)} row(s) with ns_raw={ns_value} have "
+                f"mission_phase != {expected_phase!r} (NS_MISSION_PHASE_MAP "
+                "may have been edited/corrupted)"
+            )
+
+    role_mask = frame["development_phase_role"].isin(MISSION_FLIGHT_PHASE_ROLES)
+    if role_mask.any():
+        mismatched = frame.loc[
+            role_mask & (frame["mission_phase"] != frame["development_phase_role"])
+        ]
+        if not mismatched.empty:
+            counts = mismatched["development_phase_role"].value_counts().to_dict()
+            raise ValueError(
+                f"{path}: {len(mismatched)} row(s) where development_phase_role "
+                f"disagrees with the Ns-derived mission_phase ({counts}) -- Ns-based "
+                "and candidate-detection-based flight-phase labeling have diverged "
+                "for this cell's raw parquet"
+            )
+
+
 def _load_raw_diagnostic_fields(path: Path) -> pd.DataFrame:
     """One per-cell read of the raw CMU parquet's diagnostic columns (plus
     source_row, the join key), read directly from ``path`` -- the same raw
@@ -167,17 +211,21 @@ def _load_raw_diagnostic_fields(path: Path) -> pd.DataFrame:
     RAW_DIAGNOSTIC_SOURCE_COLUMNS.
 
     ``mission_phase`` is then added as a purely derived column, computed
-    from the just-renamed ``ns_raw`` via ``BIAN_NS_MISSION_PHASE_MAP.get``
-    (``.map()``, vectorized): an unmapped Ns value (there are none besides
-    the 8 keys mapped here, but this never raises) becomes a real ``None``,
+    from the just-renamed ``ns_raw`` via the CANONICAL, directly-reused
+    ``NS_MISSION_PHASE_MAP.get`` (``.map()``, vectorized) -- an unmapped Ns
+    value (2, 8, or anything else outside the map) becomes a real ``None``,
     never a fabricated label. ``ns_raw`` itself is kept as-is alongside
     it -- the semantic label is additive, never a replacement for the raw
-    value."""
+    value. Before returning, ``_check_ns_mission_phase_consistency`` runs a
+    read-only cross-check between this Ns-derived label and the
+    independently-built ``development_phase_role`` column, raising
+    immediately on any disagreement."""
     frame = pd.read_parquet(path, columns=["source_row", *RAW_DIAGNOSTIC_SOURCE_COLUMNS])
     if not frame["source_row"].is_unique:
         raise ValueError(f"{path}: source_row must be unique for a diagnostic join")
     frame = frame.rename(columns=RAW_DIAGNOSTIC_SOURCE_COLUMNS)
-    frame["mission_phase"] = frame["ns_raw"].map(BIAN_NS_MISSION_PHASE_MAP)
+    frame["mission_phase"] = frame["ns_raw"].map(NS_MISSION_PHASE_MAP)
+    _check_ns_mission_phase_consistency(frame, path)
     return frame
 
 
@@ -880,19 +928,20 @@ def parse_args():
     parser.add_argument(
         "--cmu-base-root",
         type=Path,
-        default=REPO_ROOT / "outputs/datasets/cmu_evtol/dynamic_capacity_soc_development_v1",
+        default=REPO_ROOT
+        / "outputs/datasets/cmu_evtol/dynamic_capacity_soc_development_v1_ns_relabel",
     )
     parser.add_argument(
         "--cmu-condition-root",
         type=Path,
         default=REPO_ROOT
-        / "outputs/datasets/cmu_evtol/dynamic_capacity_soc_development_v1_extension4",
+        / "outputs/datasets/cmu_evtol/dynamic_capacity_soc_development_v1_extension4_ns_relabel",
     )
     parser.add_argument(
         "--cmu-manifest",
         type=Path,
         default=REPO_ROOT
-        / "data/manifests/cmu_evtol/cmu_evtol_supervised_budget_manifest_v0_1.csv",
+        / "data/manifests/cmu_evtol/cmu_evtol_supervised_budget_manifest_v0_1_ns_relabel.csv",
     )
     parser.add_argument(
         "--output-root", type=Path, default=REPO_ROOT / "outputs/benchmarks/bian_2021_cmu"

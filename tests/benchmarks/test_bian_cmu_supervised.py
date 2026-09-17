@@ -640,7 +640,7 @@ def _sample_prediction_chunk(*, repeat, seed, cell_id, method, n_records=3):
             "signed_error": 0.01,
             "absolute_error": 0.01,
             "ns_raw": i % 8,
-            "mission_phase": module.BIAN_NS_MISSION_PHASE_MAP.get(i % 8),
+            "mission_phase": module.NS_MISSION_PHASE_MAP.get(i % 8),
         }
         for i in range(n_records)
     ]
@@ -1207,22 +1207,42 @@ def test_load_raw_diagnostic_fields_rejects_duplicate_source_row(tmp_path) -> No
         module._load_raw_diagnostic_fields(path)
 
 
+def test_run_bian_cmu_reuses_canonical_ns_mission_phase_map_by_identity() -> None:
+    """This benchmark must directly reuse
+    battery_benchmark.datasets.cmu_evtol.ns_phase_labeling_v1's
+    NS_MISSION_PHASE_MAP/MISSION_FLIGHT_PHASE_ROLES -- not a copy, not a
+    re-typed local dict with different spellings. Checked by object
+    identity (``is``), which a copy (even a value-equal one) would fail."""
+
+    from battery_benchmark.datasets.cmu_evtol import ns_phase_labeling_v1
+
+    assert module.NS_MISSION_PHASE_MAP is ns_phase_labeling_v1.NS_MISSION_PHASE_MAP
+    assert module.MISSION_FLIGHT_PHASE_ROLES is ns_phase_labeling_v1.MISSION_FLIGHT_PHASE_ROLES
+    # DTNN's own previous, differently-spelled local copy must be gone.
+    assert not hasattr(module, "BIAN_NS_MISSION_PHASE_MAP")
+    assert not hasattr(module, "BIAN_FLIGHT_MISSION_PHASES")
+
+
 def test_load_raw_diagnostic_fields_derives_mission_phase_from_ns_raw_and_keeps_ns_raw(
     tmp_path,
 ) -> None:
     """Requirement #1: ``ns_raw`` must survive unchanged (the raw Ns value,
     not just the semantic label), and ``mission_phase`` must be derived
-    from it via BIAN_NS_MISSION_PHASE_MAP -- every one of the 8 mapped Ns
-    values (0-7) round-trips to its documented label, and an unmapped Ns
-    value (8, a real tester-native value that appears in the raw data but
-    has no entry in BIAN_NS_MISSION_PHASE_MAP) becomes a real ``None``,
-    never a fabricated label or a raised error."""
+    from it via the canonical NS_MISSION_PHASE_MAP -- every one of the 7
+    mapped Ns values (0,1,3,4,5,6,7) round-trips to its documented label,
+    and an unmapped Ns value (2 or 8, both real tester-native values with
+    no entry in NS_MISSION_PHASE_MAP) becomes a real ``None``, never a
+    fabricated label or a raised error."""
 
     path = tmp_path / "ns_mission_phase.parquet"
     ns_values = [0, 1, 2, 3, 4, 5, 6, 7, 8]
     pd.DataFrame(
         {
             "source_row": list(range(len(ns_values))),
+            # development_phase_role deliberately empty ("x", not one of
+            # take_off/cruise/landing) so the new consistency check has
+            # nothing to cross-validate against in this fixture -- that
+            # cross-check is exercised separately below.
             "development_phase_role": ["x"] * len(ns_values),
             "voltage_v": [3.6] * len(ns_values),
             "current_a": [-1.0] * len(ns_values),
@@ -1238,18 +1258,90 @@ def test_load_raw_diagnostic_fields_derives_mission_phase_from_ns_raw_and_keeps_
 
     assert frame["ns_raw"].tolist() == ns_values
     expected_phase = [
-        "cc_charge", "cv_charge", "other_segment", "pre_mission_rest",
-        "takeoff", "cruise", "landing", "post_flight_rest", None,
+        "cc_charge", "cv_charge", None, "rest_2",
+        "take_off", "cruise", "landing", "rest_1", None,
     ]
     actual_phase = [
         None if pd.isna(value) else value for value in frame["mission_phase"].tolist()
     ]
     assert actual_phase == expected_phase
-    # BIAN_FLIGHT_MISSION_PHASES names exactly the three flight-phase labels
+    # MISSION_FLIGHT_PHASE_ROLES names exactly the three flight-phase labels
     # the mapping produces for Ns 4/5/6.
-    assert module.BIAN_FLIGHT_MISSION_PHASES == ("takeoff", "cruise", "landing")
-    for ns_value, phase in zip((4, 5, 6), module.BIAN_FLIGHT_MISSION_PHASES):
-        assert module.BIAN_NS_MISSION_PHASE_MAP[ns_value] == phase
+    assert module.MISSION_FLIGHT_PHASE_ROLES == ("take_off", "cruise", "landing")
+    for ns_value, phase in zip((4, 5, 6), module.MISSION_FLIGHT_PHASE_ROLES):
+        assert module.NS_MISSION_PHASE_MAP[ns_value] == phase
+
+
+def test_load_raw_diagnostic_fields_ns_4_5_6_match_take_off_cruise_landing(tmp_path) -> None:
+    """Requirement #3/#5: for Ns=4/5/6 rows, mission_phase must equal
+    take_off/cruise/landing exactly, AND must agree with
+    development_phase_role when it is one of those three values -- the
+    pre-run consistency check must pass silently on genuinely consistent
+    data (the failure paths are covered by the two tests below)."""
+
+    path = tmp_path / "consistent.parquet"
+    ns_values = [4, 5, 6, 4, 5, 6]
+    roles = ["take_off", "cruise", "landing", "", "", ""]  # some rows outside a detected candidate
+    pd.DataFrame(
+        {
+            "source_row": list(range(len(ns_values))),
+            "development_phase_role": roles,
+            "voltage_v": [3.6] * len(ns_values),
+            "current_a": [-1.0] * len(ns_values),
+            "Temperature__C": [24.0] * len(ns_values),
+            "capacity_ah": [2.5] * len(ns_values),
+            "capacity_source": ["rpt"] * len(ns_values),
+            "source_rpt_id": ["R1"] * len(ns_values),
+            "Ns": ns_values,
+        }
+    ).to_parquet(path, index=False)
+
+    frame = module._load_raw_diagnostic_fields(path)  # must not raise
+    assert frame["mission_phase"].tolist() == ["take_off", "cruise", "landing"] * 2
+
+
+def test_ns_mission_phase_consistency_check_rejects_role_disagreement(tmp_path) -> None:
+    """Requirement #5: if development_phase_role says "cruise" for a row
+    whose Ns is 4 (so mission_phase is derived as take_off), the pre-run
+    consistency check must raise immediately, not silently write a
+    mismatched row into test_predictions.parquet."""
+
+    path = tmp_path / "inconsistent.parquet"
+    pd.DataFrame(
+        {
+            "source_row": [0],
+            "development_phase_role": ["cruise"],  # disagrees with Ns=4 -> take_off
+            "voltage_v": [3.6],
+            "current_a": [-1.0],
+            "Temperature__C": [24.0],
+            "capacity_ah": [2.5],
+            "capacity_source": ["rpt"],
+            "source_rpt_id": ["R1"],
+            "Ns": [4],
+        }
+    ).to_parquet(path, index=False)
+
+    with pytest.raises(ValueError, match="disagrees"):
+        module._load_raw_diagnostic_fields(path)
+
+
+def test_ns_mission_phase_consistency_check_rejects_corrupted_map(tmp_path) -> None:
+    """Requirement #5 (the tautological half): if NS_MISSION_PHASE_MAP were
+    ever edited so Ns=4 no longer maps to "take_off", the pre-run check
+    must catch it rather than silently mislabeling every row. Simulated
+    here by monkeypatching the map's already-`.map()`-applied output
+    column directly is not representative, so instead this calls the
+    checker function directly with a deliberately corrupted frame."""
+
+    frame = pd.DataFrame(
+        {
+            "ns_raw": [4],
+            "mission_phase": ["cruise"],  # should be "take_off" for ns_raw=4
+            "development_phase_role": [""],
+        }
+    )
+    with pytest.raises(ValueError, match="mission_phase"):
+        module._check_ns_mission_phase_consistency(frame, Path("fake.parquet"))
 
 
 def test_ns_raw_and_mission_phase_are_diagnostic_only_and_do_not_change_predictions() -> None:
@@ -1402,7 +1494,7 @@ def test_diagnostic_join_end_to_end_through_evaluate_with_missing_and_unmatched_
             "source_rpt_id": [None if r == null_field_row else f"R{r}" for r in present_rows],
             "ns_raw": [4 + (r % 3) for r in present_rows],
             "mission_phase": [
-                module.BIAN_NS_MISSION_PHASE_MAP.get(4 + (r % 3)) for r in present_rows
+                module.NS_MISSION_PHASE_MAP.get(4 + (r % 3)) for r in present_rows
             ],
         }
     )
