@@ -147,7 +147,7 @@ def test_join_and_ns_mission_phase_mapping_unknown_ns_is_null(tmp_path):
         mission_ids=np.array(["m1", "m1", "m1", "m1"], dtype=object),
         raw_diagnostic=raw_diagnostic,
     )
-    assert [row["mission_phase"] for row in rows] == ["takeoff", "cruise", "landing", None]
+    assert [row["mission_phase"] for row in rows] == ["take_off", "cruise", "landing", None]
     assert rows[-1]["ns_raw"] == 99
     assert rows[0]["voltage_v_raw"] == pytest.approx(3.0)
     assert np.isclose(rows[0]["signed_error"], 0.91 - 0.9)

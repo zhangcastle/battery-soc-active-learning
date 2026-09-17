@@ -27,6 +27,25 @@ from scripts.benchmarks.run_backbone_transfer_cmu import (
 )
 
 
+def test_cmu_diagnostics_reuses_canonical_ns_mission_phase_map_by_identity() -> None:
+    """The shared ``cmu_diagnostics`` helper (used by this backbone runner
+    via ``load_raw_diagnostic_fields``) must directly reuse
+    ``battery_benchmark.datasets.cmu_evtol.ns_phase_labeling_v1``'s
+    ``NS_MISSION_PHASE_MAP``/``MISSION_FLIGHT_PHASE_ROLES`` -- not a copy,
+    not a re-typed local dict with different spellings. Checked by object
+    identity (``is``), which a value-equal copy would still fail."""
+    from battery_benchmark.benchmarks import cmu_diagnostics
+    from battery_benchmark.datasets.cmu_evtol import ns_phase_labeling_v1
+
+    assert cmu_diagnostics.NS_MISSION_PHASE_MAP is ns_phase_labeling_v1.NS_MISSION_PHASE_MAP
+    assert (
+        cmu_diagnostics.MISSION_FLIGHT_PHASE_ROLES
+        is ns_phase_labeling_v1.MISSION_FLIGHT_PHASE_ROLES
+    )
+    # The old, differently-spelled local name must be gone entirely.
+    assert not hasattr(cmu_diagnostics, "FLIGHT_MISSION_PHASES")
+
+
 class _LinearProbe(nn.Module):
     """Tiny deterministic model: per-timestep linear map, no randomness in
     forward -- used so this test suite doesn't depend on any real backbone
@@ -214,7 +233,7 @@ def test_build_prediction_rows_joins_ns_and_all_three_models_share_schema(tmp_pa
             sequence_length=4,
             raw_diagnostic=raw_diagnostic,
         )
-        assert [row["mission_phase"] for row in rows] == ["takeoff", "cruise", "landing", "post_flight_rest"]
+        assert [row["mission_phase"] for row in rows] == ["take_off", "cruise", "landing", "rest_1"]
         assert rows[0]["model"] == model_name
         # Identical schema keys regardless of model, per Section V.4.
         assert set(rows[0].keys()) == {

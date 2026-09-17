@@ -135,7 +135,7 @@ def test_build_prediction_rows_joins_ns_and_never_stringifies_nan(tmp_path):
         },
         raw_diagnostic=raw_diagnostic,
     )
-    assert [row["mission_phase"] for row in rows] == ["takeoff", "cruise", "landing", None]
+    assert [row["mission_phase"] for row in rows] == ["take_off", "cruise", "landing", None]
     assert rows[-1]["ns_raw"] == 99
     # soc_prediction is clipped to [0, 1] to match _evaluate's own clip.
     assert rows[2]["soc_prediction"] == pytest.approx(1.0)

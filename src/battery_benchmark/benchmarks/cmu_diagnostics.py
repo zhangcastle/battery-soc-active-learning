@@ -30,23 +30,27 @@ from pathlib import Path
 
 import pandas as pd
 
+from battery_benchmark.datasets.cmu_evtol.ns_phase_labeling_v1 import (
+    MISSION_FLIGHT_PHASE_ROLES,
+    NS_MISSION_PHASE_MAP,
+)
+
 # Ns -> mission-phase label, identical across every CMU benchmark runner
 # that adopts this shared module (Section II.C of the unified diagnostics
 # spec explicitly requires one vocabulary, not a per-framework variant).
-# Any Ns value not present as a key here maps to None via .map(), never
-# raises, never invents a label.
-NS_MISSION_PHASE_MAP: dict[int, str] = {
-    0: "cc_charge",
-    1: "cv_charge",
-    2: "other_segment",
-    3: "pre_mission_rest",
-    4: "takeoff",
-    5: "cruise",
-    6: "landing",
-    7: "post_flight_rest",
-}
-# Flight-phase SOC analysis (notebook/reporting) should focus on these three.
-FLIGHT_MISSION_PHASES: tuple[str, ...] = ("takeoff", "cruise", "landing")
+# This is the SAME canonical mapping object (imported above, not copied)
+# that battery_benchmark.datasets.cmu_evtol.ns_phase_labeling_v1 uses for
+# its own full-raw-timeline diagnostic: take_off/cruise/landing for Ns
+# 4/5/6, cc_charge/cv_charge/rest_2/rest_1 for Ns 0/1/3/7, and a real None
+# for any unmapped Ns (including 2 and 8) -- never a fabricated label. This
+# module previously defined its own, differently-spelled local copy
+# (NS_MISSION_PHASE_MAP: takeoff/other_segment/pre_mission_rest/
+# post_flight_rest); that local copy is retired in favor of directly
+# reusing the canonical module-level dict so "mission_phase" means exactly
+# the same thing everywhere it appears across the CMU eVTOL diagnostics.
+# Flight-phase SOC analysis (notebook/reporting) should focus on these
+# three -- MISSION_FLIGHT_PHASE_ROLES is used directly (imported above),
+# not aliased to a local name.
 
 # CMU core-seven cell -> human-readable condition label. Identical across
 # every CMU benchmark runner (DARM already had its own private copy of this
