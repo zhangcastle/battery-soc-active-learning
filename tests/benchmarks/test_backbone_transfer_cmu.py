@@ -8,6 +8,8 @@ recomputing error from test_predictions matching _evaluate's own metric.
 
 from __future__ import annotations
 
+import sys
+
 import numpy as np
 import pandas as pd
 import pytest
@@ -16,6 +18,7 @@ from torch import nn
 
 from battery_benchmark.benchmarks.cmu_diagnostics import load_raw_diagnostic_fields
 from scripts.benchmarks.run_backbone_transfer_cmu import (
+    REPO_ROOT,
     _build_prediction_rows,
     _evaluate,
     _loader,
@@ -24,7 +27,71 @@ from scripts.benchmarks.run_backbone_transfer_cmu import (
     _train,
     _validation_diagnostic_metrics,
     _windows,
+    parse_args,
 )
+
+
+def test_parse_args_cmu_defaults_use_ns_relabel_dataset_version(monkeypatch) -> None:
+    """This backbone benchmark's default CMU inputs must point at the
+    relabeled dataset build/manifest, not the pre-relabel version -- data
+    version only, no model/training/hyperparameter change involved."""
+    monkeypatch.setattr(sys, "argv", ["run_backbone_transfer_cmu.py"])
+    args = parse_args()
+    assert args.cmu_base_root.name == "dynamic_capacity_soc_development_v1_ns_relabel"
+    assert args.cmu_condition_root.name == "dynamic_capacity_soc_development_v1_extension4_ns_relabel"
+    assert args.cmu_manifest.name == "cmu_evtol_supervised_budget_manifest_v0_1_ns_relabel.csv"
+
+
+def test_run_backbone_transfer_cmu_script_has_no_old_cmu_paths() -> None:
+    """Guards against a stale/old CMU path silently surviving somewhere else
+    in the actual running script (not just the argparse defaults checked
+    above)."""
+    script_path = REPO_ROOT / "scripts/benchmarks/run_backbone_transfer_cmu.py"
+    text = script_path.read_text(encoding="utf-8")
+    assert "dynamic_capacity_soc_development_v1_ns_relabel" in text
+    assert "dynamic_capacity_soc_development_v1_extension4_ns_relabel" in text
+    assert "cmu_evtol_supervised_budget_manifest_v0_1_ns_relabel.csv" in text
+    # The old (pre-relabel) path strings must not appear anywhere as a live
+    # value -- checked as the exact old literal terminated by the quote
+    # character actually used in this file, so it can't accidentally match
+    # a substring of the new, longer "_ns_relabel" name.
+    assert 'dynamic_capacity_soc_development_v1"' not in text
+    assert 'dynamic_capacity_soc_development_v1_extension4"' not in text
+    assert "cmu_evtol_supervised_budget_manifest_v0_1.csv" not in text
+
+
+def test_backbone_notebook_uses_ns_relabel_cmu_paths() -> None:
+    """Requirement #2: the backbone notebook's own CMU path constants must
+    be updated in lockstep with the script's argparse defaults."""
+    notebook_path = REPO_ROOT / "notebooks/benchmarks/34_backbone_transfer_panasonic_to_cmu.ipynb"
+    text = notebook_path.read_text(encoding="utf-8")
+    assert "dynamic_capacity_soc_development_v1_ns_relabel'" in text
+    assert "dynamic_capacity_soc_development_v1_extension4_ns_relabel'" in text
+    assert "cmu_evtol_supervised_budget_manifest_v0_1_ns_relabel.csv'" in text
+    # Old (pre-relabel) path strings must not remain anywhere in the
+    # notebook, checked as the exact old literal terminated by the closing
+    # quote so it can't match a substring of the new, longer name.
+    assert "dynamic_capacity_soc_development_v1'" not in text
+    assert "dynamic_capacity_soc_development_v1_extension4'" not in text
+    assert "cmu_evtol_supervised_budget_manifest_v0_1.csv'" not in text
+
+
+def test_run_metadata_records_cmu_data_version_and_phase_definition() -> None:
+    """Requirement #3: run_metadata.json must explicitly record which CMU
+    dataset build/manifest this run read, the manifest's hash (so a
+    silently-swapped manifest with the same filename is detectable), and
+    the canonical Ns phase definition -- diagnostic/provenance fields only,
+    verified here by inspecting the source that assembles ``metadata``
+    rather than running the full benchmark."""
+    script_path = REPO_ROOT / "scripts/benchmarks/run_backbone_transfer_cmu.py"
+    text = script_path.read_text(encoding="utf-8")
+    assert '"cmu_base_root": str(args.cmu_base_root)' in text
+    assert '"cmu_condition_root": str(args.cmu_condition_root)' in text
+    assert '"cmu_manifest_path": str(args.cmu_manifest)' in text
+    assert '"cmu_manifest_sha256": sha256_file(args.cmu_manifest)' in text
+    assert (
+        '"phase_definition": "canonical Ns mapping: 4=take_off, 5=cruise, 6=landing"' in text
+    )
 
 
 def test_cmu_diagnostics_reuses_canonical_ns_mission_phase_map_by_identity() -> None:

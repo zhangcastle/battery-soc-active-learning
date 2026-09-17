@@ -17,7 +17,7 @@ model registry (``models.cnn_lstm`` / ``models.tcn`` /
 ``models.transformer_encoder``).
 
 Budgets reuse the nested mission-budget flags already frozen in
-``data/manifests/cmu_evtol/cmu_evtol_supervised_budget_manifest_v0_1.csv``
+``data/manifests/cmu_evtol/cmu_evtol_supervised_budget_manifest_v0_1_ns_relabel.csv``
 (``budget_1pct``, ``budget_5pct``, ``budget_10pct``, ``vidal_partial``,
 ``vidal_full``), so the resulting budget points line up exactly with the
 already-published Vidal LSTM sweep.
@@ -422,15 +422,17 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument(
         "--cmu-base-root", type=Path,
-        default=REPO_ROOT / "outputs/datasets/cmu_evtol/dynamic_capacity_soc_development_v1",
+        default=REPO_ROOT / "outputs/datasets/cmu_evtol/dynamic_capacity_soc_development_v1_ns_relabel",
     )
     parser.add_argument(
         "--cmu-condition-root", type=Path,
-        default=REPO_ROOT / "outputs/datasets/cmu_evtol/dynamic_capacity_soc_development_v1_extension4",
+        default=REPO_ROOT
+        / "outputs/datasets/cmu_evtol/dynamic_capacity_soc_development_v1_extension4_ns_relabel",
     )
     parser.add_argument(
         "--cmu-manifest", type=Path,
-        default=REPO_ROOT / "data/manifests/cmu_evtol/cmu_evtol_supervised_budget_manifest_v0_1.csv",
+        default=REPO_ROOT
+        / "data/manifests/cmu_evtol/cmu_evtol_supervised_budget_manifest_v0_1_ns_relabel.csv",
     )
     parser.add_argument(
         "--output-root", type=Path,
@@ -881,6 +883,15 @@ def main() -> None:
         "models": sorted(set(table["model"]) | set(args.models)) if not table.empty else list(args.models),
         "n_parameters": param_counts,
         "cells": list(args.cells),
+        # Explicit record of which CMU dataset build and manifest this run
+        # read from, and which Ns -> mission-phase vocabulary its diagnostic
+        # fields use -- diagnostic/provenance-only, does not affect model,
+        # training, or evaluation logic.
+        "cmu_base_root": str(args.cmu_base_root),
+        "cmu_condition_root": str(args.cmu_condition_root),
+        "cmu_manifest_path": str(args.cmu_manifest),
+        "cmu_manifest_sha256": sha256_file(args.cmu_manifest),
+        "phase_definition": "canonical Ns mapping: 4=take_off, 5=cruise, 6=landing",
         "budgets": list(args.budgets),
         "budget_columns": BUDGET_COLUMNS,
         "seeds": list(args.seeds),
