@@ -28,7 +28,7 @@ from battery_benchmark.reproductions.shen_2023.data import (  # noqa: E402
     ShenCycle,
     load_temperature_cycles_and_range,
 )
-from battery_benchmark.reproductions.shen_2023.train import (  # noqa: E402
+from battery_benchmark.reproductions.shen_tatn.train import (  # noqa: E402
     adapt,
     load_released_source,
     load_source,

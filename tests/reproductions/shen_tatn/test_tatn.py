@@ -10,9 +10,9 @@ from battery_benchmark.reproductions.shen_2023.data import (
     selected_windows,
     windows,
 )
-from battery_benchmark.reproductions.shen_2023.model import TATN, gaussian_mmd
-from battery_benchmark.reproductions.shen_2023.suite import ShenTableSuite
-from battery_benchmark.reproductions.shen_2023.train import (
+from battery_benchmark.reproductions.shen_tatn.model import TATN, gaussian_mmd
+from battery_benchmark.reproductions.shen_tatn.suite import ShenTableSuite
+from battery_benchmark.reproductions.shen_tatn.train import (
     _improved,
     load_released_source,
     target_training_windows,
@@ -125,7 +125,7 @@ def test_unsupervised_fold_without_pseudo_labels_is_a_recorded_noop(monkeypatch)
         )
     }
     monkeypatch.setattr(
-        "battery_benchmark.reproductions.shen_2023.train._cycle_prediction",
+        "battery_benchmark.reproductions.shen_tatn.train._cycle_prediction",
         lambda *_: np.linspace(1.0, 0.0, 900, dtype=np.float32),
     )
 
@@ -146,7 +146,7 @@ def test_unsupervised_target_accepts_arbitrary_mission_list(monkeypatch):
     features = np.zeros((900, 3), dtype=np.float32)
     cycle = ShenCycle("cmu_mission", 25, features, np.zeros(900, dtype=np.float32), ())
     monkeypatch.setattr(
-        "battery_benchmark.reproductions.shen_2023.train._cycle_prediction",
+        "battery_benchmark.reproductions.shen_tatn.train._cycle_prediction",
         lambda *_: np.full(900, 0.5, dtype=np.float32),
     )
 
@@ -166,7 +166,7 @@ def test_semisupervised_target_accepts_one_half_labeled_mission(monkeypatch):
         ShenCycle("unlabeled", 25, features, np.zeros(900, dtype=np.float32), ()),
     ]
     monkeypatch.setattr(
-        "battery_benchmark.reproductions.shen_2023.train._cycle_prediction",
+        "battery_benchmark.reproductions.shen_tatn.train._cycle_prediction",
         lambda *_: np.full(900, 0.5, dtype=np.float32),
     )
 
