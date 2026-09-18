@@ -15,6 +15,7 @@ from __future__ import annotations
 import json
 import math
 import random
+import time
 from copy import deepcopy
 from pathlib import Path
 
@@ -47,6 +48,32 @@ def _improved(value: float, best: float, min_delta: float) -> bool:
     return not math.isfinite(best) or value < best * (1.0 - min_delta)
 
 
+class _EpochTimer:
+    """Opt-in, diagnostic-only per-epoch wall-clock timer for the training
+    loops below. Entirely inert unless a caller passes
+    ``record_epoch_seconds=True`` (``train_source``) or unconditionally used
+    only around the read-only validation probe in ``adapt`` -- when not
+    requested, this class is never constructed and adds zero overhead to
+    the default (backward-compatible) code path. CUDA ops are async, so a
+    timed block that ran on GPU is synced before both the start and end
+    timestamps -- at most one synchronize() pair per epoch (never per
+    batch), skipped entirely on CPU."""
+
+    def __init__(self, device: torch.device) -> None:
+        self.device = device
+
+    def __enter__(self) -> "_EpochTimer":
+        if self.device.type == "cuda":
+            torch.cuda.synchronize()
+        self._start = time.perf_counter()
+        return self
+
+    def __exit__(self, *exc) -> None:
+        if self.device.type == "cuda":
+            torch.cuda.synchronize()
+        self.seconds = time.perf_counter() - self._start
+
+
 def _loader(x: np.ndarray, y: np.ndarray, batch_size: int, shuffle: bool) -> DataLoader:
     if not len(x):
         raise ValueError("Cannot construct a loader from zero TATN windows")
@@ -74,6 +101,95 @@ def predict(
     return np.concatenate(labels).ravel(), np.concatenate(predictions).ravel()
 
 
+def _snapshot_training_modes(model: torch.nn.Module) -> dict[int, bool]:
+    """Capture every submodule's exact ``.training`` boolean, keyed by
+    ``id()``. Used by ``_validation_metrics`` to restore a deliberately
+    mixed train/eval configuration (``adapt`` keeps ``target_extractor``/
+    ``discriminator`` in ``.train()`` while ``source_extractor``/
+    ``predictor`` stay frozen in ``.eval()`` for the whole adaptation loop)
+    -- a single top-level ``model.training`` flag cannot capture this."""
+
+    return {id(module): module.training for module in model.modules()}
+
+
+def _restore_training_modes(model: torch.nn.Module, modes: dict[int, bool]) -> None:
+    for module in model.modules():
+        if id(module) in modes:
+            module.training = modes[id(module)]
+
+
+def _diagnostic_loader(x: np.ndarray, y: np.ndarray, batch_size: int) -> DataLoader:
+    """Read-only loader for ``_validation_metrics`` only.
+
+    Identical construction to ``_loader`` (``shuffle=False``) except it
+    passes an explicit LOCAL ``torch.Generator()`` instead of relying on
+    PyTorch's global default generator. This matters even with
+    ``shuffle=False``: constructing a ``DataLoader`` iterator always draws
+    one value from its generator to derive worker/base seeding, even with
+    ``num_workers=0`` -- so without an explicit local generator here, every
+    validation probe would silently advance ``torch.default_generator`` and
+    perturb the exact shuffle order of ``adapt``'s own ``shuffle=True``
+    loaders (seeded via ``seed_everything``). Same precaution already used
+    by ``shen_2023.train``'s and the CMU DARM benchmark's own diagnostic
+    loaders."""
+
+    if not len(x):
+        raise ValueError("Cannot construct a diagnostic loader from zero TATN windows")
+    return DataLoader(
+        TensorDataset(torch.from_numpy(x), torch.from_numpy(y)),
+        batch_size=min(batch_size, len(x)),
+        shuffle=False,
+        generator=torch.Generator(),
+    )
+
+
+@torch.no_grad()
+def _validation_metrics(
+    model: TATN,
+    cycles: list[ShenCycle],
+    device: torch.device,
+    tensor_layout: str = "paper",
+    branch: str = "target",
+) -> tuple[float, float]:
+    """Read-only, diagnostic-only validation probe used by ``adapt`` only
+    (TATN's ``train_source`` pretrains on all nine Panasonic profiles with
+    no natural held-out split, so no validation probe is added there).
+
+    Snapshots every submodule's exact train/eval mode first (``adapt``
+    deliberately keeps ``target_extractor``/``discriminator`` in
+    ``.train()`` while ``source_extractor``/``predictor`` stay frozen in
+    ``.eval()`` for the whole loop -- calling ``model.eval()`` without
+    restoring that exact configuration afterward would silently change
+    behavior on the very next training epoch), runs the probe in full eval
+    mode for deterministic metrics via its own local-generator loader
+    (``_diagnostic_loader`` -- never the global RNG stream a later
+    training-loader shuffle depends on), and restores the exact prior
+    configuration before returning, regardless of exceptions.
+
+    Never computes gradients (``@torch.no_grad()``) and never updates any
+    parameter. Returns ``(mae_percent, rmse_percent)``, matching the
+    percent-scale convention already used throughout the CMU transfer
+    scripts."""
+
+    modes = _snapshot_training_modes(model)
+    try:
+        model.eval()
+        predictions, labels = [], []
+        for cycle in cycles:
+            x, y = windows([cycle], tensor_layout)
+            for xb, yb in _diagnostic_loader(x, y, 64):
+                xb = xb.to(device)
+                output = model.forward_source(xb) if branch == "source" else model(xb)
+                predictions.append(output.cpu().numpy())
+                labels.append(yb.numpy())
+        truth = np.concatenate(labels).ravel()
+        estimate = np.concatenate(predictions).ravel()
+    finally:
+        _restore_training_modes(model, modes)
+    metrics = compute_metrics(truth, estimate)
+    return metrics["mae"] * 100.0, metrics["rmse"] * 100.0
+
+
 def train_source(
     cycles: dict[str, ShenCycle],
     *,
@@ -87,7 +203,25 @@ def train_source(
     min_epochs: int = 0,
     min_delta: float = 1e-4,
     tensor_layout: str = "paper",
-) -> tuple[TATN, list[float]]:
+    record_epoch_seconds: bool = False,
+) -> tuple[TATN, list[float]] | tuple[TATN, list[float], list[dict[str, float]]]:
+    """Source pretraining for TATN, unchanged from before this diagnostic
+    addition (same data, optimizer, loss, batch order, early stopping,
+    and checkpoint selection).
+
+    ``record_epoch_seconds`` defaults to False, preserving the exact
+    original behavior and 2-tuple return for every existing caller
+    (``suite.py``'s in-paper runs). When explicitly set True, this ALSO
+    returns a third element: a ``list[dict]`` with one entry per completed
+    epoch -- ``epoch`` (1-based), ``learning_rate`` (this optimizer's
+    current LR), ``runtime_seconds`` (real wall-clock time for that
+    epoch's training batch loop only, via ``_EpochTimer`` -- at most one
+    CUDA sync pair per epoch, never per batch), and ``loss`` (the same
+    per-epoch value already appended to ``history``, duplicated here only
+    for convenience when writing a single training-history CSV row).
+    Purely diagnostic: never read by the training loop itself, never
+    changes what is trained, in what order, or with what hyperparameters."""
+
     seed_everything(seed)
     x, y = windows([cycles[p] for p in PROFILES if p in cycles], tensor_layout)
     loader = _loader(x, y, batch_size, True)
@@ -108,9 +242,13 @@ def train_source(
         else None
     )
     history, best_loss, best_state, stale_epochs = [], math.inf, None, 0
+    epoch_diagnostics: list[dict[str, float]] = []
     model.source_extractor.train()
     model.predictor.train()
-    for _ in range(epochs):
+    for epoch_index in range(epochs):
+        timer = _EpochTimer(device) if record_epoch_seconds else None
+        if timer is not None:
+            timer.__enter__()
         total, samples = 0.0, 0
         for xb, yb in loader:
             xb, yb = xb.to(device), yb.to(device)
@@ -122,6 +260,16 @@ def train_source(
             samples += len(xb)
         epoch_loss = total / max(samples, 1)
         history.append(epoch_loss)
+        if timer is not None:
+            timer.__exit__()
+            epoch_diagnostics.append(
+                {
+                    "epoch": epoch_index + 1,
+                    "learning_rate": optimizer.param_groups[0]["lr"],
+                    "runtime_seconds": timer.seconds,
+                    "loss": epoch_loss,
+                }
+            )
         if scheduler is not None:
             scheduler.step(epoch_loss)
         if _improved(epoch_loss, best_loss, min_delta):
@@ -156,6 +304,8 @@ def train_source(
             },
             path,
         )
+    if record_epoch_seconds:
+        return model, history, epoch_diagnostics
     return model, history
 
 
@@ -297,7 +447,43 @@ def adapt(
     min_epochs: int = 0,
     min_delta: float = 1e-4,
     tensor_layout: str = "paper",
+    record_epoch_seconds: bool = False,
+    validation_cycles: list[ShenCycle] | None = None,
+    validation_interval: int = 1,
 ) -> tuple[TATN, list[dict[str, float]], dict[str, int | str | None]]:
+    """TATN adaptation (DANN + MMD), unchanged from before this diagnostic
+    addition (same pseudo-labeling, loss terms, optimizers, batch order,
+    early stopping, and checkpoint selection).
+
+    ``record_epoch_seconds`` and ``validation_cycles``/``validation_interval``
+    are purely diagnostic and default to inert (``False``/``None``/``1``),
+    so the default call signature and returned ``history`` schema stay
+    backward compatible for every existing caller (``suite.py``'s in-paper
+    runs already receive a ``list[dict]`` history; this only adds new keys
+    to each epoch's dict, never removes or renames the existing
+    ``estimate``/``adversarial``/``mmd``/``total``/``learning_rate`` keys).
+
+    When ``record_epoch_seconds=True``, each epoch's dict also gets
+    ``epoch`` (1-based), ``estimate_loss``/``adversarial_loss``/
+    ``mmd_loss``/``total_loss`` (identical values to the existing
+    ``estimate``/``adversarial``/``mmd``/``total`` keys, added under the
+    names asked for the diagnostic training-history CSV), and
+    ``runtime_seconds`` (real wall-clock time for that epoch's training
+    batch loop only -- ``_EpochTimer``, at most one CUDA sync pair per
+    epoch, never per batch; never includes the validation probe below).
+
+    When ``validation_cycles`` is supplied, every ``validation_interval``-th
+    epoch (plus epoch 1 and the actual last epoch, handled by the caller
+    via its own interval bookkeeping) also runs the read-only diagnostic
+    probe in ``_validation_metrics`` against those cycles and records
+    ``validation_mae``/``validation_rmse``/``validation_runtime_seconds``/
+    ``validation_evaluated`` -- evaluated *after* the epoch's optimizer
+    steps, using a LOCAL DataLoader generator (never the global RNG), with
+    every submodule's train/eval mode snapshotted and restored around the
+    probe. This never feeds back into training, pseudo-labeling, the
+    scheduler, early stopping, or checkpoint selection, all of which
+    continue to use only the training objective exactly as before."""
+
     seed_everything(seed)
     model = deepcopy(source_model).to(device)
     model.initialize_target()
@@ -330,8 +516,12 @@ def adapt(
     )
     estimate_weight, adversarial_weight, mmd_weight = lambdas
     history, best_loss, best_state, stale_epochs = [], math.inf, None, 0
+    validation_interval = max(validation_interval, 1)
 
-    for _ in range(epochs):
+    for epoch_index in range(epochs):
+        timer = _EpochTimer(device) if record_epoch_seconds else None
+        if timer is not None:
+            timer.__enter__()
         model.target_extractor.train()
         model.discriminator.train()
         model.source_extractor.eval()
@@ -381,7 +571,25 @@ def adapt(
                 totals[name] += float(value.detach())
             batches += 1
         epoch_metrics = {name: value / max(batches, 1) for name, value in totals.items()}
+        epoch_metrics["epoch"] = epoch_index + 1
         epoch_metrics["learning_rate"] = extractor_optimizer.param_groups[0]["lr"]
+        epoch_metrics["estimate_loss"] = epoch_metrics["estimate"]
+        epoch_metrics["adversarial_loss"] = epoch_metrics["adversarial"]
+        epoch_metrics["mmd_loss"] = epoch_metrics["mmd"]
+        epoch_metrics["total_loss"] = epoch_metrics["total"]
+        if timer is not None:
+            timer.__exit__()
+            epoch_metrics["runtime_seconds"] = timer.seconds
+        else:
+            epoch_metrics["runtime_seconds"] = None
+        # Validation fields default to "not evaluated"; filled in below, AFTER
+        # the scheduler/checkpoint-selection/early-stopping decisions for
+        # this epoch have already been made from the training objective
+        # alone -- validation never influences any of them.
+        epoch_metrics["validation_mae"] = None
+        epoch_metrics["validation_rmse"] = None
+        epoch_metrics["validation_runtime_seconds"] = None
+        epoch_metrics["validation_evaluated"] = False
         history.append(epoch_metrics)
         if scheduler is not None:
             scheduler.step(epoch_metrics["total"])
@@ -392,11 +600,31 @@ def adapt(
             stale_epochs = 0
         else:
             stale_epochs += 1
-        if (
+        will_stop_early = (
             early_stopping_patience is not None
             and len(history) >= min_epochs
             and stale_epochs >= early_stopping_patience
+        )
+        is_final_epoch = will_stop_early or epoch_index + 1 == epochs
+        # Diagnostic-only, read-only validation probe: epoch 1, every
+        # validation_interval-th epoch, and the actual last epoch (whether
+        # reached by completing `epochs` or by early stopping) -- computed
+        # AFTER this epoch's scheduler/checkpoint-selection/early-stopping
+        # decisions above, so it can never feed back into any of them.
+        if validation_cycles and (
+            epoch_index == 0
+            or (epoch_index + 1) % validation_interval == 0
+            or is_final_epoch
         ):
+            with _EpochTimer(device) as validation_timer:
+                validation_mae, validation_rmse = _validation_metrics(
+                    model, validation_cycles, device, tensor_layout, branch="target"
+                )
+            epoch_metrics["validation_mae"] = validation_mae
+            epoch_metrics["validation_rmse"] = validation_rmse
+            epoch_metrics["validation_runtime_seconds"] = validation_timer.seconds
+            epoch_metrics["validation_evaluated"] = True
+        if will_stop_early:
             break
     assert best_state is not None
     model.target_extractor.load_state_dict(best_state)
