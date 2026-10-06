@@ -95,3 +95,6 @@ external_repos/repo_registry.local.yaml
 external_repos/**/.git
 notebooks/inspect_three_adapters.ipynb
 notebooks/review_vidal_charge_pairing.ipynb
+
+# Claude-generated working outputs (not uploaded)
+Claude outputs/
