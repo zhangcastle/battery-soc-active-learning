@@ -12,6 +12,7 @@ data-loading plumbing rather than TATN-specific algorithmic code.
 
 from __future__ import annotations
 
+import contextlib
 import json
 import math
 import random
@@ -32,6 +33,10 @@ from battery_benchmark.reproductions.shen_2023.data import (
     windows,
 )
 from battery_benchmark.reproductions.shen_tatn.model import TATN, gaussian_mmd
+
+
+# Default threshold of ``shen_2023.data.selected_windows`` (paper/repo value).
+PSEUDO_LABEL_THRESHOLD = 0.08
 
 
 def seed_everything(seed: int) -> None:
@@ -143,7 +148,80 @@ def _diagnostic_loader(x: np.ndarray, y: np.ndarray, batch_size: int) -> DataLoa
     )
 
 
+@contextlib.contextmanager
+def _preserve_global_rng():
+    """Snapshot and restore every global RNG (python, numpy, torch CPU, CUDA)
+    so a read-only diagnostic probe can never perturb the training stream."""
+
+    py_state = random.getstate()
+    np_state = np.random.get_state()
+    torch_state = torch.get_rng_state()
+    cuda_states = torch.cuda.get_rng_state_all() if torch.cuda.is_available() else None
+    try:
+        yield
+    finally:
+        random.setstate(py_state)
+        np.random.set_state(np_state)
+        torch.set_rng_state(torch_state)
+        if cuda_states is not None:
+            torch.cuda.set_rng_state_all(cuda_states)
+
+
 @torch.no_grad()
+def _validation_metrics_detailed(
+    model: TATN,
+    cycles: list[ShenCycle],
+    device: torch.device,
+    tensor_layout: str = "paper",
+    branch: str = "target",
+) -> dict[str, float]:
+    """Read-only, diagnostic-only validation probe (``diagnostic_only=true``).
+
+    Computes overall and mission-macro MAE/RMSE (percent) over ``cycles``
+    (one cycle == one mission). Snapshots every submodule's exact train/eval
+    mode (``adapt`` deliberately keeps ``target_extractor``/``discriminator``
+    in ``.train()`` while ``source_extractor``/``predictor`` stay ``.eval()``)
+    and restores it afterwards, runs under ``torch.no_grad()`` in full eval
+    mode, uses a LOCAL DataLoader generator and additionally snapshots and
+    restores all global RNG states. Never computes gradients, never updates
+    a parameter and never feeds back into training, pseudo-labelling,
+    scheduling, early stopping or checkpoint selection."""
+
+    modes = _snapshot_training_modes(model)
+    per_cycle: list[tuple[np.ndarray, np.ndarray]] = []
+    try:
+        with _preserve_global_rng():
+            model.eval()
+            for cycle in cycles:
+                x, y = windows([cycle], tensor_layout)
+                if not len(x):
+                    continue
+                predictions, labels = [], []
+                for xb, yb in _diagnostic_loader(x, y, 64):
+                    xb = xb.to(device)
+                    output = model.forward_source(xb) if branch == "source" else model(xb)
+                    predictions.append(output.cpu().numpy())
+                    labels.append(yb.numpy())
+                per_cycle.append(
+                    (np.concatenate(labels).ravel(), np.concatenate(predictions).ravel())
+                )
+    finally:
+        _restore_training_modes(model, modes)
+    if not per_cycle:
+        raise ValueError("Validation probe received no usable TATN windows")
+    truth = np.concatenate([t for t, _ in per_cycle])
+    estimate = np.concatenate([e for _, e in per_cycle])
+    overall = compute_metrics(truth, estimate)
+    macro = [compute_metrics(t, e) for t, e in per_cycle]
+    return {
+        "overall_mae": overall["mae"] * 100.0,
+        "overall_rmse": overall["rmse"] * 100.0,
+        "mission_macro_mae": float(np.mean([m["mae"] for m in macro])) * 100.0,
+        "mission_macro_rmse": float(np.mean([m["rmse"] for m in macro])) * 100.0,
+        "missions": len(per_cycle),
+    }
+
+
 def _validation_metrics(
     model: TATN,
     cycles: list[ShenCycle],
@@ -151,43 +229,11 @@ def _validation_metrics(
     tensor_layout: str = "paper",
     branch: str = "target",
 ) -> tuple[float, float]:
-    """Read-only, diagnostic-only validation probe used by ``adapt`` only
-    (TATN's ``train_source`` pretrains on all nine Panasonic profiles with
-    no natural held-out split, so no validation probe is added there).
+    """Backward-compatible ``(mae_percent, rmse_percent)`` view of
+    ``_validation_metrics_detailed`` (overall, all timesteps pooled)."""
 
-    Snapshots every submodule's exact train/eval mode first (``adapt``
-    deliberately keeps ``target_extractor``/``discriminator`` in
-    ``.train()`` while ``source_extractor``/``predictor`` stay frozen in
-    ``.eval()`` for the whole loop -- calling ``model.eval()`` without
-    restoring that exact configuration afterward would silently change
-    behavior on the very next training epoch), runs the probe in full eval
-    mode for deterministic metrics via its own local-generator loader
-    (``_diagnostic_loader`` -- never the global RNG stream a later
-    training-loader shuffle depends on), and restores the exact prior
-    configuration before returning, regardless of exceptions.
-
-    Never computes gradients (``@torch.no_grad()``) and never updates any
-    parameter. Returns ``(mae_percent, rmse_percent)``, matching the
-    percent-scale convention already used throughout the CMU transfer
-    scripts."""
-
-    modes = _snapshot_training_modes(model)
-    try:
-        model.eval()
-        predictions, labels = [], []
-        for cycle in cycles:
-            x, y = windows([cycle], tensor_layout)
-            for xb, yb in _diagnostic_loader(x, y, 64):
-                xb = xb.to(device)
-                output = model.forward_source(xb) if branch == "source" else model(xb)
-                predictions.append(output.cpu().numpy())
-                labels.append(yb.numpy())
-        truth = np.concatenate(labels).ravel()
-        estimate = np.concatenate(predictions).ravel()
-    finally:
-        _restore_training_modes(model, modes)
-    metrics = compute_metrics(truth, estimate)
-    return metrics["mae"] * 100.0, metrics["rmse"] * 100.0
+    detail = _validation_metrics_detailed(model, cycles, device, tensor_layout, branch)
+    return detail["overall_mae"], detail["overall_rmse"]
 
 
 def train_source(
@@ -249,7 +295,7 @@ def train_source(
         timer = _EpochTimer(device) if record_epoch_seconds else None
         if timer is not None:
             timer.__enter__()
-        total, samples = 0.0, 0
+        total, samples, steps = 0.0, 0, 0
         for xb, yb in loader:
             xb, yb = xb.to(device), yb.to(device)
             optimizer.zero_grad()
@@ -258,6 +304,7 @@ def train_source(
             optimizer.step()
             total += float(loss.detach())
             samples += len(xb)
+            steps += 1
         epoch_loss = total / max(samples, 1)
         history.append(epoch_loss)
         if timer is not None:
@@ -268,6 +315,9 @@ def train_source(
                     "learning_rate": optimizer.param_groups[0]["lr"],
                     "runtime_seconds": timer.seconds,
                     "loss": epoch_loss,
+                    "total_loss": epoch_loss,
+                    "source_soc_regression_loss": epoch_loss,
+                    "optimizer_steps": steps,
                 }
             )
         if scheduler is not None:
@@ -497,6 +547,16 @@ def adapt(
         labeled_profile=labeled_profile,
         tensor_layout=tensor_layout,
     )
+    # Candidate pseudo-label windows (every non-labelled target window before
+    # selection); diagnostic only, kept out of ``target_info`` so its schema is
+    # unchanged for existing callers.
+    if isinstance(target_cycles, dict):
+        _candidates = [
+            c for p, c in target_cycles.items() if p != test_profile and p != labeled_profile
+        ]
+    else:
+        _candidates = [c for c in target_cycles if c.profile != labeled_profile]
+    candidate_windows = int(sum(len(c.soc) // 90 for c in _candidates))
     if not len(target_x):
         return model, [], target_info
     source_loader = _loader(source_x, source_y, batch_size, True)
@@ -526,7 +586,13 @@ def adapt(
         model.discriminator.train()
         model.source_extractor.eval()
         model.predictor.eval()
-        totals = {"estimate": 0.0, "adversarial": 0.0, "mmd": 0.0, "total": 0.0}
+        totals = {
+            "estimate": 0.0,
+            "adversarial": 0.0,
+            "mmd": 0.0,
+            "total": 0.0,
+            "discriminator": 0.0,
+        }
         batches = 0
         for (source_batch, _), (target_batch, target_label) in zip(source_loader, target_loader):
             source_batch = source_batch.to(device)
@@ -567,6 +633,7 @@ def adapt(
                 ("adversarial", adversarial_loss),
                 ("mmd", mmd_loss),
                 ("total", total_loss),
+                ("discriminator", discriminator_loss),
             ):
                 totals[name] += float(value.detach())
             batches += 1
@@ -577,6 +644,20 @@ def adapt(
         epoch_metrics["adversarial_loss"] = epoch_metrics["adversarial"]
         epoch_metrics["mmd_loss"] = epoch_metrics["mmd"]
         epoch_metrics["total_loss"] = epoch_metrics["total"]
+        # Diagnostic-only extra components (never read by the training loop).
+        # ``estimate`` is the regression loss on the SELECTED pseudo-labelled
+        # target windows (labels = frozen-source predictions); the frozen
+        # source branch has no optimized regression loss during adaptation.
+        epoch_metrics["discriminator_loss"] = epoch_metrics["discriminator"]
+        epoch_metrics["pseudo_label_loss"] = epoch_metrics["estimate"]
+        epoch_metrics["source_soc_regression_loss"] = None
+        epoch_metrics["optimizer_steps"] = 2 * batches  # discriminator + extractor step per batch
+        accepted = int(target_info.get("pseudo_windows") or 0)
+        candidates = candidate_windows
+        epoch_metrics["pseudo_accepted_windows"] = accepted
+        epoch_metrics["pseudo_candidate_windows"] = candidates
+        epoch_metrics["pseudo_accepted_fraction"] = accepted / candidates if candidates else None
+        epoch_metrics["pseudo_threshold"] = PSEUDO_LABEL_THRESHOLD
         if timer is not None:
             timer.__exit__()
             epoch_metrics["runtime_seconds"] = timer.seconds
@@ -590,6 +671,13 @@ def adapt(
         epoch_metrics["validation_rmse"] = None
         epoch_metrics["validation_runtime_seconds"] = None
         epoch_metrics["validation_evaluated"] = False
+        for key in (
+            "validation_overall_mae",
+            "validation_overall_rmse",
+            "validation_mission_macro_mae",
+            "validation_mission_macro_rmse",
+        ):
+            epoch_metrics[key] = None
         history.append(epoch_metrics)
         if scheduler is not None:
             scheduler.step(epoch_metrics["total"])
@@ -617,11 +705,15 @@ def adapt(
             or is_final_epoch
         ):
             with _EpochTimer(device) as validation_timer:
-                validation_mae, validation_rmse = _validation_metrics(
+                detail = _validation_metrics_detailed(
                     model, validation_cycles, device, tensor_layout, branch="target"
                 )
-            epoch_metrics["validation_mae"] = validation_mae
-            epoch_metrics["validation_rmse"] = validation_rmse
+            epoch_metrics["validation_mae"] = detail["overall_mae"]
+            epoch_metrics["validation_rmse"] = detail["overall_rmse"]
+            epoch_metrics["validation_overall_mae"] = detail["overall_mae"]
+            epoch_metrics["validation_overall_rmse"] = detail["overall_rmse"]
+            epoch_metrics["validation_mission_macro_mae"] = detail["mission_macro_mae"]
+            epoch_metrics["validation_mission_macro_rmse"] = detail["mission_macro_rmse"]
             epoch_metrics["validation_runtime_seconds"] = validation_timer.seconds
             epoch_metrics["validation_evaluated"] = True
         if will_stop_early:

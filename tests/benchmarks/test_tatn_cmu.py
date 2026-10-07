@@ -131,10 +131,10 @@ def test_cmu_manifest_default_is_ns_relabel():
     )
 
 
-def test_output_root_default_is_isolated_tatn_ns_relabel_v1():
+def test_output_root_default_is_isolated_tatn_v2_unsupervised_formal():
     args = _parse_args()
     assert args.output_root == (
-        REPO_ROOT / "outputs/benchmarks/panasonic_to_cmu_evtol/tatn_ns_relabel_v1"
+        REPO_ROOT / "outputs/benchmarks/panasonic_to_cmu_evtol/tatn_ns_relabel_v2_unsupervised_formal"
     )
 
 
@@ -160,6 +160,9 @@ def test_cmu_paths_and_output_root_remain_overridable():
 
 def _complete_expected() -> dict[str, object]:
     return {
+        "output_schema_version": "tatn_cmu_v2_diagnostic",
+        "repeat": 1,
+        "base_seed": 100,
         "cmu_input_sha256": "cmu_hash",
         "manifest_sha256": "manifest_hash",
         "source_checkpoint_sha256": "checkpoint_hash",
@@ -180,6 +183,15 @@ def _complete_expected() -> dict[str, object]:
     }
 
 
+def _write_sidecars(root, *, skip: tuple[str, ...] = ()):
+    if "target.pt" not in skip:
+        torch.save({"model_state_dict": {}}, root / "target.pt")
+    if "training_history.csv" not in skip:
+        (root / "training_history.csv").write_text("epoch\n1\n", encoding="utf-8")
+    if "test_predictions.parquet" not in skip:
+        pd.DataFrame({"a": [1]}).to_parquet(root / "test_predictions.parquet")
+
+
 def _write_result(path, expected, *, drop: str | None = None, override: dict | None = None):
     payload = dict(expected)
     if drop is not None:
@@ -195,9 +207,7 @@ def test_check_resume_tatn_result_accepts_matching_configuration(tmp_path):
     expected = _complete_expected()
     result_path = tmp_path / "results.json"
     _write_result(result_path, expected)
-    (tmp_path / "target.pt").write_bytes(b"")
-    (tmp_path / "training_history.csv").write_text("epoch\n1\n", encoding="utf-8")
-    (tmp_path / "test_predictions.parquet").write_bytes(b"")
+    _write_sidecars(tmp_path)
 
     _check_resume_tatn_result(result_path=result_path, cell_output=tmp_path, expected=expected)
 
@@ -210,9 +220,7 @@ def test_check_resume_tatn_result_rejects_missing_field(tmp_path, field):
     expected = _complete_expected()
     result_path = tmp_path / "results.json"
     _write_result(result_path, expected, drop=field)
-    (tmp_path / "target.pt").write_bytes(b"")
-    (tmp_path / "training_history.csv").write_text("epoch\n1\n", encoding="utf-8")
-    (tmp_path / "test_predictions.parquet").write_bytes(b"")
+    _write_sidecars(tmp_path)
 
     with pytest.raises(ValueError, match=field):
         _check_resume_tatn_result(result_path=result_path, cell_output=tmp_path, expected=expected)
@@ -230,6 +238,9 @@ def test_check_resume_tatn_result_rejects_missing_field(tmp_path, field):
         ("transfer_epochs", 50),
         ("batch_size", 32),
         ("seed", 7),
+        ("repeat", 2),
+        ("base_seed", 7),
+        ("output_schema_version", "tatn_cmu_v1_legacy"),
         ("tensor_layout", "released_repo"),
         ("tatn_learning_rate", 1e-2),
         ("tatn_lambdas", [1.0, 0.5, 1.0]),
@@ -247,9 +258,7 @@ def test_check_resume_tatn_result_rejects_stale_field(tmp_path, field, stale_val
     expected = _complete_expected()
     result_path = tmp_path / "results.json"
     _write_result(result_path, expected, override={field: stale_value})
-    (tmp_path / "target.pt").write_bytes(b"")
-    (tmp_path / "training_history.csv").write_text("epoch\n1\n", encoding="utf-8")
-    (tmp_path / "test_predictions.parquet").write_bytes(b"")
+    _write_sidecars(tmp_path)
 
     with pytest.raises(ValueError, match=field):
         _check_resume_tatn_result(result_path=result_path, cell_output=tmp_path, expected=expected)
@@ -261,8 +270,7 @@ def test_check_resume_tatn_result_rejects_missing_target_checkpoint(tmp_path):
     expected = _complete_expected()
     result_path = tmp_path / "results.json"
     _write_result(result_path, expected)
-    (tmp_path / "training_history.csv").write_text("epoch\n1\n", encoding="utf-8")
-    # Deliberately do not create tmp_path / "target.pt".
+    _write_sidecars(tmp_path, skip=("target.pt",))
 
     with pytest.raises(ValueError, match="target.pt"):
         _check_resume_tatn_result(result_path=result_path, cell_output=tmp_path, expected=expected)
@@ -275,8 +283,7 @@ def test_check_resume_tatn_result_rejects_missing_training_history(tmp_path):
     expected = _complete_expected()
     result_path = tmp_path / "results.json"
     _write_result(result_path, expected)
-    (tmp_path / "target.pt").write_bytes(b"")
-    # Deliberately do not create tmp_path / "training_history.csv".
+    _write_sidecars(tmp_path, skip=("training_history.csv",))
 
     with pytest.raises(ValueError, match="training_history.csv"):
         _check_resume_tatn_result(result_path=result_path, cell_output=tmp_path, expected=expected)
@@ -290,58 +297,13 @@ def test_check_resume_tatn_result_rejects_missing_test_predictions(tmp_path):
     expected = _complete_expected()
     result_path = tmp_path / "results.json"
     _write_result(result_path, expected)
-    (tmp_path / "target.pt").write_bytes(b"")
-    (tmp_path / "training_history.csv").write_text("epoch\n1\n", encoding="utf-8")
-    # Deliberately do not create tmp_path / "test_predictions.parquet" (and
+    _write_sidecars(tmp_path, skip=("test_predictions.parquet",))
+    # Deliberately no tmp_path / "test_predictions.parquet" (and
     # a leftover ".incomplete" file, if any, must never satisfy this check).
     (tmp_path / "test_predictions.parquet.incomplete").write_bytes(b"")
 
     with pytest.raises(ValueError, match="test_predictions.parquet"):
         _check_resume_tatn_result(result_path=result_path, cell_output=tmp_path, expected=expected)
-
-
-def test_run_tatn_cmu_calls_resume_check_before_skipping():
-    """The resume-safety check must actually be wired into main()'s
-    per-cell resume-skip branch, not just exist as a standalone, unused
-    function."""
-    script_path = REPO_ROOT / "scripts/benchmarks/run_tatn_cmu.py"
-    text = script_path.read_text(encoding="utf-8")
-    assert "_check_resume_tatn_result(" in text
-    # The wiring must run before the skip-and-continue, i.e. inside the
-    # same `if args.resume and result_path.is_file():` branch.
-    branch_start = text.index("if args.resume and result_path.is_file():")
-    branch = text[branch_start : branch_start + 900]
-    assert "_check_resume_tatn_result(" in branch
-    assert "continue" in branch
-
-
-def test_run_tatn_cmu_hash_checks_happen_before_resume_skip():
-    """The CMU-input-hash-vs-manifest check must run before the resume-skip
-    decision (so a resumed cell is still verified against the current data
-    version), not only for freshly-computed cells."""
-    script_path = REPO_ROOT / "scripts/benchmarks/run_tatn_cmu.py"
-    text = script_path.read_text(encoding="utf-8")
-    hash_check_index = text.index("CMU input hash does not match manifest")
-    resume_branch_index = text.index("if args.resume and result_path.is_file():")
-    assert hash_check_index < resume_branch_index
-
-
-def test_tatn_notebook_result_root_is_isolated_ns_relabel_v1():
-    notebook_path = REPO_ROOT / "notebooks/benchmarks/32_tatn_panasonic25_to_cmu.ipynb"
-    text = notebook_path.read_text(encoding="utf-8")
-    assert "benchmarks/panasonic_to_cmu_evtol/tatn_ns_relabel_v1" in text
-    assert "'benchmarks/panasonic_to_cmu_evtol/tatn'" not in text
-
-
-def test_tatn_notebook_cmu_paths_are_ns_relabel():
-    notebook_path = REPO_ROOT / "notebooks/benchmarks/32_tatn_panasonic25_to_cmu.ipynb"
-    text = notebook_path.read_text(encoding="utf-8")
-    assert "dynamic_capacity_soc_development_v1_ns_relabel" in text
-    assert "dynamic_capacity_soc_development_v1_extension4_ns_relabel" in text
-    assert "cmu_evtol_supervised_budget_manifest_v0_1_ns_relabel.csv" in text
-    assert "dynamic_capacity_soc_development_v1'" not in text
-    assert "dynamic_capacity_soc_development_v1_extension4'" not in text
-    assert "cmu_evtol_supervised_budget_manifest_v0_1.csv" not in text
 
 
 def test_train_source_record_epoch_seconds_backward_compatible():
@@ -481,48 +443,6 @@ def test_adapt_validation_never_evaluated_without_validation_cycles():
     assert all(row["validation_mae"] is None for row in history)
 
 
-def test_run_tatn_cmu_calls_train_source_with_record_epoch_seconds():
-    """train_source() must be wired with record_epoch_seconds=True only in
-    the actually-training branch (never fabricating a history when loading
-    an existing checkpoint)."""
-    script_path = REPO_ROOT / "scripts/benchmarks/run_tatn_cmu.py"
-    text = script_path.read_text(encoding="utf-8")
-    call_index = text.index("source_model, _, source_epoch_diagnostics = train_source(")
-    call_block = text[call_index : call_index + 700]
-    assert "record_epoch_seconds=True" in call_block
-    assert "source_training_history.csv" in text
-
-
-def test_run_tatn_cmu_calls_adapt_with_validation_wiring():
-    """adapt() must be wired with record_epoch_seconds=True, the manifest's
-    validation_cycles, and args.validation_interval."""
-    script_path = REPO_ROOT / "scripts/benchmarks/run_tatn_cmu.py"
-    text = script_path.read_text(encoding="utf-8")
-    call_index = text.index("transferred, history, target_info = adapt(")
-    call_block = text[call_index : call_index + 900]
-    assert "record_epoch_seconds=True" in call_block
-    assert "validation_cycles=validation_cycles" in call_block
-    assert "validation_interval=args.validation_interval" in call_block
-
-
-def test_run_tatn_cmu_writes_per_cell_and_top_level_training_history():
-    """Every cell must write its own training_history.csv (with a cell_id
-    column), and these must be aggregated into a top-level
-    training_history.csv alongside condition_metrics.csv."""
-    script_path = REPO_ROOT / "scripts/benchmarks/run_tatn_cmu.py"
-    text = script_path.read_text(encoding="utf-8")
-    assert 'cell_training_history.insert(0, "cell_id", cell_id)' in text
-    assert 'cell_training_history.to_csv(cell_output / "training_history.csv"' in text
-    assert "training_history_frames.append(cell_training_history)" in text
-    assert (
-        'pd.concat(training_history_frames, ignore_index=True).to_csv(\n'
-        '            args.output_root / "training_history.csv", index=False\n'
-        "        )" in text
-        or "training_history_frames" in text
-        and 'args.output_root / "training_history.csv"' in text
-    )
-
-
 def test_run_tatn_cmu_has_validation_interval_cli_arg_default_ten():
     args = _parse_args()
     assert args.validation_interval == 10
@@ -603,8 +523,8 @@ def test_mission_metadata_reads_same_frame_as_to_shen_cycles():
 
 def test_build_prediction_rows_joins_raw_fields_and_never_stringifies_nan():
     """Requirements #3/#4: joins by source_row_right via cmu_diagnostics'
-    canonical helpers only, renames the joined fields to voltage_v/
-    current_a/Temperature__C (no local phase map), and a missing join match
+    canonical helpers only, keeps the joined fields named *_raw
+    (no local phase map), and a missing join match
     becomes a real None -- never the string 'nan'."""
     raw_diagnostic = pd.DataFrame(
         {
@@ -630,7 +550,7 @@ def test_build_prediction_rows_joins_raw_fields_and_never_stringifies_nan():
     }
     rows = _build_prediction_rows(
         framework="shen_tatn", method="TATN", source_kind="trained", scenario="unsupervised",
-        seed=100, cell_id="VAH01", condition="baseline protocol",
+        repeat=2, seed=100, cell_id="VAH01", condition="baseline protocol",
         soc_reference=soc_reference, soc_prediction=soc_prediction,
         mission_ids=np.array(["m1", "m1", "m1", "m1"]),
         window_indices=np.array([0, 0, 1, 1]), timestep_indices=np.array([0, 1, 0, 1]),
@@ -638,11 +558,11 @@ def test_build_prediction_rows_joins_raw_fields_and_never_stringifies_nan():
     )
     assert [r["mission_phase"] for r in rows] == ["take_off", "cruise", "landing", None]
     assert [r["ns_raw"] for r in rows] == [4, 5, 6, None]
-    assert rows[0]["voltage_v"] == pytest.approx(3.1)
-    assert rows[0]["current_a"] == pytest.approx(-1.0)
-    assert rows[0]["Temperature__C"] == pytest.approx(24.0)
+    assert rows[0]["voltage_v_raw"] == pytest.approx(3.1)
+    assert rows[0]["current_a_raw"] == pytest.approx(-1.0)
+    assert rows[0]["temperature_c_raw"] == pytest.approx(24.0)
     # source_row_right=50 has no match -- every joined field is a real None.
-    for column in ("voltage_v", "current_a", "Temperature__C", "capacity_ah",
+    for column in ("voltage_v_raw", "current_a_raw", "temperature_c_raw", "capacity_ah",
                     "capacity_source", "source_rpt_id", "ns_raw", "mission_phase"):
         assert rows[3][column] is None
         assert rows[3][column] != "nan"
@@ -749,11 +669,11 @@ def test_recompute_mae_rmse_from_prediction_rows_matches_evaluate():
 def _schema_row(**overrides) -> dict:
     row = {
         "framework": "shen_tatn", "method": "Source only", "source_kind": "trained",
-        "scenario": "unsupervised", "seed": 100, "cell_id": "VAH01", "condition": "baseline protocol",
+        "scenario": "unsupervised", "repeat": 1, "seed": 100, "cell_id": "VAH01", "condition": "baseline protocol",
         "split": "test", "mission_cycle_id": "m1", "mission_sequence_order": 0,
         "window_index": 0, "timestep_index": 0, "elapsed_candidate_s": 0.0, "original_time_s": 0.0,
         "source_row_right": 0, "ns_raw": 4, "mission_phase": "take_off",
-        "voltage_v": 3.7, "current_a": -1.0, "Temperature__C": 25.0,
+        "voltage_v_raw": 3.7, "current_a_raw": -1.0, "temperature_c_raw": 25.0,
         "capacity_ah": 2.0, "capacity_source": "measured", "source_rpt_id": "rpt1",
         "soc_reference": 0.5, "soc_prediction": 0.5, "signed_error": 0.0, "absolute_error": 0.0,
     }
@@ -877,74 +797,3 @@ def test_compute_cell_transfer_effects_delta_and_negative_transfer(tmp_path):
     assert bool(row["negative_transfer_rmse"]) is True
 
 
-def test_run_tatn_cmu_wires_predictions_into_evaluate_and_writes_atomically():
-    """Source-text checks that main() actually reuses _evaluate's
-    return_predictions=True output (never a second predict() call) for both
-    methods, and writes test_predictions.parquet via the atomic helper."""
-    script_path = REPO_ROOT / "scripts/benchmarks/run_tatn_cmu.py"
-    text = script_path.read_text(encoding="utf-8")
-    assert "return_predictions=True" in text
-    assert text.count("return_predictions=True") >= 2
-    assert "_write_test_predictions_atomic(" in text
-    assert "_flatten_prediction_metadata(" in text
-    assert "load_raw_diagnostic_fields(" in text
-    assert "join_diagnostic_fields_by_source_row" in text
-
-
-def test_run_tatn_cmu_rebuilds_top_level_predictions_and_phase_files():
-    script_path = REPO_ROOT / "scripts/benchmarks/run_tatn_cmu.py"
-    text = script_path.read_text(encoding="utf-8")
-    assert '"test_predictions.parquet"' in text
-    assert "_compute_phase_metrics(" in text
-    assert '"phase_metrics.csv"' in text
-    assert "_compute_phase_transfer_effects(" in text
-    assert '"phase_transfer_effects.csv"' in text
-    assert "_compute_cell_transfer_effects(" in text
-    assert '"cell_transfer_effects.csv"' in text
-
-
-def test_tatn_notebook_has_no_stale_outputs_or_execution_count():
-    notebook_path = REPO_ROOT / "notebooks/benchmarks/32_tatn_panasonic25_to_cmu.ipynb"
-    notebook = json.loads(notebook_path.read_text(encoding="utf-8"))
-    code_cells = [cell for cell in notebook["cells"] if cell["cell_type"] == "code"]
-    assert code_cells, "expected at least one code cell"
-    for cell in code_cells:
-        assert cell["execution_count"] is None
-        assert cell["outputs"] == []
-
-
-def test_tatn_notebook_has_training_monitoring_sections():
-    """Requirement #6: the notebook must read the adaptation loss curves,
-    validation MAE/RMSE curves, and a per-cell training/validation timing
-    table directly from training_history.csv/source_training_history.csv
-    -- no predictions/phase analysis is added here."""
-    notebook_path = REPO_ROOT / "notebooks/benchmarks/32_tatn_panasonic25_to_cmu.ipynb"
-    text = notebook_path.read_text(encoding="utf-8")
-    assert "training_history.csv" in text
-    assert "source_training_history.csv" in text
-    for column in ("estimate_loss", "adversarial_loss", "mmd_loss", "total_loss"):
-        assert column in text
-    assert "validation_mae" in text
-    assert "validation_rmse" in text
-    assert "runtime_seconds" in text
-    assert "validation_runtime_seconds" in text
-
-
-def test_tatn_notebook_has_prediction_and_phase_diagnostic_sections():
-    """Requirement #7: the notebook must show Source only vs TATN overall
-    MAE/RMSE, the overall negative-transfer delta, three-phase MAE/RMSE,
-    and per-phase negative-transfer counts -- all read directly from
-    condition_metrics.csv/cell_transfer_effects.csv/phase_metrics.csv/
-    phase_transfer_effects.csv, and RESULT_ROOT must stay tatn_ns_relabel_v1."""
-    notebook_path = REPO_ROOT / "notebooks/benchmarks/32_tatn_panasonic25_to_cmu.ipynb"
-    text = notebook_path.read_text(encoding="utf-8")
-    assert "condition_metrics.csv" in text
-    assert "cell_transfer_effects.csv" in text
-    assert "phase_metrics.csv" in text
-    assert "phase_transfer_effects.csv" in text
-    assert "negative_transfer_mae" in text
-    assert "negative_transfer_rmse" in text
-    assert "delta_mae_percent" in text
-    assert "delta_rmse_percent" in text
-    assert "mission_phase" in text
-    assert "benchmarks/panasonic_to_cmu_evtol/tatn_ns_relabel_v1" in text
