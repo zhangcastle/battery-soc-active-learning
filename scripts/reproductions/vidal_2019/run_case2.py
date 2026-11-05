@@ -42,6 +42,9 @@ def main() -> int:
     parser.add_argument("--seed", type=int)
     parser.add_argument("--device", default="auto")
     parser.add_argument("--max-train-windows", type=int)
+    parser.add_argument("--selection-strategy", choices=("all", "random", "regression_clue"))
+    parser.add_argument("--target-budget-fraction", type=float)
+    parser.add_argument("--committee-checkpoint", type=Path, action="append", default=[])
     args = parser.parse_args()
 
     if args.all_pairs:
@@ -59,6 +62,12 @@ def main() -> int:
             values["random_seed"] = args.seed
         if args.max_train_windows is not None:
             values["max_train_windows"] = args.max_train_windows
+        if args.selection_strategy is not None:
+            values["selection_strategy"] = args.selection_strategy
+        if args.target_budget_fraction is not None:
+            values["target_budget_fraction"] = args.target_budget_fraction
+        if args.committee_checkpoint:
+            values["committee_checkpoints"] = tuple(args.committee_checkpoint)
         checkpoint = args.source_checkpoint or _checkpoint_for(args.source_checkpoint_root, source)
         if checkpoint is not None:
             values["source_checkpoint"] = checkpoint

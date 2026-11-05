@@ -1,7 +1,27 @@
-# Battery SOC Transfer Learning Benchmark
+# Battery SOC Active-Learning Confirmation
 
-A clean, Colab-friendly scaffold for reproducing and comparing battery
-State-of-Charge (SOC) estimation methods under domain transfer.
+A minimal, Colab-friendly confirmation of whether active target-window selection
+can reduce the labelled data needed by Vidal Case 2 full-model fine-tuning.
+
+The confirmation runs exactly three lines with the same model and environment:
+full target data, a random subset, and a Regression-CLUE subset at the same
+budget. Regression-CLUE combines query-by-committee regression uncertainty
+([Wu, 2019](https://arxiv.org/abs/1805.00334)) with uncertainty-weighted hidden
+embedding clustering adapted from
+[CLUE](https://github.com/virajprabhu/CLUE). It is an adaptation for sequence
+regression, not an exact reproduction of the classification method.
+
+## Minimal confirmation
+
+Open `notebooks/active_learning_confirmation.ipynb` in Colab. It mounts the
+same `/content/drive/MyDrive/battery_soc_benchmark` layout used by the original
+repo, finds two formal Case 1 checkpoints from different seeds, and runs one
+source-to-target pair at a 10% label budget. The result is one table:
+`confirmation_summary.csv`.
+
+The only prerequisite beyond the existing Vidal data is a second formal Case 1
+checkpoint for the source dataset. Two independently trained source models are
+needed to estimate regression disagreement without reading target SOC labels.
 
 > **Status:** Vidal 2019 Case 1–4 reproduction pipelines and the CMU Version 3
 > ingestion/block/RPT pipeline are implemented; unified CMU transfer remains in

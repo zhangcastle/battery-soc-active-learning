@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import math
 import shutil
 import time
 from dataclasses import asdict, dataclass
@@ -36,6 +37,11 @@ from battery_benchmark.reproductions.vidal_2019.case1 import (
 )
 from battery_benchmark.evaluation.metrics import compute_metrics
 from battery_benchmark.reproductions.vidal_2019.model import VidalLSTM
+from battery_benchmark.reproductions.vidal_2019.active_selection import (
+    committee_uncertainty,
+    model_outputs,
+    select_indices,
+)
 from battery_benchmark.preprocessing.normalization import MinMaxNormalizer
 from battery_benchmark.training.checkpointing import load_checkpoint, save_checkpoint
 from battery_benchmark.utils.git_info import get_full_commit_hash, is_dirty
@@ -70,6 +76,9 @@ class Case2Config:
     target_train_split: str = "full_train"
     case_number: int = 2
     output_case_name: str = "vidal_case2"
+    selection_strategy: str = "all"
+    target_budget_fraction: float = 1.0
+    committee_checkpoints: tuple[Path, ...] = ()
 
     @property
     def dataset(self) -> str:
@@ -98,6 +107,14 @@ class Case2Config:
             raise ValueError("resample_hz must be positive or null")
         if self.source_checkpoint is None:
             raise ValueError(f"Case {self.case_number} requires a source Case 1 checkpoint")
+        if self.selection_strategy not in {"all", "random", "regression_clue"}:
+            raise ValueError("selection_strategy must be all, random, or regression_clue")
+        if not 0 < self.target_budget_fraction <= 1:
+            raise ValueError("target_budget_fraction must be in (0, 1]")
+        if self.selection_strategy == "all" and self.target_budget_fraction != 1:
+            raise ValueError("selection_strategy=all requires target_budget_fraction=1")
+        if self.selection_strategy == "regression_clue" and len(self.committee_checkpoints) < 1:
+            raise ValueError("regression_clue requires at least one additional committee checkpoint")
         if self.run_mode == "formal":
             if self.development_only or self.epochs != 515 or self.max_train_windows is not None:
                 raise ValueError(f"Formal Case {self.case_number} requires 515 epochs, all windows, development_only=false")
@@ -273,7 +290,59 @@ def _serializable_config(cfg: Case2Config) -> dict[str, Any]:
     for key in ("source_checkpoint", "target_case1_metrics_path", "target_case2_metrics_path"):
         if data[key] is not None:
             data[key] = str(data[key])
+    data["committee_checkpoints"] = [str(path) for path in cfg.committee_checkpoints]
     return data
+
+
+def select_target_windows(
+    cfg: Case2Config,
+    pool_dataset,
+    source_model: VidalLSTM,
+    device: torch.device,
+) -> tuple[Subset, pd.DataFrame]:
+    """Choose the target windows whose SOC labels will be used for fine-tuning."""
+    pool_size = len(pool_dataset)
+    count = pool_size if cfg.selection_strategy == "all" else max(
+        1, math.ceil(cfg.target_budget_fraction * pool_size)
+    )
+    uncertainty = None
+    embeddings = None
+    if cfg.selection_strategy == "regression_clue":
+        main_predictions, embeddings = model_outputs(
+            source_model, pool_dataset, cfg.batch_size, cfg.num_workers, device
+        )
+        predictions = [main_predictions]
+        seen = {Path(cfg.source_checkpoint).resolve()}
+        for checkpoint_path in cfg.committee_checkpoints:
+            resolved = Path(checkpoint_path).resolve()
+            if resolved in seen:
+                raise ValueError("Committee checkpoints must be distinct")
+            seen.add(resolved)
+            member = VidalLSTM()
+            load_case1_weights_for_transfer(
+                member, checkpoint_path, cfg.source_dataset, require_formal=True, device=device
+            )
+            member_predictions, _ = model_outputs(
+                member, pool_dataset, cfg.batch_size, cfg.num_workers, device
+            )
+            predictions.append(member_predictions)
+        uncertainty = committee_uncertainty(predictions)
+    selection = select_indices(
+        cfg.selection_strategy,
+        count,
+        pool_size,
+        cfg.random_seed,
+        uncertainty=uncertainty,
+        embeddings=embeddings,
+    )
+    selected = np.zeros(pool_size, dtype=bool)
+    selected[selection.indices] = True
+    audit = pd.DataFrame({
+        "pool_index": np.arange(pool_size),
+        "selected": selected,
+        "uncertainty": selection.uncertainty,
+    })
+    return Subset(pool_dataset, selection.indices.tolist()), audit
 
 
 def find_target_case1_run(case1_output_root: Path, target_dataset: str, seed: int = 42) -> Path:
@@ -506,10 +575,9 @@ def run_case2(
     train_windows = build_case1_windows(transform_records(train_records, scaler), cfg.seq_len, cfg.stride, False)
     test_windows = build_case1_windows(transform_records(test_records, scaler), cfg.seq_len, cfg.stride, True)
     full_train_dataset = Case1WindowDataset(train_windows)
-    train_dataset = full_train_dataset
+    pool_dataset = full_train_dataset
     if cfg.max_train_windows is not None:
-        train_dataset = Subset(train_dataset, range(min(cfg.max_train_windows, len(train_dataset))))
-    actual_train_window_count = len(train_dataset)
+        pool_dataset = Subset(pool_dataset, range(min(cfg.max_train_windows, len(pool_dataset))))
 
     torch.manual_seed(cfg.random_seed)
     np.random.seed(cfg.random_seed)
@@ -524,6 +592,8 @@ def run_case2(
         device=device,
     )
     model.to(device)
+    train_dataset, selection_audit = select_target_windows(cfg, pool_dataset, model, device)
+    actual_train_window_count = len(train_dataset)
     initial_target_mse = compute_dataset_mse(
         model,
         train_dataset,
@@ -597,6 +667,7 @@ def run_case2(
     history.to_csv(run_dir / "training_history.csv", index=False)
     predictions.to_csv(run_dir / "predictions" / "test_predictions.csv", index=False)
     profile.to_csv(run_dir / "metrics_by_profile.csv", index=False)
+    selection_audit.to_csv(run_dir / "selection.csv", index=False)
     (run_dir / "metrics.json").write_text(json.dumps(metrics, indent=2), encoding="utf-8")
     (run_dir / "comparison_to_case1.json").write_text(json.dumps(comparison, indent=2), encoding="utf-8")
     (run_dir / "scaler.json").write_text(json.dumps(scaler_meta, indent=2), encoding="utf-8")
@@ -627,6 +698,9 @@ def run_case2(
         "target_test_records": len(target_test.records),
         "train_windows": len(train_windows.X),
         "actual_train_window_count": actual_train_window_count,
+        "selection_strategy": cfg.selection_strategy,
+        "target_budget_fraction": cfg.target_budget_fraction,
+        "selection_pool_window_count": len(pool_dataset),
         "test_windows": len(test_windows.X),
         "test_valid_samples": int(test_windows.valid_mask.sum()),
         "dropped_train_remainder": train_windows.dropped_samples,

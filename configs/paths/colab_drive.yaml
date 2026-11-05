@@ -2,7 +2,7 @@
 # Mount Drive first:  from google.colab import drive; drive.mount('/content/drive')
 # Then update drive_root to match your personal Drive layout.
 
-repo_root: /content/battery-soc-transfer-benchmark
+repo_root: /content/battery-soc-active-learning
 drive_root: /content/drive/MyDrive/battery_soc_benchmark
 
 raw_data_root: /content/drive/MyDrive/battery_soc_benchmark/data/raw
