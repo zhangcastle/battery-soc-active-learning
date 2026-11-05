@@ -15,13 +15,13 @@ regression, not an exact reproduction of the classification method.
 
 Open `notebooks/active_learning_confirmation.ipynb` in Colab. It mounts the
 same `/content/drive/MyDrive/battery_soc_benchmark` layout used by the original
-repo, finds two formal Case 1 checkpoints from different seeds, and runs one
-source-to-target pair at a 10% label budget. The result is one table:
+repo, reuses the existing LG HG2 seed-42 checkpoint, trains seed 43 once when
+needed, and runs one source-to-target pair at a 10% label budget. The result is one table:
 `confirmation_summary.csv`.
 
-The only prerequisite beyond the existing Vidal data is a second formal Case 1
-checkpoint for the source dataset. Two independently trained source models are
-needed to estimate regression disagreement without reading target SOC labels.
+The notebook creates the second formal Case 1 checkpoint automatically because
+two independently trained source models are needed to estimate regression
+disagreement without reading target SOC labels.
 
 > **Status:** Vidal 2019 Case 1–4 reproduction pipelines and the CMU Version 3
 > ingestion/block/RPT pipeline are implemented; unified CMU transfer remains in
