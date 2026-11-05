@@ -19,6 +19,9 @@ repo, reuses the existing LG HG2 seed-42 checkpoint, trains seed 43 once when
 needed, and runs one source-to-target pair at a 10% label budget. The result is one table:
 `confirmation_summary.csv`.
 
+Because the repository is private, enable a Colab secret named `GITHUB_TOKEN`
+or `GITHUB_1` with read access to this repository before running the first cell.
+
 The notebook creates the second formal Case 1 checkpoint automatically because
 two independently trained source models are needed to estimate regression
 disagreement without reading target SOC labels.
